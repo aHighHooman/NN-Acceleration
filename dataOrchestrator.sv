@@ -21,7 +21,7 @@ always_ff @(posedge clk) begin
         for (int i = 0; i < N; i = i + 1) begin
             row[i] <= 0;
             col[i] <= 0;
-    end
+        end
     
     // Begin Data Orchestration
     end else begin
@@ -30,14 +30,23 @@ always_ff @(posedge clk) begin
         if (counter >= 0 && counter < 3) begin
             row[0]  <= matrixA[0][counter];
             col[0]  <= matrixB[counter][0];
-        end 
+        end else begin 
+            row[0]  <= 0;
+            col[0]  <= 0;
+        end
         if (counter >= 1 && counter < 4) begin
             row[1]  <= matrixA[1][counter - 1];
             col[1]  <= matrixB[counter - 1][1];
+        end else begin 
+            row[1]  <= 0;
+            col[1]  <= 0;
         end
         if (counter >= 2 && counter < 5) begin
             row[2] <= matrixA[2][counter - 2];
             col[2] <= matrixB[counter - 2][2];
+        end else begin 
+            row[2] <= 0;
+            col[2] <= 0;
         end
         
     end
