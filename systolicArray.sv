@@ -9,8 +9,8 @@ module systolicArray #(
     output logic signed [2*WIDTH-1:0] resultMatrix [N][N]
 );
 
-logic [WIDTH-1:0] horizontalData [N:0][N:0];
-logic [WIDTH-1:0] verticalData   [N:0][N:0];
+logic signed [WIDTH-1:0] horizontalData [N][N+1];
+logic signed [WIDTH-1:0] verticalData   [N+1][N];
 
 genvar i, j;
 generate
@@ -26,7 +26,9 @@ generate
             end
             
             // Instantiate multiplier blocks and their interconnections
-            multiplierBlock mb (
+            multiplierBlock #(
+                .WIDTH(WIDTH)
+            ) mb (
                 .clk   (clk),
                 .rst_n (rst_n),
                 .a     (horizontalData[i][j]),
