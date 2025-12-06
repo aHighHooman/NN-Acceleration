@@ -16,7 +16,6 @@ genvar i, j;
 generate
     for (i = 0; i < N; i = i + 1) begin : row_loop
         for (j = 0; j < N; j = j + 1) begin : col_loop
-            
             // Initialize the first row and first column of the systolic array (this is to feed in the data)
             if (i==0) begin
                 assign verticalData[i][j] = col[j];
@@ -31,11 +30,11 @@ generate
             ) mb (
                 .clk   (clk),
                 .rst_n (rst_n),
-                .a     (horizontalData[i][j]),
-                .b     (verticalData[i][j]),
-                .aOut  (horizontalData[i][j+1]),
-                .bOut  (verticalData[i+1][j]),
-                .partialSum(resultMatrix[i][j])
+                .leftIn     (horizontalData[i][j]),
+                .topIn      (verticalData[i][j]),
+                .rightOut   (horizontalData[i][j+1]),
+                .bottomOut  (verticalData[i+1][j]),
+                .partialSum (resultMatrix[i][j])
             );
 
         end
