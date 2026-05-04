@@ -1,0 +1,549 @@
+# Compile of dataOrchestratorWeightStationary.sv failed with 1 errors.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv failed with 1 errors.
+# 8 compiles, 2 failed with 2 errors.
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+vsim -gui work.matrixMultiplierWeightStationary_tb
+# vsim -gui work.matrixMultiplierWeightStationary_tb 
+# Start time: 17:55:40 on Nov 26,2025
+# Loading sv_std.std
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+# ** Error: (vsim-3745) A variable index into the generate block 'matrixMultiplierWeightStationary_tb.dut.memInput.memArray' is illegal.
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv Line: 66
+# ** Error: (vsim-3745) A variable index into the generate block 'matrixMultiplierWeightStationary_tb.dut.memWeight.memArray' is illegal.
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv Line: 80
+# ** Error: (vsim-3063) Port 'partialSum' not found in the connected module (6th connection).
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb/dut/systolicArr File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary.sv Line: 74
+# Error loading design
+# End time: 17:55:41 on Nov 26,2025, Elapsed time: 0:00:01
+# Errors: 3, Warnings: 6
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+vsim -gui work.matrixMultiplierWeightStationary_tb
+# vsim -gui work.matrixMultiplierWeightStationary_tb 
+# Start time: 17:57:59 on Nov 26,2025
+# Loading sv_std.std
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+add wave -position insertpoint  \
+sim:/matrixMultiplierWeightStationary_tb/dut/outputs
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:     60     67     71 
+# Row 1:      0      0      0 
+# Row 2:      0      0      0 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+# A time value could not be extracted from the current line
+add wave -position insertpoint  \
+sim:/matrixMultiplierWeightStationary_tb/dut/weightLoader/writeEnable
+add wave -position insertpoint  \
+sim:/matrixMultiplierWeightStationary_tb/dut/weightLoader/col
+restart -f
+# ** Note: (vsim-12125) Error and warning message counts have been reset to '0' because of 'restart'.
+add wave -position insertpoint  \
+sim:/matrixMultiplierWeightStationary_tb/dut/systolicArr/verticalData
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:     60     67     71 
+# Row 1:      0      0      0 
+# Row 2:      0      0      0 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+add wave -position insertpoint  \
+sim:/matrixMultiplierWeightStationary_tb/dut/weightLoader/addrB
+restart -f
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:     60     67     71 
+# Row 1:      0      0      0 
+# Row 2:      0      0      0 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+add wave -position insertpoint  \
+sim:/matrixMultiplierWeightStationary_tb/dut/weightLoader/counter
+restart -f
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:     60     67     71 
+# Row 1:      0      0      0 
+# Row 2:      0      0      0 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+add wave -position insertpoint  \
+sim:/matrixMultiplierWeightStationary_tb/dut/memWeight/addr
+add wave -position insertpoint  \
+sim:/matrixMultiplierWeightStationary_tb/dut/memWeight/dataOut
+restart -f
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:     60     67     71 
+# Row 1:      0      0      0 
+# Row 2:      0      0      0 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+restart -f
+# ** Note: (vsim-12125) Error and warning message counts have been reset to '0' because of 'restart'.
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:     60     67     71 
+# Row 1:      0      0      0 
+# Row 2:      0      0      0 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+add wave -position insertpoint  \
+sim:/matrixMultiplierWeightStationary_tb/dut/weightLoader/colB
+restart -f
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:     60     67     71 
+# Row 1:      0      0      0 
+# Row 2:      0      0      0 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+restart -f
+# ** Note: (vsim-12125) Error and warning message counts have been reset to '0' because of 'restart'.
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:      0     66      0 
+# Row 1:      0      0     90 
+# Row 2:      0      0      0 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+restart -f
+# ** Note: (vsim-12125) Error and warning message counts have been reset to '0' because of 'restart'.
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:      5     24      0 
+# Row 1:      0     78      0 
+# Row 2:      0      0    108 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+restart -f
+# ** Note: (vsim-12125) Error and warning message counts have been reset to '0' because of 'restart'.
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:     60      4      0 
+# Row 1:      0     88      0 
+# Row 2:      0      0    108 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+add wave -position insertpoint  \
+sim:/matrixMultiplierWeightStationary_tb/dut/systolicArr/horizontalData
+add wave -position insertpoint  \
+sim:/matrixMultiplierWeightStationary_tb/dut/systolicArr/verticalData
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv failed with 1 errors.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 1 failed with 1 error.
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv failed with 1 errors.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 1 failed with 1 error.
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+run -all
+restart -f
+# ** Note: (vsim-12125) Error and warning message counts have been reset to '0' because of 'restart'.
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+# ** Error: (vsim-3906) Connection type 'reg signed[31:0]$[0:2]' is incompatible with 'reg signed[15:0]$[0:2]' for  port (result):  Array elem. widths 16 & 32 don't match.
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb/dut/systolicArr File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary.sv Line: 70
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+restart -f
+# No Design Loaded!
+vsim -gui work.matrixMultiplierWeightStationary_tb
+# vsim -gui work.matrixMultiplierWeightStationary_tb 
+# Start time: 17:57:59 on Nov 26,2025
+# Loading sv_std.std
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+# ** Warning: (vsim-3015) [PCDPC] - Port size (32) does not match connection size (16) for port 'bottomOut'. The port definition is at: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv(10).
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb/dut/systolicArr/row_loop[0]/col_loop[0]/mb File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv Line: 31
+# ** Warning: (vsim-3015) [PCDPC] - Port size (32) does not match connection size (16) for port 'bottomOut'. The port definition is at: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv(10).
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb/dut/systolicArr/row_loop[0]/col_loop[1]/mb File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv Line: 31
+# ** Warning: (vsim-3015) [PCDPC] - Port size (32) does not match connection size (16) for port 'bottomOut'. The port definition is at: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv(10).
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb/dut/systolicArr/row_loop[0]/col_loop[2]/mb File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv Line: 31
+# ** Warning: (vsim-3015) [PCDPC] - Port size (32) does not match connection size (16) for port 'bottomOut'. The port definition is at: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv(10).
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb/dut/systolicArr/row_loop[1]/col_loop[0]/mb File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv Line: 31
+# ** Warning: (vsim-3015) [PCDPC] - Port size (32) does not match connection size (16) for port 'bottomOut'. The port definition is at: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv(10).
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb/dut/systolicArr/row_loop[1]/col_loop[1]/mb File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv Line: 31
+# ** Warning: (vsim-3015) [PCDPC] - Port size (32) does not match connection size (16) for port 'bottomOut'. The port definition is at: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv(10).
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb/dut/systolicArr/row_loop[1]/col_loop[2]/mb File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv Line: 31
+# ** Warning: (vsim-3015) [PCDPC] - Port size (32) does not match connection size (16) for port 'bottomOut'. The port definition is at: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv(10).
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb/dut/systolicArr/row_loop[2]/col_loop[0]/mb File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv Line: 31
+# ** Warning: (vsim-3015) [PCDPC] - Port size (32) does not match connection size (16) for port 'bottomOut'. The port definition is at: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv(10).
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb/dut/systolicArr/row_loop[2]/col_loop[1]/mb File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv Line: 31
+# ** Warning: (vsim-3015) [PCDPC] - Port size (32) does not match connection size (16) for port 'bottomOut'. The port definition is at: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv(10).
+#    Time: 0 ps  Iteration: 0  Instance: /matrixMultiplierWeightStationary_tb/dut/systolicArr/row_loop[2]/col_loop[2]/mb File: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv Line: 31
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+restart -f
+# ** Note: (vsim-12125) Error and warning message counts have been reset to '0' because of 'restart'.
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:      x      x      x 
+# Row 1:      x      x      x 
+# Row 2:      x      x      x 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv failed with 1 errors.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 1 failed with 1 error.
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+restart -f
+# ** Note: (vsim-12125) Error and warning message counts have been reset to '0' because of 'restart'.
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:      x      x      x 
+# Row 1:      x      x      x 
+# Row 2:      x      x      x 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+# A time value could not be extracted from the current line
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+run -all
+restart -f
+# ** Note: (vsim-12125) Error and warning message counts have been reset to '0' because of 'restart'.
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# 
+# --- Simulation Results ---
+# Expected: Matrix A * Identity = Matrix A
+# Row 0:      x      x      x 
+# Row 1:      x      x      x 
+# Row 2:      x      x      x 
+# --------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54
+# Compile of dataOrchestratorWeightStationary.sv was successful with warnings.
+# Compile of matrixMultiplierWeightStationary.sv was successful.
+# Compile of matrixMultiplierWeightStationary_tb.sv was successful.
+# Compile of memBlock.sv was successful with warnings.
+# Compile of memory.sv was successful.
+# Compile of multiplierBlockWeightStationary.sv was successful.
+# Compile of systolicArrayWeightStationary.sv was successful with warnings.
+# Compile of weightLoader.sv was successful with warnings.
+# 8 compiles, 0 failed with no errors.
+run -all
+restart -f
+# ** Note: (vsim-12125) Error and warning message counts have been reset to '0' because of 'restart'.
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# Weight loading complete. Waiting for results...
+# Time 85000: Output Row = {          0,           0,           1}
+# Time 95000: Output Row = {          0,           1,           0}
+# Time 105000: Output Row = {          1,           0,           0}
+# Time 115000: Output Row = {          0,           0,           0}
+# Time 125000: Output Row = {          0,           0,           0}
+# Time 135000: Output Row = {          0,           0,           0}
+# Time 145000: Output Row = {          1,           0,           0}
+# Time 155000: Output Row = {          4,           2,           0}
+# Time 165000: Output Row = {          7,           5,           3}
+# Time 175000: Output Row = {          0,           8,           6}
+# Time 185000: Output Row = {          0,           0,           9}
+# Time 195000: Output Row = {          0,           0,           0}
+# Time 205000: Output Row = {          0,           0,           0}
+# Time 215000: Output Row = {          0,           0,           0}
+# Time 225000: Output Row = {          0,           0,           0}
+# Time 235000: Output Row = {          0,           0,           0}
+# Time 245000: Output Row = {          0,           0,           0}
+# Time 255000: Output Row = {          0,           0,           0}
+# Time 265000: Output Row = {          0,           0,           0}
+# Time 275000: Output Row = {          0,           0,           0}
+# 
+# --- Simulation Finished ---
+# Please check the 'Output Row' logs above to verify the streaming output.
+# Note: Top-level resultMatrix is undriven in the current architecture.
+# ---------------------------
+# ** Note: $finish    : C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# 1
+# Break in Module matrixMultiplierWeightStationary_tb at C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv line 54

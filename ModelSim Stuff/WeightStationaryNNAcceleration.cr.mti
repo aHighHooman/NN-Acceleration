@@ -1,0 +1,55 @@
+{C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/dataOrchestratorWeightStationary.sv} {2 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/dataOrchestratorWeightStationary.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module dataOrchestratorWeightStationary
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/dataOrchestratorWeightStationary.sv(8): (vlog-13314) Defaulting port 'rowA' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+
+Top level modules:
+	dataOrchestratorWeightStationary
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv} {1 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module multiplierBlockWeightStationary
+
+Top level modules:
+	multiplierBlockWeightStationary
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memory.sv} {1 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memory.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module memory
+
+Top level modules:
+	memory
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary.sv} {1 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module matrixMultiplierWeightStationary
+
+Top level modules:
+	matrixMultiplierWeightStationary
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memBlock.sv} {2 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memBlock.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module memBlock
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memBlock.sv(8): (vlog-13314) Defaulting port 'addr' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+
+Top level modules:
+	memBlock
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/weightLoader.sv} {2 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/weightLoader.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module weightLoader
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/weightLoader.sv(7): (vlog-13314) Defaulting port 'colB' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+
+Top level modules:
+	weightLoader
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv} {2 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module systolicArrayWeightStationary
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv(8): (vlog-13314) Defaulting port 'row' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv(9): (vlog-13314) Defaulting port 'col' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+
+Top level modules:
+	systolicArrayWeightStationary
+
+} {} {}}

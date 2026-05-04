@@ -1,0 +1,17 @@
+Analysis & Synthesis Status : Successful - Thu Nov 13 05:56:37 2025
+Quartus Prime Version : 19.1.0 Build 670 09/22/2019 SJ Lite Edition
+Revision Name : NN_Acceleration
+Top-level Entity Name : matrixMultiplierSmall
+Family : Cyclone V
+Logic utilization (in ALMs) : N/A
+Total registers : 400
+Total pins : 218
+Total virtual pins : 0
+Total block memory bits : 0
+Total DSP Blocks : 9
+Total HSSI RX PCSs : 0
+Total HSSI PMA RX Deserializers : 0
+Total HSSI TX PCSs : 0
+Total HSSI PMA TX Serializers : 0
+Total PLLs : 0
+Total DLLs : 0

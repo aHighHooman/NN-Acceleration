@@ -1,0 +1,374 @@
+m255
+K4
+z2
+!s11f MIXED_VERSIONS
+13
+!s112 1.1
+!i10d 8192
+!i10e 25
+!i10f 100
+cModel Technology
+dC:/Users/Umair/Downloads/CPEN 311 Labs/cpen311-lab5/task5
+vdataOrchestrator
+Z0 DXx6 sv_std 3 std 0 22 VYECXdT12H8WgbUP_5Y6:3
+Z1 !s110 1764202041
+!i10b 1
+!s100 Y@8WMiz820]^g91EEfk872
+Z2 !s11b Dg1SIo80bB@j0V0VzS_@n1
+ITEnWoj;M;GE:V5VPl]e`C2
+Z3 VDg1SIo80bB@j0V0VzS_@n1
+S1
+Z4 dC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/ModelSim Stuff
+w1763124544
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/dataOrchestrator.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/dataOrchestrator.sv
+!i122 8
+Z5 L0 1 64
+Z6 OV;L;2020.1;71
+r1
+!s85 0
+31
+Z7 !s108 1764202041.000000
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/dataOrchestrator.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/dataOrchestrator.sv|
+!i113 1
+Z8 o-work work -sv
+Z9 tCvgOpt 0
+ndata@orchestrator
+vdataOrchestratorWeightStationary
+R0
+Z10 !s110 1764213320
+!i10b 1
+!s100 E6S8bA6hDFeV`mLlb6O5z0
+R2
+I9;;dz]jLY=X5ISK7;Mb=T3
+R3
+S1
+R4
+w1764212809
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/dataOrchestratorWeightStationary.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/dataOrchestratorWeightStationary.sv
+!i122 130
+L0 1 60
+R6
+r1
+!s85 0
+31
+Z11 !s108 1764213320.000000
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/dataOrchestratorWeightStationary.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/dataOrchestratorWeightStationary.sv|
+!i113 1
+R8
+R9
+ndata@orchestrator@weight@stationary
+vmatrixMultiplierSmall
+R0
+R1
+!i10b 1
+!s100 :JE9Ri1J8I1AY]BHE@an60
+R2
+IzZE]oPZ1=KFE:]D0?40:O1
+R3
+S1
+R4
+w1763104684
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/matrixMultiplierSmall.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/matrixMultiplierSmall.sv
+!i122 9
+L0 1 66
+R6
+r1
+!s85 0
+31
+R7
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/matrixMultiplierSmall.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/matrixMultiplierSmall.sv|
+!i113 1
+R8
+R9
+nmatrix@multiplier@small
+vmatrixMultiplierWeightStationary
+R0
+R10
+!i10b 1
+!s100 Gc=@VSoh=U`l7E_>4K8160
+R2
+I3AbX1mlV3X3YUd8E4choG0
+R3
+S1
+R4
+w1764212820
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary.sv
+!i122 131
+L0 1 81
+R6
+r1
+!s85 0
+31
+R11
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary.sv|
+!i113 1
+R8
+R9
+nmatrix@multiplier@weight@stationary
+vmatrixMultiplierWeightStationary_tb
+R0
+R10
+!i10b 1
+!s100 G1jL^1YM_7MlGT60Nc0ii3
+R2
+I>?Hj[HXmIi^<HB;e4nZV30
+R3
+S1
+R4
+w1764213249
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv
+!i122 132
+L0 3 182
+R6
+r1
+!s85 0
+31
+R11
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv|
+!i113 1
+R8
+R9
+nmatrix@multiplier@weight@stationary_tb
+vmemBlock
+R0
+R10
+!i10b 1
+!s100 WiWl@`XBeh[nEF428V4Fj3
+R2
+IA[BI^7VUJiimgk96W;lf03
+R3
+S1
+R4
+w1763117723
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memBlock.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memBlock.sv
+!i122 133
+L0 1 28
+R6
+r1
+!s85 0
+31
+R11
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memBlock.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memBlock.sv|
+!i113 1
+R8
+R9
+nmem@block
+vmemory
+R0
+Z12 !s110 1764213321
+!i10b 1
+!s100 D]9hLjWNz4Wz=FFfLaSDg1
+R2
+IRk4gNZf><:lKVGHWT@?T41
+R3
+S1
+R4
+w1763118358
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memory.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memory.sv
+!i122 134
+L0 1 17
+R6
+r1
+!s85 0
+31
+Z13 !s108 1764213321.000000
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memory.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/memory.sv|
+!i113 1
+R8
+R9
+vmultiplierBlock
+R0
+Z14 !s110 1764202042
+!i10b 1
+!s100 O_ciRId3oZ[0YRe[AdeX^0
+R2
+IaQ@S0Hn;3B[Q>F9XTUeYR3
+R3
+S1
+R4
+w1764202033
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/multiplierBlock.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/multiplierBlock.sv
+!i122 10
+L0 1 25
+R6
+r1
+!s85 0
+31
+R7
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/multiplierBlock.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/multiplierBlock.sv|
+!i113 1
+R8
+R9
+nmultiplier@block
+vmultiplierBlockWeightStationary
+R0
+R12
+!i10b 1
+!s100 ZzY9Yklm<]FPhnW_HJPbV1
+R2
+IKA=jR<YI4[cKczR[91YJg2
+R3
+S1
+R4
+w1764211343
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv
+!i122 135
+L0 1 32
+R6
+r1
+!s85 0
+31
+R13
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/multiplierBlockWeightStationary.sv|
+!i113 1
+R8
+R9
+nmultiplier@block@weight@stationary
+vNN_Acceleration
+R0
+R14
+!i10b 1
+!s100 @zJVi=T7kAYBMc1aaO8G[3
+R2
+IW58:JgKlH<f_fobTAZ>GH3
+R3
+S1
+R4
+w1762899748
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/NN_Acceleration.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/NN_Acceleration.sv
+!i122 11
+L0 1 23
+R6
+r1
+!s85 0
+31
+Z15 !s108 1764202042.000000
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/NN_Acceleration.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/NN_Acceleration.sv|
+!i113 1
+R8
+R9
+n@n@n_@acceleration
+vsystolicArray
+R0
+R1
+!i10b 1
+!s100 X>BfL@IFNL9g;[[o_Bc4J2
+R2
+IO8>T@@VkCc3IAnV=EUdZI2
+R3
+S1
+R4
+w1764201853
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/systolicArray.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/systolicArray.sv
+!i122 7
+L0 1 44
+R6
+r1
+!s85 0
+31
+!s108 1764202040.000000
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/systolicArray.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/systolicArray.sv|
+!i113 1
+R8
+R9
+nsystolic@array
+vsystolicArrayWeightStationary
+R0
+R12
+!i10b 1
+!s100 WT8o[SFPKTb28:BHhmSKR2
+R2
+IcYQNAVzK>Ee1;eDi1QL:D2
+R3
+S1
+R4
+w1764212026
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv
+!i122 136
+L0 1 49
+R6
+r1
+!s85 0
+31
+R13
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/systolicArrayWeightStationary.sv|
+!i113 1
+R8
+R9
+nsystolic@array@weight@stationary
+vtb_matrixMultiplierSmall
+R0
+R14
+!i10b 1
+!s100 72d7Wf?hh?5JAURZN3TnD3
+R2
+I<W[5f=mHbgE5@c:9N6k3S3
+R3
+S1
+R4
+w1763370741
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/tb_matrixMultiplierSmall.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/tb_matrixMultiplierSmall.sv
+!i122 12
+L0 3 212
+R6
+r1
+!s85 0
+31
+R15
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/tb_matrixMultiplierSmall.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/tb_matrixMultiplierSmall.sv|
+!i113 1
+R8
+R9
+ntb_matrix@multiplier@small
+vweightLoader
+R0
+R12
+!i10b 1
+!s100 a7nZae8SzaNlXQJSL3]g50
+R2
+IEcAg<3h8@A5;bM[MHOjSc0
+R3
+S1
+R4
+w1764212841
+8C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/weightLoader.sv
+FC:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/weightLoader.sv
+!i122 137
+R5
+R6
+r1
+!s85 0
+31
+R13
+!s107 C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/weightLoader.sv|
+!s90 -reportprogress|300|-work|work|-sv|-stats=none|C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/weightStationaryVariant/weightLoader.sv|
+!i113 1
+R8
+R9
+nweight@loader

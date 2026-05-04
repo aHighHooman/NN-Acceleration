@@ -1,0 +1,64 @@
+{C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/multiplierBlock.sv} {1 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/multiplierBlock.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module multiplierBlock
+
+Top level modules:
+	multiplierBlock
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/memBlock.sv} {2 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/memBlock.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module memBlock
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/memBlock.sv(8): (vlog-13314) Defaulting port 'addr' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+
+Top level modules:
+	memBlock
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/dataOrchestrator.sv} {2 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/dataOrchestrator.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module dataOrchestrator
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/dataOrchestrator.sv(7): (vlog-13314) Defaulting port 'colA' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/dataOrchestrator.sv(8): (vlog-13314) Defaulting port 'rowB' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+
+Top level modules:
+	dataOrchestrator
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/tb_matrixMultiplierSmall.sv} {1 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/tb_matrixMultiplierSmall.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module tb_matrixMultiplierSmall
+
+Top level modules:
+	tb_matrixMultiplierSmall
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/NN_Acceleration.sv} {2 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/NN_Acceleration.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module NN_Acceleration
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/NN_Acceleration.sv(7): (vlog-13314) Defaulting port 'matrixA' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/NN_Acceleration.sv(8): (vlog-13314) Defaulting port 'matrixB' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+
+Top level modules:
+	NN_Acceleration
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/systolicArray.sv} {2 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/systolicArray.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module systolicArray
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/systolicArray.sv(7): (vlog-13314) Defaulting port 'row' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+** Warning: C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/systolicArray.sv(8): (vlog-13314) Defaulting port 'col' kind to 'var' rather than 'wire' due to default compile option setting of -svinputport=relaxed.
+
+Top level modules:
+	systolicArray
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/matrixMultiplierSmall.sv} {1 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/matrixMultiplierSmall.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module matrixMultiplierSmall
+
+Top level modules:
+	matrixMultiplierSmall
+
+} {} {}} {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/memory.sv} {1 {vlog -work work -sv -stats=none {C:/Users/Umair/OneDrive/Desktop/Work/Self_Projects/NN Acceleration/memory.sv}
+Model Technology ModelSim - Intel FPGA Edition vlog 2020.1 Compiler 2020.02 Feb 28 2020
+-- Compiling module memory
+
+Top level modules:
+	memory
+
+} {} {}}

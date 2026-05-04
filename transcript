@@ -1,0 +1,44 @@
+# vsim -c -do "run -all; quit -f" matrixMultiplierWeightStationary_tb 
+# Start time: 17:35:04 on Apr 20,2026
+# Loading sv_std.std
+# Loading work.matrixMultiplierWeightStationary_tb
+# Loading work.matrixMultiplierWeightStationary
+# Loading work.memBlock
+# Loading work.dataOrchestratorWeightStationary
+# Loading work.weightLoader
+# Loading work.systolicArrayWeightStationary
+# Loading work.memory
+# Loading work.multiplierBlockWeightStationary
+# run -all
+# Initializing Memory...
+# Reset released. Starting simulation...
+# Weight loading complete. Waiting for results...
+# Time 85000: Output Row = {          0,           0,           1}
+# Time 95000: Output Row = {          0,           1,           0}
+# Time 105000: Output Row = {          1,           0,           0}
+# Time 115000: Output Row = {          0,           0,           0}
+# Time 125000: Output Row = {          0,           0,           0}
+# Time 135000: Output Row = {          0,           0,           0}
+# Time 145000: Output Row = {          1,           0,           0}
+# Time 155000: Output Row = {          4,           2,           0}
+# Time 165000: Output Row = {          7,           5,           3}
+# Time 175000: Output Row = {          0,           8,           6}
+# Time 185000: Output Row = {          0,           0,           9}
+# Time 195000: Output Row = {          0,           0,           0}
+# Time 205000: Output Row = {          0,           0,           0}
+# Time 215000: Output Row = {          0,           0,           0}
+# Time 225000: Output Row = {          0,           0,           0}
+# Time 235000: Output Row = {          0,           0,           0}
+# Time 245000: Output Row = {          0,           0,           0}
+# Time 255000: Output Row = {          0,           0,           0}
+# Time 265000: Output Row = {          0,           0,           0}
+# Time 275000: Output Row = {          0,           0,           0}
+# 
+# --- Simulation Finished ---
+# Please check the 'Output Row' logs above to verify the streaming output.
+# Note: Top-level resultMatrix is undriven in the current architecture.
+# ---------------------------
+# ** Note: $finish    : weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv(54)
+#    Time: 1015 ns  Iteration: 1  Instance: /matrixMultiplierWeightStationary_tb
+# End time: 17:35:04 on Apr 20,2026, Elapsed time: 0:00:00
+# Errors: 0, Warnings: 0
