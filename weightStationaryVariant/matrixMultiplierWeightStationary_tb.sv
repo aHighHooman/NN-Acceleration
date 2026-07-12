@@ -1,184 +1,236 @@
 `timescale 1ns / 1ps
 
 module matrixMultiplierWeightStationary_tb;
+    localparam int WIDTH = 16;
+    localparam int N = 3;
+    localparam int CLK_PERIOD = 10;
 
-    // Parameters
-    parameter int WIDTH = 16;
-    parameter int N = 3;
+    typedef logic signed [WIDTH-1:0] data_t;
+    typedef logic signed [2*WIDTH-1:0] result_t;
+    typedef data_t matrix_t[N][N];
+    typedef result_t result_matrix_t[N][N];
 
-    // Signals
-    logic        clk;
-    logic        rst_n;
-    logic signed [2*WIDTH-1:0] resultMatrix [N][N];
+    logic clk, rst_n;
+    data_t weightData[N], activationData[N];
+    logic weightValid, weightReady, activationValid, activationReady;
+    result_t resultData[N];
+    logic resultValid, resultReady, resultLast;
+    logic weightsLoaded, reloadWeights, reloadReady;
 
-    // DUT Instantiation
-    matrixMultiplierWeightStationary #(
-        .WIDTH(WIDTH),
-        .N(N)
-    ) dut (
-        .clk(clk),
-        .rst_n(rst_n),
-        .resultMatrix(resultMatrix)
+    matrixMultiplierWeightStationary #(.WIDTH(WIDTH), .N(N)) dut (
+        .clk(clk), .rst_n(rst_n),
+        .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
+        .activationData(activationData), .activationValid(activationValid),
+        .activationReady(activationReady), .resultData(resultData),
+        .resultValid(resultValid), .resultReady(resultReady), .resultLast(resultLast),
+        .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights), .reloadReady(reloadReady)
     );
 
-    // Clock Generation
     initial begin
-        clk = 0;
-        forever #5 clk = ~clk; // 10ns period
+        clk = 1'b0;
+        forever #(CLK_PERIOD/2) clk = ~clk;
     end
 
-    // Test Sequence
     initial begin
-        // 1. Initialize Inputs
-        initialize_memory();
+        matrix_t identity, a_basic, a_arbitrary, b_arbitrary, a_signed, b_signed;
 
-        // 2. Reset
-        rst_n = 0;
-        #20;
-        rst_n = 1;
-        $display("Reset released. Starting simulation...");
+        identity = '{'{1,0,0}, '{0,1,0}, '{0,0,1}};
+        a_basic = '{'{1,2,3}, '{4,5,6}, '{7,8,9}};
+        a_arbitrary = '{'{1,2,3}, '{0,1,4}, '{5,6,0}};
+        b_arbitrary = '{'{7,8,9}, '{2,3,4}, '{1,0,6}};
+        a_signed = '{'{-2,3,1}, '{4,-1,2}, '{0,5,-3}};
+        b_signed = '{'{1,-2,4}, '{-3,0,2}, '{5,1,-1}};
 
-        // 3. Wait for operation to complete
-        // The weight loader takes about N*2 cycles to load?
-        // Data orchestrator takes some time too.
-        // Let's wait enough time for the systolic array to fill and compute.
-        // N=3. 
-        // Weight loading: ~6-9 cycles.
-        // Computation: ~2*N + N cycles latency?
-        // Let's wait 100 cycles to be safe and observe the waves/output.
-        repeat (100) @(posedge clk);
+        initialize_signals();
+        apply_reset();
 
-        // 4. Check Results
-        display_results();
+        // Two A matrices are transmitted back-to-back under one stationary B.
+        send_weights("identity weights", identity, 1'b0);
+        fork
+            begin
+                send_activations("basic A", a_basic, 1'b0);
+                send_activations("back-to-back arbitrary A", a_arbitrary, 1'b0);
+            end
+            begin
+                receive_and_check("basic A x identity", a_basic, identity, 1'b1);
+                receive_and_check("arbitrary A x identity", a_arbitrary, identity, 1'b1);
+            end
+        join
 
+        request_weight_reload();
+        send_weights("arbitrary weights with input bubbles", b_arbitrary, 1'b1);
+        fork
+            send_activations("basic A with input bubbles", a_basic, 1'b1);
+            receive_and_check("basic A x arbitrary B", a_basic, b_arbitrary, 1'b1);
+        join
+
+        request_weight_reload();
+        send_weights("signed weights", b_signed, 1'b0);
+        fork
+            send_activations("signed A", a_signed, 1'b0);
+            receive_and_check("signed A x signed B", a_signed, b_signed, 1'b1);
+        join
+
+        $display("\nPASS: all continuous FIFO weight-stationary tests completed.");
         $finish;
     end
 
-    // Task to initialize memory contents
-    // We use hierarchical access to set the memory values directly.
-    task initialize_memory();
-        int k;
-        $display("Initializing Memory...");
-
-        // Initialize Matrix A (Input) in ALL memInput blocks
-        // We load the entire flattened matrix into each memory bank.
-        // Unrolled for N=3 to avoid illegal generate block index error
-        
-        // Bank 0
-        dut.memInput.memArray[0].memInst.mem[0] = 1;
-        dut.memInput.memArray[0].memInst.mem[1] = 2;
-        dut.memInput.memArray[0].memInst.mem[2] = 3;
-        dut.memInput.memArray[0].memInst.mem[3] = 4;
-        dut.memInput.memArray[0].memInst.mem[4] = 5;
-        dut.memInput.memArray[0].memInst.mem[5] = 6;
-        dut.memInput.memArray[0].memInst.mem[6] = 7;
-        dut.memInput.memArray[0].memInst.mem[7] = 8;
-        dut.memInput.memArray[0].memInst.mem[8] = 9;
-
-        // Bank 1
-        dut.memInput.memArray[1].memInst.mem[0] = 1;
-        dut.memInput.memArray[1].memInst.mem[1] = 2;
-        dut.memInput.memArray[1].memInst.mem[2] = 3;
-        dut.memInput.memArray[1].memInst.mem[3] = 4;
-        dut.memInput.memArray[1].memInst.mem[4] = 5;
-        dut.memInput.memArray[1].memInst.mem[5] = 6;
-        dut.memInput.memArray[1].memInst.mem[6] = 7;
-        dut.memInput.memArray[1].memInst.mem[7] = 8;
-        dut.memInput.memArray[1].memInst.mem[8] = 9;
-
-        // Bank 2
-        dut.memInput.memArray[2].memInst.mem[0] = 1;
-        dut.memInput.memArray[2].memInst.mem[1] = 2;
-        dut.memInput.memArray[2].memInst.mem[2] = 3;
-        dut.memInput.memArray[2].memInst.mem[3] = 4;
-        dut.memInput.memArray[2].memInst.mem[4] = 5;
-        dut.memInput.memArray[2].memInst.mem[5] = 6;
-        dut.memInput.memArray[2].memInst.mem[6] = 7;
-        dut.memInput.memArray[2].memInst.mem[7] = 8;
-        dut.memInput.memArray[2].memInst.mem[8] = 9;
-
-
-        // Initialize Matrix B (Weights) in ALL memWeight blocks
-        // We load the entire flattened matrix into each memory bank.
-        
-        // Bank 0
-        dut.memWeight.memArray[0].memInst.mem[0] = 1;
-        dut.memWeight.memArray[0].memInst.mem[1] = 0;
-        dut.memWeight.memArray[0].memInst.mem[2] = 0;
-        dut.memWeight.memArray[0].memInst.mem[3] = 0;
-        dut.memWeight.memArray[0].memInst.mem[4] = 1;
-        dut.memWeight.memArray[0].memInst.mem[5] = 0;
-        dut.memWeight.memArray[0].memInst.mem[6] = 0;
-        dut.memWeight.memArray[0].memInst.mem[7] = 0;
-        dut.memWeight.memArray[0].memInst.mem[8] = 1;
-
-        // Bank 1
-        dut.memWeight.memArray[1].memInst.mem[0] = 1;
-        dut.memWeight.memArray[1].memInst.mem[1] = 0;
-        dut.memWeight.memArray[1].memInst.mem[2] = 0;
-        dut.memWeight.memArray[1].memInst.mem[3] = 0;
-        dut.memWeight.memArray[1].memInst.mem[4] = 1;
-        dut.memWeight.memArray[1].memInst.mem[5] = 0;
-        dut.memWeight.memArray[1].memInst.mem[6] = 0;
-        dut.memWeight.memArray[1].memInst.mem[7] = 0;
-        dut.memWeight.memArray[1].memInst.mem[8] = 1;
-
-        // Bank 2
-        dut.memWeight.memArray[2].memInst.mem[0] = 1;
-        dut.memWeight.memArray[2].memInst.mem[1] = 0;
-        dut.memWeight.memArray[2].memInst.mem[2] = 0;
-        dut.memWeight.memArray[2].memInst.mem[3] = 0;
-        dut.memWeight.memArray[2].memInst.mem[4] = 1;
-        dut.memWeight.memArray[2].memInst.mem[5] = 0;
-        dut.memWeight.memArray[2].memInst.mem[6] = 0;
-        dut.memWeight.memArray[2].memInst.mem[7] = 0;
-        dut.memWeight.memArray[2].memInst.mem[8] = 1;
+    task initialize_signals();
+        rst_n = 1'b0;
+        weightValid = 1'b0;
+        activationValid = 1'b0;
+        resultReady = 1'b0;
+        reloadWeights = 1'b0;
+        for (int i = 0; i < N; i++) begin
+            weightData[i] = '0;
+            activationData[i] = '0;
+        end
     endtask
 
-    // Captured results
-    logic signed [2*WIDTH-1:0] captured_results [N][N];
+    task apply_reset();
+        repeat (3) @(posedge clk);
+        @(negedge clk) rst_n = 1'b1;
+    endtask
 
-    // Monitor Process
-    initial begin
-        // Initialize captured results
-        for (int r = 0; r < N; r++) begin
-            for (int c = 0; c < N; c++) begin
-                captured_results[r][c] = 0;
+    task send_weights(input string label, input matrix_t matrixB, input bit add_bubbles);
+        $display("\n=== Loading %s ===", label);
+        display_input_matrix("Matrix B", matrixB);
+
+        // Bottom-to-top is the physical loading order of the stationary array.
+        for (int row = N-1; row >= 0; row--) begin
+            if (add_bubbles && row == N-2) begin
+                @(negedge clk) weightValid = 1'b0;
+                @(negedge clk);
+            end
+            @(negedge clk);
+            while (!weightReady) @(negedge clk);
+            for (int col = 0; col < N; col++) weightData[col] = matrixB[row][col];
+            weightValid = 1'b1;
+            @(posedge clk);
+        end
+        @(negedge clk) weightValid = 1'b0;
+        wait(weightsLoaded);
+        $display("Weights are stationary in the PE array.");
+    endtask
+
+    task send_activations(input string label, input matrix_t matrixA, input bit add_bubbles);
+        $display("\nSending %s:", label);
+        display_input_matrix("Matrix A", matrixA);
+        for (int row = 0; row < N; row++) begin
+            if (add_bubbles && row == 1) begin
+                @(negedge clk) activationValid = 1'b0;
+                @(negedge clk);
+            end
+            @(negedge clk);
+            while (!activationReady) @(negedge clk);
+            for (int k = 0; k < N; k++) activationData[k] = matrixA[row][k];
+            activationValid = 1'b1;
+            @(posedge clk);
+        end
+        @(negedge clk) activationValid = 1'b0;
+    endtask
+
+    task receive_and_check(
+        input string label,
+        input matrix_t matrixA,
+        input matrix_t matrixB,
+        input bit add_backpressure
+    );
+        result_matrix_t actual, expected;
+        int errors;
+
+        errors = 0;
+        multiply_reference(matrixA, matrixB, expected);
+        for (int row = 0; row < N; row++) begin
+            bit accepted;
+            accepted = 1'b0;
+            while (!accepted) begin
+                @(negedge clk);
+                resultReady = !add_backpressure || (($time / CLK_PERIOD) % 4 != 1);
+                @(posedge clk);
+                if (resultValid && resultReady) begin
+                    for (int col = 0; col < N; col++) actual[row][col] = resultData[col];
+                    if (resultLast !== (row == N-1)) begin
+                        $error("%s resultLast mismatch on row %0d", label, row);
+                        errors++;
+                    end
+                    accepted = 1'b1;
+                end
             end
         end
+        @(negedge clk) resultReady = 1'b0;
 
-        // Wait for Reset
-        wait(rst_n == 0);
-        wait(rst_n == 1);
+        display_result_matrix("Expected A x B", expected);
+        display_result_matrix("Received A x B", actual);
+        for (int row = 0; row < N; row++)
+            for (int col = 0; col < N; col++)
+                if (actual[row][col] !== expected[row][col]) begin
+                    $error("%s mismatch [%0d][%0d]: got %0d expected %0d",
+                           label, row, col, actual[row][col], expected[row][col]);
+                    errors++;
+                end
 
-        // Wait for Weight Loading to finish
-        // We can monitor the writeEnable signal inside the DUT
-        wait(dut.writeEnableWeightToSyst == 1);
-        wait(dut.writeEnableWeightToSyst == 0);
-        $display("Weight loading complete. Waiting for results...");
+        if (errors) $fatal(1, "FAIL: %s had %0d errors", label, errors);
+        $display("PASS: %s", label);
+    endtask
 
-        // Capture results
-        // The results stream out of the bottom of the systolic array.
-        // dut.outputs[j] corresponds to the result of Column j.
-        // As rows of A flow through, we expect rows of C to appear at the output.
-        // Due to the systolic nature (skewed inputs), the results might also be skewed.
-        // However, let's just capture valid non-zero outputs or capture for a fixed window.
-        // Based on dataOrchestrator, inputs are fed over a window.
-        
-        // Let's capture for a sufficient number of cycles.
-        // We assume the first valid result appears after some latency.
-        // We'll just log what we see for now to help the user debug/verify.
-        
-        repeat (20) @(posedge clk) begin
-            $display("Time %0t: Output Row = {%d, %d, %d}", $time, dut.outputs[0], dut.outputs[1], dut.outputs[2]);
+    task request_weight_reload();
+        wait(reloadReady);
+        @(negedge clk) reloadWeights = 1'b1;
+        @(posedge clk);
+        @(negedge clk) reloadWeights = 1'b0;
+        wait(!weightsLoaded);
+    endtask
+
+    task multiply_reference(input matrix_t a, input matrix_t b, output result_matrix_t c);
+        for (int row = 0; row < N; row++)
+            for (int col = 0; col < N; col++) begin
+                c[row][col] = '0;
+                for (int k = 0; k < N; k++) c[row][col] += a[row][k] * b[k][col];
+            end
+    endtask
+
+    task display_input_matrix(input string label, input matrix_t matrix);
+        $display("%s:", label);
+        for (int row = 0; row < N; row++) begin
+            $write("  [");
+            for (int col = 0; col < N; col++) begin
+                $write("%0d", matrix[row][col]);
+                if (col < N-1) $write(", ");
+            end
+            $display("]");
+        end
+    endtask
+
+    task display_result_matrix(input string label, input result_matrix_t matrix);
+        $display("%s:", label);
+        for (int row = 0; row < N; row++) begin
+            $write("  [");
+            for (int col = 0; col < N; col++) begin
+                $write("%0d", matrix[row][col]);
+                if (col < N-1) $write(", ");
+            end
+            $display("]");
+        end
+    endtask
+
+    result_t heldResult[N];
+    logic heldLast, holdingResult;
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            holdingResult <= 1'b0;
+        end else if (resultValid && !resultReady) begin
+            if (holdingResult) begin
+                for (int i = 0; i < N; i++)
+                    assert(resultData[i] == heldResult[i]) else $error("Output changed under backpressure");
+                assert(resultLast == heldLast) else $error("resultLast changed under backpressure");
+            end
+            for (int i = 0; i < N; i++) heldResult[i] <= resultData[i];
+            heldLast <= resultLast;
+            holdingResult <= 1'b1;
+        end else begin
+            holdingResult <= 1'b0;
         end
     end
-
-    task display_results();
-        $display("\n--- Simulation Finished ---");
-        $display("Please check the 'Output Row' logs above to verify the streaming output.");
-        $display("Note: Top-level resultMatrix is undriven in the current architecture.");
-        $display("---------------------------");
-    endtask
 
 endmodule

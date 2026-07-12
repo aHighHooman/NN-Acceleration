@@ -18,7 +18,10 @@ generate
         ) memInst (
             .clk        (clk),
             .rst_n      (rst_n),
-            .addr       (addr[i]),
+            .readAddr   (addr[i]),
+            .writeAddr  ('0),
+            .writeEnable(1'b0),
+            .inputData  ('0),
             .outputData (dataOut[i])
         );
     end
