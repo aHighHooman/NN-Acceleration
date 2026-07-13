@@ -39,16 +39,15 @@
 
 set_global_assignment -name FAMILY "Cyclone V"
 set_global_assignment -name DEVICE 5CGXFC7C7F23C8
-set_global_assignment -name TOP_LEVEL_ENTITY matrixMultiplierSmall
+set_global_assignment -name TOP_LEVEL_ENTITY matrixMultiplierWeightStationary
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 19.1.0
 set_global_assignment -name PROJECT_CREATION_TIME_DATE "22:57:18  NOVEMBER 08, 2025"
 set_global_assignment -name LAST_QUARTUS_VERSION "19.1.0 Lite Edition"
-set_global_assignment -name SYSTEMVERILOG_FILE ../outputStationaryVariant/systolicArray.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../outputStationaryVariant/multiplierBlock.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../outputStationaryVariant/matrixMultiplierSmall.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../outputStationaryVariant/dataOrchestrator.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../memory/memBlock.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/multiplierBlockWeightStationary.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/systolicArrayWeightStationary.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/matrixMultiplierWeightStationary.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../memory/memory.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../memory/signedFifo.sv
 set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
 set_global_assignment -name ERROR_CHECK_FREQUENCY_DIVISOR 256
 set_global_assignment -name MIN_CORE_JUNCTION_TEMP 0

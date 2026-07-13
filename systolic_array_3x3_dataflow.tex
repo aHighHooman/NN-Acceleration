@@ -20,17 +20,17 @@ This note matches the \textbf{weight-stationary} RTL in:
 \begin{itemize}
     \item \texttt{weightStationaryVariant/systolicArrayWeightStationary.sv}
     \item \texttt{weightStationaryVariant/multiplierBlockWeightStationary.sv}
-    \item \texttt{weightStationaryVariant/weightLoader.sv}
-    \item \texttt{weightStationaryVariant/dataOrchestratorWeightStationary.sv}
+    \item \texttt{weightStationaryVariant/matrixMultiplierWeightStationary.sv}
+    \item \texttt{memory/signedFifo.sv}
 \end{itemize}
 
 The dataflow has two phases:
 \begin{enumerate}
-    \item \textbf{Weight-load phase:} weights are pushed in from the top while \texttt{writeEnable = 1}. Each PE stores one weight in \texttt{weightReg}.
-    \item \textbf{Compute phase:} activations enter from the left while \texttt{writeEnable = 0}. Each PE multiplies the activation by its stored weight, then adds into the vertical partial sum flowing downward.
+    \item \textbf{Weight-load phase:} weights are pushed in from the top while \texttt{loadWeight = 1}. Each PE stores one weight in \texttt{weightReg}.
+    \item \textbf{Compute phase:} activations enter from the left while \texttt{loadWeight = 0}. Each PE multiplies the activation by its stored weight, then adds into the vertical partial sum flowing downward.
 \end{enumerate}
 
-So this is not output-stationary. The stationary quantity is the \textbf{weight}.
+The stationary quantity is the \textbf{weight}.
 
 \section*{2. PE-Level Operation}
 
@@ -203,7 +203,7 @@ The labels inside the PEs are the weights that remain stationary during computat
 
 \section*{7. Timing: Weight Loading}
 
-The weight loader runs first while \texttt{writeEnable = 1}. During this phase:
+The weight-load phase runs first while \texttt{loadWeight = 1}. During this phase:
 \begin{itemize}
     \item top inputs carry weight values,
     \item left inputs are effectively zero,
@@ -224,7 +224,7 @@ once the load phase finishes.
 
 \section*{8. Timing: Compute Phase and Stagger}
 
-After the weights are loaded, \texttt{writeEnable} goes low and the activation stream begins.
+After the weights are loaded, \texttt{loadWeight} goes low and the activation stream begins.
 
 The orchestrator staggers the rows:
 \[
