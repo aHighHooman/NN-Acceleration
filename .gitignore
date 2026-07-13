@@ -12,3 +12,16 @@ Quartus Stuff/db/
 Quartus Stuff/incremental_db/
 Quartus Stuff/output_files/
 Quartus Stuff/simulation/
+
+# Quartus generated reports, databases, and programming artifacts
+Quartus Stuff/*.rpt
+Quartus Stuff/*.summary
+Quartus Stuff/*.pin
+Quartus Stuff/*.qdb
+Quartus Stuff/*.qmsg
+Quartus Stuff/*.smsg
+Quartus Stuff/*.jdi
+Quartus Stuff/*.done
+Quartus Stuff/*.sof
+Quartus Stuff/*.pof
+Quartus Stuff/*.jic
