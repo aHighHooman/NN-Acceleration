@@ -1,8 +1,13 @@
 `timescale 1ns / 1ps
 
-module matrixMultiplierWeightStationary_tb;
-    localparam int WIDTH = 16;
-    localparam int N = 3;
+// Runs the same functional, bubble, backpressure, and signed-data checks for
+// each supported square-array size.
+module matrixMultiplierWeightStationary_testcase #(
+    parameter int WIDTH = 16,
+    parameter int N = 3
+) (
+    output logic done
+);
     localparam int CLK_PERIOD = 10;
 
     typedef logic signed [WIDTH-1:0] data_t;
@@ -34,13 +39,7 @@ module matrixMultiplierWeightStationary_tb;
     initial begin
         matrix_t identity, a_basic, a_arbitrary, b_arbitrary, a_signed, b_signed;
 
-        identity = '{'{1,0,0}, '{0,1,0}, '{0,0,1}};
-        a_basic = '{'{1,2,3}, '{4,5,6}, '{7,8,9}};
-        a_arbitrary = '{'{1,2,3}, '{0,1,4}, '{5,6,0}};
-        b_arbitrary = '{'{7,8,9}, '{2,3,4}, '{1,0,6}};
-        a_signed = '{'{-2,3,1}, '{4,-1,2}, '{0,5,-3}};
-        b_signed = '{'{1,-2,4}, '{-3,0,2}, '{5,1,-1}};
-
+        build_test_matrices(identity, a_basic, a_arbitrary, b_arbitrary, a_signed, b_signed);
         initialize_signals();
         apply_reset();
 
@@ -71,11 +70,27 @@ module matrixMultiplierWeightStationary_tb;
             receive_and_check("signed A x signed B", a_signed, b_signed, 1'b1);
         join
 
-        $display("\nPASS: all continuous FIFO weight-stationary tests completed.");
-        $finish;
+        $display("\nPASS: all %0dx%0d weight-stationary tests completed.", N, N);
+        done = 1'b1;
     end
 
+    task build_test_matrices(
+        output matrix_t identity, output matrix_t a_basic, output matrix_t a_arbitrary,
+        output matrix_t b_arbitrary, output matrix_t a_signed, output matrix_t b_signed
+    );
+        for (int row = 0; row < N; row++)
+            for (int col = 0; col < N; col++) begin
+                identity[row][col]    = (row == col) ? 1 : 0;
+                a_basic[row][col]     = row * N + col + 1;
+                a_arbitrary[row][col] = (row * 3 + col * 2 + 1) % 7 - 3;
+                b_arbitrary[row][col] = (row * 2 + col * 3 + 2) % 9 - 4;
+                a_signed[row][col]    = (row * 5 + col * 3 + 2) % 11 - 5;
+                b_signed[row][col]    = (row * 4 + col * 5 + 1) % 13 - 6;
+            end
+    endtask
+
     task initialize_signals();
+        done = 1'b0;
         rst_n = 1'b0;
         weightValid = 1'b0;
         activationValid = 1'b0;
@@ -93,10 +108,8 @@ module matrixMultiplierWeightStationary_tb;
     endtask
 
     task send_weights(input string label, input matrix_t matrixB, input bit add_bubbles);
-        $display("\n=== Loading %s ===", label);
+        $display("\n=== %0dx%0d: Loading %s ===", N, N, label);
         display_input_matrix("Matrix B", matrixB);
-
-        // Bottom-to-top is the physical loading order of the stationary array.
         for (int row = N-1; row >= 0; row--) begin
             if (add_bubbles && row == N-2) begin
                 @(negedge clk) weightValid = 1'b0;
@@ -110,11 +123,10 @@ module matrixMultiplierWeightStationary_tb;
         end
         @(negedge clk) weightValid = 1'b0;
         wait(weightsLoaded);
-        $display("Weights are stationary in the PE array.");
     endtask
 
     task send_activations(input string label, input matrix_t matrixA, input bit add_bubbles);
-        $display("\nSending %s:", label);
+        $display("\n%0dx%0d: Sending %s", N, N, label);
         display_input_matrix("Matrix A", matrixA);
         for (int row = 0; row < N; row++) begin
             if (add_bubbles && row == 1) begin
@@ -130,15 +142,10 @@ module matrixMultiplierWeightStationary_tb;
         @(negedge clk) activationValid = 1'b0;
     endtask
 
-    task receive_and_check(
-        input string label,
-        input matrix_t matrixA,
-        input matrix_t matrixB,
-        input bit add_backpressure
-    );
+    task receive_and_check(input string label, input matrix_t matrixA, input matrix_t matrixB,
+                           input bit add_backpressure);
         result_matrix_t actual, expected;
         int errors;
-
         errors = 0;
         multiply_reference(matrixA, matrixB, expected);
         for (int row = 0; row < N; row++) begin
@@ -151,7 +158,7 @@ module matrixMultiplierWeightStationary_tb;
                 if (resultValid && resultReady) begin
                     for (int col = 0; col < N; col++) actual[row][col] = resultData[col];
                     if (resultLast !== (row == N-1)) begin
-                        $error("%s resultLast mismatch on row %0d", label, row);
+                        $error("%0dx%0d %s resultLast mismatch on row %0d", N, N, label, row);
                         errors++;
                     end
                     accepted = 1'b1;
@@ -159,19 +166,17 @@ module matrixMultiplierWeightStationary_tb;
             end
         end
         @(negedge clk) resultReady = 1'b0;
-
         display_result_matrix("Expected A x B", expected);
         display_result_matrix("Received A x B", actual);
         for (int row = 0; row < N; row++)
             for (int col = 0; col < N; col++)
                 if (actual[row][col] !== expected[row][col]) begin
-                    $error("%s mismatch [%0d][%0d]: got %0d expected %0d",
-                           label, row, col, actual[row][col], expected[row][col]);
+                    $error("%0dx%0d %s mismatch [%0d][%0d]: got %0d expected %0d",
+                           N, N, label, row, col, actual[row][col], expected[row][col]);
                     errors++;
                 end
-
-        if (errors) $fatal(1, "FAIL: %s had %0d errors", label, errors);
-        $display("PASS: %s", label);
+        if (errors) $fatal(1, "FAIL: %0dx%0d %s had %0d errors", N, N, label, errors);
+        $display("PASS: %0dx%0d %s", N, N, label);
     endtask
 
     task request_weight_reload();
@@ -217,9 +222,8 @@ module matrixMultiplierWeightStationary_tb;
     result_t heldResult[N];
     logic heldLast, holdingResult;
     always_ff @(posedge clk) begin
-        if (!rst_n) begin
-            holdingResult <= 1'b0;
-        end else if (resultValid && !resultReady) begin
+        if (!rst_n) holdingResult <= 1'b0;
+        else if (resultValid && !resultReady) begin
             if (holdingResult) begin
                 for (int i = 0; i < N; i++)
                     assert(resultData[i] == heldResult[i]) else $error("Output changed under backpressure");
@@ -228,9 +232,20 @@ module matrixMultiplierWeightStationary_tb;
             for (int i = 0; i < N; i++) heldResult[i] <= resultData[i];
             heldLast <= resultLast;
             holdingResult <= 1'b1;
-        end else begin
-            holdingResult <= 1'b0;
-        end
+        end else holdingResult <= 1'b0;
     end
+endmodule
 
+// Keep the original top-level name, but run all three array dimensions.
+module matrixMultiplierWeightStationary_tb;
+    logic done2, done3, done4;
+    matrixMultiplierWeightStationary_testcase #(.N(2)) test_2x2 (.done(done2));
+    matrixMultiplierWeightStationary_testcase #(.N(3)) test_3x3 (.done(done3));
+    matrixMultiplierWeightStationary_testcase #(.N(4)) test_4x4 (.done(done4));
+
+    initial begin
+        wait(done2 && done3 && done4);
+        $display("\nPASS: 2x2, 3x3, and 4x4 test suites completed.");
+        $finish;
+    end
 endmodule
