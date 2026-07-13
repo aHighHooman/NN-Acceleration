@@ -1,0 +1,14 @@
+# ModelSim generated libraries, logs, and waveforms
+work/
+ModelSim Stuff/work/
+ModelSim Stuff/*.cr.mti
+ModelSim Stuff/*.vcd
+ModelSim Stuff/transcript
+ModelSim Stuff/vsim.wlf
+transcript
+
+# Quartus generated databases and build products
+Quartus Stuff/db/
+Quartus Stuff/incremental_db/
+Quartus Stuff/output_files/
+Quartus Stuff/simulation/
