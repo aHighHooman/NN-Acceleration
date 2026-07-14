@@ -45,6 +45,8 @@ set_global_assignment -name PROJECT_CREATION_TIME_DATE "22:57:18  NOVEMBER 08, 2
 set_global_assignment -name LAST_QUARTUS_VERSION "19.1.0 Lite Edition"
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/multiplierBlockWeightStationary.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/systolicArrayWeightStationary.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/reluActivation.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/activationLayer.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/matrixMultiplierWeightStationary.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../memory/memory.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../memory/signedFifo.sv

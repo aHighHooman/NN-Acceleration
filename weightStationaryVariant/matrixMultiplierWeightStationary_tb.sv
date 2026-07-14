@@ -20,6 +20,7 @@ module matrixMultiplierWeightStationary_testcase #(
     logic weightValid, weightReady, activationValid, activationReady;
     result_t resultData[N];
     logic resultValid, resultReady, resultLast;
+    logic passThrough;
     logic weightsLoaded, reloadWeights, reloadReady;
 
     matrixMultiplierWeightStationary #(.WIDTH(WIDTH), .N(N)) dut (
@@ -27,7 +28,8 @@ module matrixMultiplierWeightStationary_testcase #(
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
         .activationData(activationData), .activationValid(activationValid),
         .activationReady(activationReady), .resultData(resultData),
-        .resultValid(resultValid), .resultReady(resultReady), .resultLast(resultLast),
+        .resultValid(resultValid), .resultReady(resultReady), .passThrough(passThrough),
+        .resultLast(resultLast),
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights), .reloadReady(reloadReady)
     );
 
@@ -37,9 +39,12 @@ module matrixMultiplierWeightStationary_testcase #(
     end
 
     initial begin
-        matrix_t identity, a_basic, a_arbitrary, b_arbitrary, a_signed, b_signed;
+        matrix_t identity, a_basic, a_arbitrary, b_arbitrary;
+        matrix_t a_signed, b_signed, a_signed_edge, a_signed_mixed, b_signed_mixed;
 
-        build_test_matrices(identity, a_basic, a_arbitrary, b_arbitrary, a_signed, b_signed);
+        build_test_matrices(identity, a_basic, a_arbitrary, b_arbitrary,
+                            a_signed, b_signed, a_signed_edge,
+                            a_signed_mixed, b_signed_mixed);
         initialize_signals();
         apply_reset();
 
@@ -51,8 +56,8 @@ module matrixMultiplierWeightStationary_testcase #(
                 send_activations("back-to-back arbitrary A", a_arbitrary, 1'b0);
             end
             begin
-                receive_and_check("basic A x identity", a_basic, identity, 1'b1);
-                receive_and_check("arbitrary A x identity", a_arbitrary, identity, 1'b1);
+                receive_and_check("basic A x identity", a_basic, identity, 1'b1, 1'b1);
+                receive_and_check("arbitrary A x identity", a_arbitrary, identity, 1'b1, 1'b1);
             end
         join
 
@@ -60,14 +65,44 @@ module matrixMultiplierWeightStationary_testcase #(
         send_weights("arbitrary weights with input bubbles", b_arbitrary, 1'b1);
         fork
             send_activations("basic A with input bubbles", a_basic, 1'b1);
-            receive_and_check("basic A x arbitrary B", a_basic, b_arbitrary, 1'b1);
+            receive_and_check("basic A x arbitrary B", a_basic, b_arbitrary, 1'b1, 1'b1);
         join
 
         request_weight_reload();
         send_weights("signed weights", b_signed, 1'b0);
         fork
             send_activations("signed A", a_signed, 1'b0);
-            receive_and_check("signed A x signed B", a_signed, b_signed, 1'b1);
+            receive_and_check("signed A x signed B pass-through", a_signed, b_signed, 1'b1, 1'b1);
+        join
+
+        set_pass_through(1'b0);
+        fork
+            send_activations("signed A for ReLU", a_signed, 1'b0);
+            receive_and_check("signed A x signed B ReLU", a_signed, b_signed, 1'b1, 1'b0);
+        join
+
+        request_weight_reload();
+        send_weights("signed identity weights", identity, 1'b0);
+        fork
+            send_activations("signed edge-value A", a_signed_edge, 1'b0);
+            receive_and_check("signed edge-value A x identity ReLU",
+                              a_signed_edge, identity, 1'b0, 1'b0);
+        join
+
+        set_pass_through(1'b1);
+        request_weight_reload();
+        send_weights("additional signed weights", b_signed_mixed, 1'b0);
+        fork
+            send_activations("additional signed A pass-through", a_signed_mixed, 1'b0);
+            receive_and_check("additional signed A x B pass-through",
+                              a_signed_mixed, b_signed_mixed, 1'b0, 1'b1);
+        join
+
+        set_pass_through(1'b0);
+        fork
+            send_activations("additional signed A ReLU", a_signed_mixed, 1'b0);
+            receive_and_check("additional signed A x B ReLU",
+                              a_signed_mixed, b_signed_mixed, 1'b0, 1'b0);
         join
 
         $display("\nPASS: all %0dx%0d weight-stationary tests completed.", N, N);
@@ -76,7 +111,9 @@ module matrixMultiplierWeightStationary_testcase #(
 
     task build_test_matrices(
         output matrix_t identity, output matrix_t a_basic, output matrix_t a_arbitrary,
-        output matrix_t b_arbitrary, output matrix_t a_signed, output matrix_t b_signed
+        output matrix_t b_arbitrary, output matrix_t a_signed, output matrix_t b_signed,
+        output matrix_t a_signed_edge, output matrix_t a_signed_mixed,
+        output matrix_t b_signed_mixed
     );
         for (int row = 0; row < N; row++)
             for (int col = 0; col < N; col++) begin
@@ -86,6 +123,9 @@ module matrixMultiplierWeightStationary_testcase #(
                 b_arbitrary[row][col] = (row * 2 + col * 3 + 2) % 9 - 4;
                 a_signed[row][col]    = (row * 5 + col * 3 + 2) % 11 - 5;
                 b_signed[row][col]    = (row * 4 + col * 5 + 1) % 13 - 6;
+                a_signed_edge[row][col] = (row * 3 + col * 2 + 1) % 7 - 3;
+                a_signed_mixed[row][col] = (row * 7 + col * 5 + 2) % 17 - 8;
+                b_signed_mixed[row][col] = (row * 11 + col * 3 + 1) % 15 - 7;
             end
     endtask
 
@@ -95,6 +135,7 @@ module matrixMultiplierWeightStationary_testcase #(
         weightValid = 1'b0;
         activationValid = 1'b0;
         resultReady = 1'b0;
+        passThrough = 1'b1;
         reloadWeights = 1'b0;
         for (int i = 0; i < N; i++) begin
             weightData[i] = '0;
@@ -143,11 +184,15 @@ module matrixMultiplierWeightStationary_testcase #(
     endtask
 
     task receive_and_check(input string label, input matrix_t matrixA, input matrix_t matrixB,
-                           input bit add_backpressure);
+                           input bit add_backpressure, input bit expected_pass_through);
         result_matrix_t actual, expected;
         int errors;
         errors = 0;
         multiply_reference(matrixA, matrixB, expected);
+        if (!expected_pass_through)
+            for (int row = 0; row < N; row++)
+                for (int col = 0; col < N; col++)
+                    if (expected[row][col][2*WIDTH-1]) expected[row][col] = '0;
         for (int row = 0; row < N; row++) begin
             bit accepted;
             accepted = 1'b0;
@@ -185,6 +230,11 @@ module matrixMultiplierWeightStationary_testcase #(
         @(posedge clk);
         @(negedge clk) reloadWeights = 1'b0;
         wait(!weightsLoaded);
+    endtask
+
+    task set_pass_through(input bit enabled);
+        @(negedge clk) passThrough = enabled;
+        $display("%0dx%0d: passThrough=%0b", N, N, enabled);
     endtask
 
     task multiply_reference(input matrix_t a, input matrix_t b, output result_matrix_t c);
