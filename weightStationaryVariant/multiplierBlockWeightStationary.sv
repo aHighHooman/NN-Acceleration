@@ -1,5 +1,6 @@
 module multiplierBlockWeightStationary #(
-    parameter int WIDTH = 16
+    parameter int WIDTH = 16,
+    parameter int RESULT_WIDTH = 2*WIDTH
 )(
     input  logic                        clk,
     input  logic                        rst_n,
@@ -7,15 +8,20 @@ module multiplierBlockWeightStationary #(
     input  logic                        loadWeight,
     input  logic signed [WIDTH-1:0]     leftIn,
     input  logic                        leftValid,
-    input  logic signed [2*WIDTH-1:0]   topIn,
+    input  logic signed [RESULT_WIDTH-1:0] topIn,
     input  logic                        topValid,
     output logic signed [WIDTH-1:0]     rightOut,
     output logic                        rightValid,
-    output logic signed [2*WIDTH-1:0]   bottomOut,
+    output logic signed [RESULT_WIDTH-1:0] bottomOut,
     output logic                        bottomValid
 );
 
     logic signed [WIDTH-1:0] weightReg;
+    logic signed [2*WIDTH-1:0] product;
+    logic signed [RESULT_WIDTH-1:0] extendedProduct;
+
+    assign product = leftIn * weightReg;
+    assign extendedProduct = {{(RESULT_WIDTH-2*WIDTH){product[2*WIDTH-1]}}, product};
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
@@ -33,7 +39,7 @@ module multiplierBlockWeightStationary #(
                 bottomOut   <= topIn;
                 bottomValid <= 1'b0;
             end else begin
-                bottomOut   <= topIn + leftIn * weightReg;
+                bottomOut   <= topIn + extendedProduct;
                 bottomValid <= topValid && leftValid;
             end
         end

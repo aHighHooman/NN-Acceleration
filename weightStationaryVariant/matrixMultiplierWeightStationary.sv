@@ -12,7 +12,7 @@ module matrixMultiplierWeightStationary #(
     input  logic signed [WIDTH-1:0]      activationData [N],
     input  logic                         activationValid,
     output logic                         activationReady,
-    output logic signed [2*WIDTH-1:0]    resultData [N],
+    output logic signed [2*WIDTH+$clog2(N)-1:0] resultData [N],
     output logic                         resultValid,
     input  logic                         resultReady,
     input  logic                         passThrough,
@@ -25,6 +25,7 @@ module matrixMultiplierWeightStationary #(
     localparam int WEIGHT_COUNT_WIDTH = (N <= 1) ? 1 : $clog2(N+1);
     localparam int ACT_ROW_WIDTH = (N <= 1) ? 1 : $clog2(N);
     localparam int RESULT_ROW_WIDTH = (N <= 1) ? 1 : $clog2(N);
+    localparam int RESULT_WIDTH = 2*WIDTH + $clog2(N);
 
     logic weightPush, weightPop, allWeightValid, allWeightReady;
     logic activationPush, activationPop, allActivationValid, allActivationReady;
@@ -37,15 +38,15 @@ module matrixMultiplierWeightStationary #(
     logic weightFull[N], weightEmpty[N];
     logic signed [WIDTH-1:0] activationData_FifoToOrch[N];
     logic activationFull[N], activationEmpty[N];
-    logic signed [2*WIDTH-1:0] resultData_FifoToOutput[N];
+    logic signed [RESULT_WIDTH-1:0] resultData_FifoToOutput[N];
     logic outputFull[N], outputEmpty[N];
 
     logic signed [WIDTH-1:0] skewData[N][N];
     logic skewValid[N][N];
     logic signed [WIDTH-1:0] rowData_OrchToSyst[N];
     logic validData_OrchToSyst[N];
-    logic signed [2*WIDTH-1:0] resultData_SystToFifo[N];
-    logic signed [2*WIDTH-1:0] activatedResultData[N];
+    logic signed [RESULT_WIDTH-1:0] resultData_SystToFifo[N];
+    logic signed [RESULT_WIDTH-1:0] activatedResultData[N];
     logic validData_SystToFifo[N];
     logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked;
 
@@ -104,7 +105,7 @@ module matrixMultiplierWeightStationary #(
                 .pop(activationPop), .popData(activationData_FifoToOrch[fifoIndex]), .full(activationFull[fifoIndex]),
                 .empty(activationEmpty[fifoIndex]), .count()
             );
-            signedFifo #(.WIDTH(2*WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)) outputFifo (
+            signedFifo #(.WIDTH(RESULT_WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)) outputFifo (
                 .clk(clk), .rst_n(rst_n),
                 .push(arrayAdvance && validData_SystToFifo[fifoIndex]), .pushData(activatedResultData[fifoIndex]),
                 .pop(outputPop), .popData(resultData_FifoToOutput[fifoIndex]), .full(outputFull[fifoIndex]),
@@ -179,7 +180,7 @@ module matrixMultiplierWeightStationary #(
         .pipelineBusy(pipelineBusy)
     );
 
-    activationLayer #(.WIDTH(2*WIDTH), .N(N)) resultActivation (
+    activationLayer #(.WIDTH(RESULT_WIDTH), .N(N)) resultActivation (
         .inputData(resultData_SystToFifo), .passThrough(passThrough),
         .outputData(activatedResultData)
     );

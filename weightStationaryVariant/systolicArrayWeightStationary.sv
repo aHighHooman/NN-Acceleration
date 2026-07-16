@@ -9,15 +9,17 @@ module systolicArrayWeightStationary #(
     input  logic signed [WIDTH-1:0]     row [N],
     input  logic                        rowValid [N],
     input  logic signed [WIDTH-1:0]     col [N],
-    output logic signed [2*WIDTH-1:0]   result [N],
+    output logic signed [2*WIDTH+$clog2(N)-1:0] result [N],
     output logic                        resultValid [N],
     output logic                        pipelineBusy
 );
 
-    logic signed [WIDTH-1:0]   horizontalData [N][N+1];
-    logic                      horizontalValid[N][N+1];
-    logic signed [2*WIDTH-1:0] verticalData   [N+1][N];
-    logic                      verticalValid  [N+1][N];
+    localparam int RESULT_WIDTH = 2*WIDTH + $clog2(N);
+
+    logic signed [WIDTH-1:0]        horizontalData [N][N+1];
+    logic                           horizontalValid[N][N+1];
+    logic signed [RESULT_WIDTH-1:0] verticalData   [N+1][N];
+    logic                           verticalValid  [N+1][N];
 
     genvar i, j;
     generate
@@ -26,13 +28,14 @@ module systolicArrayWeightStationary #(
             assign horizontalValid[i][0] = rowValid[i];
         end
         for (j = 0; j < N; j++) begin : boundary_cols
-            assign verticalData[0][j]  = loadWeight ? {{WIDTH{col[j][WIDTH-1]}}, col[j]} : '0;
+            assign verticalData[0][j]  = loadWeight ?
+                {{(RESULT_WIDTH-WIDTH){col[j][WIDTH-1]}}, col[j]} : '0;
             assign verticalValid[0][j] = loadWeight ? 1'b0 : 1'b1;
         end
 
         for (i = 0; i < N; i++) begin : row_loop
             for (j = 0; j < N; j++) begin : col_loop
-                multiplierBlockWeightStationary #(.WIDTH(WIDTH)) mb (
+                multiplierBlockWeightStationary #(.WIDTH(WIDTH), .RESULT_WIDTH(RESULT_WIDTH)) mb (
                     .clk(clk), .rst_n(rst_n), .advance(advance), .loadWeight(loadWeight),
                     .leftIn(horizontalData[i][j]), .leftValid(horizontalValid[i][j]),
                     .topIn(verticalData[i][j]), .topValid(verticalValid[i][j]),

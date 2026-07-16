@@ -9,9 +9,10 @@ module matrixMultiplierWeightStationary_testcase #(
     output logic done
 );
     localparam int CLK_PERIOD = 10;
+    localparam int RESULT_WIDTH = 2*WIDTH + $clog2(N);
 
     typedef logic signed [WIDTH-1:0] data_t;
-    typedef logic signed [2*WIDTH-1:0] result_t;
+    typedef logic signed [RESULT_WIDTH-1:0] result_t;
     typedef data_t matrix_t[N][N];
     typedef result_t result_matrix_t[N][N];
 
@@ -41,10 +42,14 @@ module matrixMultiplierWeightStationary_testcase #(
     initial begin
         matrix_t identity, a_basic, a_arbitrary, b_arbitrary;
         matrix_t a_signed, b_signed, a_signed_edge, a_signed_mixed, b_signed_mixed;
+        matrix_t a_positive_overflow, b_positive_overflow;
+        matrix_t a_negative_overflow, b_negative_overflow;
 
         build_test_matrices(identity, a_basic, a_arbitrary, b_arbitrary,
                             a_signed, b_signed, a_signed_edge,
                             a_signed_mixed, b_signed_mixed);
+        build_overflow_matrices(a_positive_overflow, b_positive_overflow,
+                                a_negative_overflow, b_negative_overflow);
         initialize_signals();
         apply_reset();
 
@@ -105,6 +110,23 @@ module matrixMultiplierWeightStationary_testcase #(
                               a_signed_mixed, b_signed_mixed, 1'b0, 1'b0);
         join
 
+        set_pass_through(1'b1);
+        request_weight_reload();
+        send_weights("positive-overflow weights", b_positive_overflow, 1'b0);
+        fork
+            send_activations("positive-overflow activations", a_positive_overflow, 1'b0);
+            receive_and_check("full-width positive accumulation",
+                              a_positive_overflow, b_positive_overflow, 1'b0, 1'b1);
+        join
+
+        request_weight_reload();
+        send_weights("negative-overflow weights", b_negative_overflow, 1'b0);
+        fork
+            send_activations("negative-overflow activations", a_negative_overflow, 1'b0);
+            receive_and_check("full-width negative accumulation",
+                              a_negative_overflow, b_negative_overflow, 1'b0, 1'b1);
+        join
+
         $display("\nPASS: all %0dx%0d weight-stationary tests completed.", N, N);
         done = 1'b1;
     end
@@ -126,6 +148,22 @@ module matrixMultiplierWeightStationary_testcase #(
                 a_signed_edge[row][col] = (row * 3 + col * 2 + 1) % 7 - 3;
                 a_signed_mixed[row][col] = (row * 7 + col * 5 + 2) % 17 - 8;
                 b_signed_mixed[row][col] = (row * 11 + col * 3 + 1) % 15 - 7;
+            end
+    endtask
+
+    task build_overflow_matrices(
+        output matrix_t a_positive, output matrix_t b_positive,
+        output matrix_t a_negative, output matrix_t b_negative
+    );
+        data_t minData, maxData;
+        minData = {1'b1, {(WIDTH-1){1'b0}}};
+        maxData = {1'b0, {(WIDTH-1){1'b1}}};
+        for (int row = 0; row < N; row++)
+            for (int col = 0; col < N; col++) begin
+                a_positive[row][col] = minData;
+                b_positive[row][col] = minData;
+                a_negative[row][col] = minData;
+                b_negative[row][col] = maxData;
             end
     endtask
 
@@ -192,7 +230,7 @@ module matrixMultiplierWeightStationary_testcase #(
         if (!expected_pass_through)
             for (int row = 0; row < N; row++)
                 for (int col = 0; col < N; col++)
-                    if (expected[row][col][2*WIDTH-1]) expected[row][col] = '0;
+                    if (expected[row][col][RESULT_WIDTH-1]) expected[row][col] = '0;
         for (int row = 0; row < N; row++) begin
             bit accepted;
             accepted = 1'b0;
@@ -238,10 +276,14 @@ module matrixMultiplierWeightStationary_testcase #(
     endtask
 
     task multiply_reference(input matrix_t a, input matrix_t b, output result_matrix_t c);
+        result_t product;
         for (int row = 0; row < N; row++)
             for (int col = 0; col < N; col++) begin
                 c[row][col] = '0;
-                for (int k = 0; k < N; k++) c[row][col] += a[row][k] * b[k][col];
+                for (int k = 0; k < N; k++) begin
+                    product = a[row][k] * b[k][col];
+                    c[row][col] = c[row][col] + product;
+                end
             end
     endtask
 
