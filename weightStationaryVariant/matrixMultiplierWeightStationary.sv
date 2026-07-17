@@ -17,6 +17,7 @@ module matrixMultiplierWeightStationary #(
     input  logic                         resultReady,
     input  logic                         passThrough,
     output logic                         resultLast,
+    output logic                         resultFrameAvailable,
     output logic                         weightsLoaded,
     input  logic                         reloadWeights,
     output logic                         reloadReady
@@ -40,6 +41,7 @@ module matrixMultiplierWeightStationary #(
     logic activationFull[N], activationEmpty[N];
     logic signed [RESULT_WIDTH-1:0] resultData_FifoToOutput[N];
     logic outputFull[N], outputEmpty[N];
+    logic [$clog2(OUTPUT_FIFO_DEPTH+1)-1:0] outputCount[N];
 
     logic signed [WIDTH-1:0] skewData[N][N];
     logic skewValid[N][N];
@@ -48,7 +50,7 @@ module matrixMultiplierWeightStationary #(
     logic signed [RESULT_WIDTH-1:0] resultData_SystToFifo[N];
     logic signed [RESULT_WIDTH-1:0] activatedResultData[N];
     logic validData_SystToFifo[N];
-    logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked;
+    logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked, allOutputFrameAvailable;
 
     always_comb begin
         allWeightValid = 1'b1;
@@ -59,6 +61,7 @@ module matrixMultiplierWeightStationary #(
         allOutputReady = 1'b1;
         allOutputEmpty = 1'b1;
         allActivationEmpty = 1'b1;
+        allOutputFrameAvailable = 1'b1;
         skewBusy = 1'b0;
         outputBlocked = 1'b0;
 
@@ -71,6 +74,7 @@ module matrixMultiplierWeightStationary #(
             allOutputValid &= !outputEmpty[i];
             allOutputEmpty &= outputEmpty[i];
             allOutputReady &= !outputFull[i] || outputPop;
+            allOutputFrameAvailable &= (outputCount[i] >= N);
             outputBlocked |= validData_SystToFifo[i] && outputFull[i] && !outputPop;
             for (int d = 0; d < N; d++) skewBusy |= skewValid[i][d];
         end
@@ -83,6 +87,7 @@ module matrixMultiplierWeightStationary #(
     assign outputPop        = resultValid && resultReady;
     assign resultValid      = allOutputValid;
     assign resultLast       = resultValid && (transmittedResultRow == N-1);
+    assign resultFrameAvailable = allOutputFrameAvailable;
     assign arrayAdvance     = !weightsLoaded ? weightPop : !outputBlocked;
     assign activationPop    = weightsLoaded && allActivationValid && arrayAdvance;
     assign weightPop        = !weightsLoaded && allWeightValid;
@@ -109,7 +114,7 @@ module matrixMultiplierWeightStationary #(
                 .clk(clk), .rst_n(rst_n),
                 .push(arrayAdvance && validData_SystToFifo[fifoIndex]), .pushData(activatedResultData[fifoIndex]),
                 .pop(outputPop), .popData(resultData_FifoToOutput[fifoIndex]), .full(outputFull[fifoIndex]),
-                .empty(outputEmpty[fifoIndex]), .count()
+                .empty(outputEmpty[fifoIndex]), .count(outputCount[fifoIndex])
             );
         end
     endgenerate
@@ -184,5 +189,11 @@ module matrixMultiplierWeightStationary #(
         .inputData(resultData_SystToFifo), .passThrough(passThrough),
         .outputData(activatedResultData)
     );
+
+    generate
+        if (OUTPUT_FIFO_DEPTH < N) begin : invalid_output_fifo_depth
+            initial $fatal(1, "OUTPUT_FIFO_DEPTH must be at least N for complete-frame output");
+        end
+    endgenerate
 
 endmodule

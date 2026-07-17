@@ -20,7 +20,7 @@ module matrixMultiplierWeightStationary_testcase #(
     data_t weightData[N], activationData[N];
     logic weightValid, weightReady, activationValid, activationReady;
     result_t resultData[N];
-    logic resultValid, resultReady, resultLast;
+    logic resultValid, resultReady, resultLast, resultFrameAvailable;
     logic passThrough;
     logic weightsLoaded, reloadWeights, reloadReady;
 
@@ -30,7 +30,7 @@ module matrixMultiplierWeightStationary_testcase #(
         .activationData(activationData), .activationValid(activationValid),
         .activationReady(activationReady), .resultData(resultData),
         .resultValid(resultValid), .resultReady(resultReady), .passThrough(passThrough),
-        .resultLast(resultLast),
+        .resultLast(resultLast), .resultFrameAvailable(resultFrameAvailable),
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights), .reloadReady(reloadReady)
     );
 
