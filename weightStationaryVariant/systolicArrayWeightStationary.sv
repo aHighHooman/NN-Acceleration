@@ -30,7 +30,7 @@ module systolicArrayWeightStationary #(
         for (j = 0; j < N; j++) begin : boundary_cols
             assign verticalData[0][j]  = loadWeight ?
                 {{(RESULT_WIDTH-WIDTH){col[j][WIDTH-1]}}, col[j]} : '0;
-            assign verticalValid[0][j] = loadWeight ? 1'b0 : 1'b1;
+            assign verticalValid[0][j] = !loadWeight;
         end
 
         for (i = 0; i < N; i++) begin : row_loop

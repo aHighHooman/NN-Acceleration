@@ -20,7 +20,7 @@ module memory #(
 
     generate
         if (ASYNC_READ) begin : asynchronous_read
-            always_comb outputData = mem[readAddr];
+            assign outputData = mem[readAddr];
         end else begin : synchronous_read
             always_ff @(posedge clk) outputData <= mem[readAddr];
         end

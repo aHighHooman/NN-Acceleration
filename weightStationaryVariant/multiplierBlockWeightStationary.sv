@@ -32,7 +32,7 @@ module multiplierBlockWeightStationary #(
             bottomValid <= 1'b0;
         end else if (advance) begin
             rightOut   <= leftIn;
-            rightValid <= loadWeight ? 1'b0 : leftValid;
+            rightValid <= !loadWeight && leftValid;
 
             if (loadWeight) begin
                 weightReg   <= topIn[WIDTH-1:0];
