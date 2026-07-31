@@ -22,10 +22,10 @@ module matrixMultiplierWeightStationary #(
     output logic                         reloadReady
 );
 
-    localparam int WEIGHT_COUNT_WIDTH = (N <= 1) ? 1 : $clog2(N+1);
-    localparam int ACT_ROW_WIDTH = (N <= 1) ? 1 : $clog2(N);
-    localparam int RESULT_ROW_WIDTH = (N <= 1) ? 1 : $clog2(N);
-    localparam int RESULT_WIDTH = 2*WIDTH + $clog2(N);
+    localparam int WEIGHT_COUNT_WIDTH   = $clog2(N+1);
+    localparam int ACT_ROW_WIDTH        = $clog2(N);
+    localparam int RESULT_ROW_WIDTH     = $clog2(N);
+    localparam int RESULT_WIDTH         = $clog2(N) + 2*WIDTH;
 
     logic weightPush, weightPop, allWeightValid, allWeightReady;
     logic activationPush, activationPop, allActivationValid, allActivationReady;
@@ -51,26 +51,29 @@ module matrixMultiplierWeightStationary #(
     logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked;
 
     always_comb begin
-        allWeightValid = 1'b1;
-        allWeightReady = 1'b1;
-        allActivationValid = 1'b1;
-        allActivationReady = 1'b1;
-        allOutputValid = 1'b1;
-        allOutputEmpty = 1'b1;
-        allActivationEmpty = 1'b1;
-        skewBusy = 1'b0;
-        outputBlocked = 1'b0;
+        allWeightValid      = 1;
+        allWeightReady      = 1;
+        allActivationValid  = 1;
+        allActivationReady  = 1;
+        allOutputValid      = 1;
+        allOutputEmpty      = 1;
+        allActivationEmpty  = 1;
+        skewBusy            = 0;
+        outputBlocked       = 0;
 
         for (int i = 0; i < N; i++) begin
-            allWeightValid &= !weightEmpty[i];
-            allWeightReady &= !weightFull[i];
-            allActivationValid &= !activationEmpty[i];
-            allActivationReady &= !activationFull[i];
-            allActivationEmpty &= activationEmpty[i];
-            allOutputValid &= !outputEmpty[i];
-            allOutputEmpty &= outputEmpty[i];
-            outputBlocked |= validData_SystToFifo[i] && outputFull[i] && !outputPop;
-            for (int d = 0; d < N; d++) skewBusy |= skewValid[i][d];
+            allWeightValid      &= !weightEmpty[i];
+            allWeightReady      &= !weightFull[i];
+            allActivationValid  &= !activationEmpty[i];
+            allActivationReady  &= !activationFull[i];
+            allActivationEmpty  &= activationEmpty[i];
+            allOutputValid      &= !outputEmpty[i];
+            allOutputEmpty      &= outputEmpty[i];
+            outputBlocked       |= validData_SystToFifo[i] && outputFull[i] && !outputPop;
+
+            for (int d = 0; d < N; d++) begin
+                skewBusy |= skewValid[i][d];
+            end
         end
     end
 
@@ -96,18 +99,18 @@ module matrixMultiplierWeightStationary #(
             signedFifo #(.WIDTH(WIDTH), .DEPTH(N)) weightFifo (
                 .clk(clk), .rst_n(rst_n), .push(weightPush), .pushData(weightData[fifoIndex]),
                 .pop(weightPop), .popData(weightData_FifoToLoader[fifoIndex]), .full(weightFull[fifoIndex]),
-                .empty(weightEmpty[fifoIndex]), .count()
+                .empty(weightEmpty[fifoIndex]), .values()
             );
             signedFifo #(.WIDTH(WIDTH), .DEPTH(INPUT_FIFO_DEPTH)) activationFifo (
                 .clk(clk), .rst_n(rst_n), .push(activationPush), .pushData(activationData[fifoIndex]),
                 .pop(activationPop), .popData(activationData_FifoToOrch[fifoIndex]), .full(activationFull[fifoIndex]),
-                .empty(activationEmpty[fifoIndex]), .count()
+                .empty(activationEmpty[fifoIndex]), .values()
             );
             signedFifo #(.WIDTH(RESULT_WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)) outputFifo (
                 .clk(clk), .rst_n(rst_n),
                 .push(arrayAdvance && validData_SystToFifo[fifoIndex]), .pushData(activatedResultData[fifoIndex]),
                 .pop(outputPop), .popData(resultData_FifoToOutput[fifoIndex]), .full(outputFull[fifoIndex]),
-                .empty(outputEmpty[fifoIndex]), .count()
+                .empty(outputEmpty[fifoIndex]), .values()
             );
         end
     endgenerate
@@ -122,45 +125,45 @@ module matrixMultiplierWeightStationary #(
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            weightsLoaded        <= 1'b0;
-            loadedWeightRows     <= '0;
-            acceptedActivationRow<= '0;
-            transmittedResultRow <= '0;
+            weightsLoaded        <= 0;
+            loadedWeightRows     <= 0;
+            acceptedActivationRow<= 0;
+            transmittedResultRow <= 0;
+
             for (int lane = 0; lane < N; lane++) begin
                 for (int d = 0; d < N; d++) begin
-                    skewData[lane][d]  <= '0;
-                    skewValid[lane][d] <= 1'b0;
+                    skewData[lane][d]  <= 0;
+                    skewValid[lane][d] <= 0;
                 end
             end
         end else begin
             if (weightPop) begin
                 if (loadedWeightRows == N-1) begin
-                    loadedWeightRows <= '0;
-                    weightsLoaded    <= 1'b1;
+                    loadedWeightRows <= 0;
+                    weightsLoaded    <= 1;
                 end else begin
-                    loadedWeightRows <= loadedWeightRows + 1'b1;
+                    loadedWeightRows <= loadedWeightRows + 1;
                 end
             end
 
             if (activationPush) begin
-                acceptedActivationRow <= (acceptedActivationRow == N-1) ? '0 :
-                                         acceptedActivationRow + 1'b1;
+                acceptedActivationRow <= (acceptedActivationRow == N-1) ? 0 : acceptedActivationRow + 1;
             end
 
             if (outputPop) begin
-                transmittedResultRow <= (transmittedResultRow == N-1) ? '0 :
-                                        transmittedResultRow + 1'b1;
+                transmittedResultRow <= (transmittedResultRow == N-1) ? 0 : transmittedResultRow + 1;
             end
 
             if (reloadWeights && reloadReady) begin
-                weightsLoaded    <= 1'b0;
-                loadedWeightRows <= '0;
+                weightsLoaded    <= 0;
+                loadedWeightRows <= 0;
             end
 
             if (weightsLoaded && arrayAdvance) begin
                 for (int lane = 0; lane < N; lane++) begin
                     skewData[lane][0]  <= activationData_FifoToOrch[lane];
                     skewValid[lane][0] <= activationPop;
+
                     for (int d = 1; d < N; d++) begin
                         skewData[lane][d]  <= skewData[lane][d-1];
                         skewValid[lane][d] <= skewValid[lane][d-1];

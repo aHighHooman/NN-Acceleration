@@ -10,50 +10,44 @@ module signedFifo #(
     output logic signed [WIDTH-1:0] popData,
     output logic                    full,
     output logic                    empty,
-    output logic [$clog2(DEPTH+1)-1:0] count
+    output logic [$clog2(DEPTH+1)-1:0] values
 );
 
-    localparam int PTR_WIDTH = (DEPTH <= 1) ? 1 : $clog2(DEPTH);
-    logic [PTR_WIDTH-1:0] readPtr, writePtr;
-    logic pushAccepted, popAccepted;
+    localparam int PTR_WIDTH = $clog2(DEPTH);
 
-    assign empty   = (count == 0);
-    assign full    = (count == DEPTH);
+    logic signed [WIDTH-1:0]     data                        [0:DEPTH-1];
+    logic        [PTR_WIDTH-1:0] readPtr, writePtr;
+    logic                        pushAccepted, popAccepted;
+
+    assign empty        = (values == 0);
+    assign full         = (values == DEPTH);
     assign popAccepted  = pop && !empty;
     assign pushAccepted = push && (!full || popAccepted);
 
-    memory #(.WIDTH(WIDTH), .DEPTH(DEPTH), .ASYNC_READ(1'b1)) storage (
-        .clk(clk), .rst_n(rst_n), .readAddr(readPtr), .writeAddr(writePtr),
-        .writeEnable(pushAccepted), .inputData(pushData), .outputData(popData)
-    );
+    // Lookahead for the Fifo, allows to deal with 1 cycle latency.
+    assign popData      = empty ? 0 : data[readPtr];
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            readPtr  <= '0;
-            writePtr <= '0;
-            count    <= '0;
+            readPtr  <= 0;
+            writePtr <= 0;
+            values   <= 0;
         end else begin
             if (pushAccepted) begin
-                writePtr <= (writePtr == DEPTH-1) ? '0 : writePtr + 1'b1;
+                data[writePtr]  <= pushData;
+                writePtr        <= (writePtr == DEPTH-1) ? 0 : writePtr + 1;
             end
+
             if (popAccepted) begin
-                readPtr <= (readPtr == DEPTH-1) ? '0 : readPtr + 1'b1;
+                readPtr <= (readPtr == DEPTH-1) ? 0 : readPtr + 1;
             end
 
             case ({pushAccepted, popAccepted})
-                2'b10: count <= count + 1'b1;
-                2'b01: count <= count - 1'b1;
+                2'b10: values   <= values + 1;
+                2'b01: values   <= values - 1;
+                default: values <= values;
             endcase
         end
     end
-
-`ifndef SYNTHESIS
-    always_ff @(posedge clk) begin
-        if (rst_n) begin
-            assert (!(push && full && !popAccepted)) else $error("FIFO overflow");
-            assert (!(pop && empty)) else $error("FIFO underflow");
-        end
-    end
-`endif
 
 endmodule

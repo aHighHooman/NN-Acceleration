@@ -16,28 +16,28 @@ module multiplierBlockWeightStationary #(
     output logic                        bottomValid
 );
 
-    logic signed [WIDTH-1:0] weightReg;
-    logic signed [2*WIDTH-1:0] product;
+    logic signed [WIDTH-1:0]        weightReg;
+    logic signed [2*WIDTH-1:0]      product;
     logic signed [RESULT_WIDTH-1:0] extendedProduct;
 
-    assign product = leftIn * weightReg;
-    assign extendedProduct = {{(RESULT_WIDTH-2*WIDTH){product[2*WIDTH-1]}}, product};
+    assign product          = leftIn * weightReg;
+    assign extendedProduct  = {{ (RESULT_WIDTH-2*WIDTH){product[2*WIDTH-1]} } , product};
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            weightReg   <= '0;
-            rightOut    <= '0;
-            rightValid  <= 1'b0;
-            bottomOut   <= '0;
-            bottomValid <= 1'b0;
+            weightReg   <= 0;
+            rightOut    <= 0;
+            rightValid  <= 0;
+            bottomOut   <= 0;
+            bottomValid <= 0;
         end else if (advance) begin
-            rightOut   <= leftIn;
-            rightValid <= !loadWeight && leftValid;
+            rightOut    <= leftIn;
+            rightValid  <= !loadWeight && leftValid;
 
             if (loadWeight) begin
                 weightReg   <= topIn[WIDTH-1:0];
                 bottomOut   <= topIn;
-                bottomValid <= 1'b0;
+                bottomValid <= 0;
             end else begin
                 bottomOut   <= topIn + extendedProduct;
                 bottomValid <= topValid && leftValid;

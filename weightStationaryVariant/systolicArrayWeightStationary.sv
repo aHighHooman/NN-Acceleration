@@ -14,12 +14,12 @@ module systolicArrayWeightStationary #(
     output logic                        pipelineBusy
 );
 
-    localparam int RESULT_WIDTH = 2*WIDTH + $clog2(N);
+    localparam int FINAL_RESULT_WIDTH = 2*WIDTH + $clog2(N);
 
-    logic signed [WIDTH-1:0]        horizontalData [N][N+1];
-    logic                           horizontalValid[N][N+1];
-    logic signed [RESULT_WIDTH-1:0] verticalData   [N+1][N];
-    logic                           verticalValid  [N+1][N];
+    logic signed [WIDTH-1:0]                horizontalData [N][N+1];
+    logic                                   horizontalValid[N][N+1];
+    logic signed [FINAL_RESULT_WIDTH-1:0]   verticalData   [N+1][N];
+    logic                                   verticalValid  [N+1][N];
 
     genvar i, j;
     generate
@@ -27,15 +27,16 @@ module systolicArrayWeightStationary #(
             assign horizontalData[i][0]  = row[i];
             assign horizontalValid[i][0] = rowValid[i];
         end
+
         for (j = 0; j < N; j++) begin : boundary_cols
             assign verticalData[0][j]  = loadWeight ?
-                {{(RESULT_WIDTH-WIDTH){col[j][WIDTH-1]}}, col[j]} : '0;
+                {{(FINAL_RESULT_WIDTH-WIDTH){col[j][WIDTH-1]}}, col[j]} : '0;
             assign verticalValid[0][j] = !loadWeight;
         end
 
         for (i = 0; i < N; i++) begin : row_loop
             for (j = 0; j < N; j++) begin : col_loop
-                multiplierBlockWeightStationary #(.WIDTH(WIDTH), .RESULT_WIDTH(RESULT_WIDTH)) mb (
+                multiplierBlockWeightStationary #(.WIDTH(WIDTH), .RESULT_WIDTH(FINAL_RESULT_WIDTH)) mb (
                     .clk(clk), .rst_n(rst_n), .advance(advance), .loadWeight(loadWeight),
                     .leftIn(horizontalData[i][j]), .leftValid(horizontalValid[i][j]),
                     .topIn(verticalData[i][j]), .topValid(verticalValid[i][j]),
