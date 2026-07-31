@@ -1,7 +1,9 @@
 # ModelSim generated libraries, logs, and waveforms
 work/
+build/
 ModelSim Stuff/work/
 ModelSim Stuff/*.cr.mti
+ModelSim Stuff/*.mpf
 ModelSim Stuff/*.vcd
 ModelSim Stuff/transcript
 ModelSim Stuff/vsim.wlf
@@ -25,3 +27,12 @@ Quartus Stuff/*.done
 Quartus Stuff/*.sof
 Quartus Stuff/*.pof
 Quartus Stuff/*.jic
+Quartus Stuff/*.qws
+Quartus Stuff/*_pin_model_dump.txt
+
+# LaTeX build products (the checked-in PDF is intentional)
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.synctex.gz
