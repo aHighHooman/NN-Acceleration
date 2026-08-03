@@ -51,7 +51,9 @@ module matrixMultiplierWeightStationarySPI_tb;
         // Identity weights are loaded from the final row to the first row.
         weightVector[0] = 0;
         weightVector[1] = 1;
-        send_weight_vector(weightVector);
+        send_partial_weight_frame(weightVector);
+        reset_during_weight_frame(weightVector);
+        send_weight_vector_with_extra_clocks(weightVector, 1);
 
         weightVector[0] = 1;
         weightVector[1] = 0;
@@ -66,10 +68,10 @@ module matrixMultiplierWeightStationarySPI_tb;
         activationVector[1] = 5;
         send_activation_vector(activationVector);
 
-        receive_result_vector(received);
+        receive_result_vector(received, 3);
         check_result("row 0", received, 2, -3);
 
-        receive_result_vector(received);
+        receive_result_vector(received, -1);
         check_result("row 1", received, 4, 5);
 
         $display("PASS: asynchronous-clock SPI integration test completed.");
@@ -96,15 +98,48 @@ module matrixMultiplierWeightStationarySPI_tb;
 
     task send_weight_vector(input data_t vector[N]);
         wait(weightReady);
-        send_input_vector(vector, 1'b1);
+        send_input_vector(vector, 1'b1, 0);
+    endtask
+
+    task send_weight_vector_with_extra_clocks(input data_t vector[N], input int extraClocks);
+        wait(weightReady);
+        send_input_vector(vector, 1'b1, extraClocks);
     endtask
 
     task send_activation_vector(input data_t vector[N]);
         wait(activationReady);
-        send_input_vector(vector, 1'b0);
+        send_input_vector(vector, 1'b0, 0);
     endtask
 
-    task send_input_vector(input data_t vector[N], input bit isWeight);
+    task send_partial_weight_frame(input data_t vector[N]);
+        wait(weightReady);
+        @(negedge sclk);
+        for (int lane = 0; lane < N; lane++) weightCs_n[lane] = 1'b0;
+        for (int bitIndex = WIDTH-1; bitIndex >= WIDTH/2; bitIndex--) begin
+            for (int lane = 0; lane < N; lane++) weightMosi[lane] = vector[lane][bitIndex];
+            @(posedge sclk);
+            @(negedge sclk);
+        end
+        for (int lane = 0; lane < N; lane++) weightCs_n[lane] = 1'b1;
+    endtask
+
+    task reset_during_weight_frame(input data_t vector[N]);
+        wait(weightReady);
+        @(negedge sclk);
+        for (int lane = 0; lane < N; lane++) weightCs_n[lane] = 1'b0;
+        for (int bitIndex = WIDTH-1; bitIndex >= WIDTH/2; bitIndex--) begin
+            for (int lane = 0; lane < N; lane++) weightMosi[lane] = vector[lane][bitIndex];
+            @(posedge sclk);
+            @(negedge sclk);
+        end
+        rst_n = 1'b0;
+        repeat (2) @(posedge sclk);
+        repeat (2) @(posedge clk);
+        for (int lane = 0; lane < N; lane++) weightCs_n[lane] = 1'b1;
+        @(negedge sclk) rst_n = 1'b1;
+    endtask
+
+    task send_input_vector(input data_t vector[N], input bit isWeight, input int extraClocks);
         @(negedge sclk);
         for (int lane = 0; lane < N; lane++) begin
             if (isWeight)
@@ -124,6 +159,17 @@ module matrixMultiplierWeightStationarySPI_tb;
             @(negedge sclk);
         end
 
+        repeat (extraClocks) begin
+            for (int lane = 0; lane < N; lane++) begin
+                if (isWeight)
+                    weightMosi[lane] = 1'b0;
+                else
+                    activationMosi[lane] = 1'b0;
+            end
+            @(posedge sclk);
+            @(negedge sclk);
+        end
+
         for (int lane = 0; lane < N; lane++) begin
             if (isWeight)
                 weightCs_n[lane] = 1'b1;
@@ -132,9 +178,11 @@ module matrixMultiplierWeightStationarySPI_tb;
         end
     endtask
 
-    task receive_result_vector(output result_t vector[N]);
+    task receive_result_vector(output result_t vector[N], input int pauseAfterBits);
         bit resultAvailable;
+        int bitsReceived;
         resultAvailable = 1'b0;
+        bitsReceived = 0;
 
         // Poll only through top-level signals. Failed polls raise CS again before
         // the next SCLK edge, so no result bit is consumed.
@@ -155,6 +203,14 @@ module matrixMultiplierWeightStationarySPI_tb;
                 assert(misoValid[lane])
                     else $fatal(1, "FAIL: MISO lane %0d was not valid.", lane);
                 vector[lane][bitIndex] = miso[lane];
+            end
+            bitsReceived++;
+            if (bitsReceived == pauseAfterBits) begin
+                @(negedge sclk);
+                for (int lane = 0; lane < N; lane++) cs_n[lane] = 1'b1;
+                repeat (2) @(posedge sclk);
+                @(negedge sclk);
+                for (int lane = 0; lane < N; lane++) cs_n[lane] = 1'b0;
             end
         end
 

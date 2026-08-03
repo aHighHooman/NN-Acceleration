@@ -81,6 +81,38 @@ sequenceDiagram
 - Assert `reloadWeights` only while `reloadReady` is high.
 - `weightReady` and `activationReady` indicate when a complete parallel SPI vector may be started.
 
+## SPI transaction contract
+
+- `cs_n`, `weightCs_n`, and `activationCs_n` are active-low and are controlled per lane.
+- Set MOSI before each rising `sclk` edge. Input words are sampled MSB first; lane `j` carries vector element `j`.
+- Assert all input CS lines for exactly `WIDTH` rising edges. Releasing CS early discards the partial word and the next frame starts at its MSB.
+- A complete input word is held until the accelerator accepts it. Extra clocks while it is held do not change the word; deassert CS before starting another frame.
+- Assert all result CS lines together and wait for every `misoValid` lane before sampling. Result bits are presented MSB first and are sampled on rising `sclk` edges.
+- Releasing result CS pauses the word and reasserting it resumes at the same bit. After the final bit, `misoValid` is low and `miso` is zero until the next result is available.
+- `rst_n` is synchronous to both `clk` and `sclk`. Hold it low through a rising edge of each clock, keep CS high, and restart the transaction after reset; the accelerator and any partial SPI frame are cleared.
+- There is no timeout, error, or sequence signal. Retry an incomplete input after releasing CS; resume an interrupted result by reasserting CS, or reset and restart the sequence.
+
+Each vector is one parallel transaction. The wrapper forwards an input only after every lane has a complete word, and latches a result for all lanes together. Hosts should therefore drive and sample all lanes in lockstep.
+
+```mermaid
+sequenceDiagram
+    participant Host
+    participant SPI
+    Host->>SPI: Assert all CS lines
+    loop WIDTH or result-width rising sclk edges
+        Host->>SPI: Present next MOSI bit / sample MISO bit
+        SPI-->>Host: Accept or present one bit per lane
+    end
+    Host->>SPI: Deassert all CS lines
+```
+
+Minimal host sequence:
+
+```text
+send(vector, cs): wait(ready); assert cs; send each lane MSB first; deassert cs
+receive(): assert all result CS; wait(all misoValid); sample each lane MSB first; deassert CS
+```
+
 ## Parameters
 
 | Parameter | Default | Meaning |
@@ -104,6 +136,7 @@ The self-checking regression covers:
 - input bubbles, output backpressure, and back-to-back matrices
 - weight reloads
 - asynchronous `clk`/`sclk` SPI input and output transfers
+- SPI partial-frame, reset, extra-clock, and chip-select pause recovery
 
 With ModelSim commands (`vlib`, `vlog`, and `vsim`) on `PATH`, run:
 
