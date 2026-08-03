@@ -4,7 +4,9 @@
 // each supported square-array size.
 module matrixMultiplierWeightStationary_testcase #(
     parameter int WIDTH = 16,
-    parameter int N = 3
+    parameter int N = 3,
+    parameter int INPUT_FIFO_DEPTH = 2*N,
+    parameter int OUTPUT_FIFO_DEPTH = 2*N
 ) (
     output logic done
 );
@@ -24,7 +26,11 @@ module matrixMultiplierWeightStationary_testcase #(
     logic passThrough;
     logic weightsLoaded, reloadWeights, reloadReady;
 
-    matrixMultiplierWeightStationary #(.WIDTH(WIDTH), .N(N)) dut (
+    matrixMultiplierWeightStationary #(
+        .WIDTH(WIDTH), .N(N),
+        .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH),
+        .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)
+    ) dut (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
         .activationData(activationData), .activationValid(activationValid),
@@ -331,7 +337,9 @@ endmodule
 // Keep the original top-level name, but run all three array dimensions.
 module matrixMultiplierWeightStationary_tb;
     logic done2, done3, done4;
-    matrixMultiplierWeightStationary_testcase #(.N(2)) test_2x2 (.done(done2));
+    matrixMultiplierWeightStationary_testcase #(
+        .N(2), .INPUT_FIFO_DEPTH(2), .OUTPUT_FIFO_DEPTH(2)
+    ) test_2x2 (.done(done2));
     matrixMultiplierWeightStationary_testcase #(.N(3)) test_3x3 (.done(done3));
     matrixMultiplierWeightStationary_testcase #(.N(4)) test_4x4 (.done(done4));
 

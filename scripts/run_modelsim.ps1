@@ -43,9 +43,16 @@ try {
     & vsim -c work.matrixMultiplierWeightStationarySPI_tb `
         -l spi-regression.log -do "run -all; quit -f"
     if ($LASTEXITCODE -ne 0) { throw "SPI regression failed." }
+
+    & vsim -c work.matrixMultiplierWeightStationary -GINPUT_FIFO_DEPTH=1 `
+        -l invalid-parameter.log -do "run -all; quit -f"
+    if (-not (Select-String -Path invalid-parameter.log -SimpleMatch `
+            -Pattern "WIDTH>=1, N>=2, FIFO depths>=2" -Quiet)) {
+        throw "Invalid parameter check failed for an unexpected reason."
+    }
 }
 finally {
     Pop-Location
 }
 
-Write-Output "PASS: core and asynchronous-clock SPI regressions completed."
+Write-Output "PASS: core, asynchronous-clock SPI, and parameter-bound regressions completed."

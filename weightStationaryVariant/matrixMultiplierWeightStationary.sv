@@ -50,6 +50,11 @@ module matrixMultiplierWeightStationary #(
     logic validData_SystToFifo[N];
     logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked;
 
+    initial begin
+        if (WIDTH < 1 || N < 2 || INPUT_FIFO_DEPTH < 2 || OUTPUT_FIFO_DEPTH < 2)
+            $fatal(1, "WIDTH>=1, N>=2, FIFO depths>=2");
+    end
+
     always_comb begin
         allWeightValid      = 1;
         allWeightReady      = 1;

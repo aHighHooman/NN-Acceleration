@@ -85,10 +85,13 @@ sequenceDiagram
 
 | Parameter | Default | Meaning |
 | --- | ---: | --- |
-| `WIDTH` | `16` | Signed input and weight width |
-| `N` | `3` | Square matrix and systolic-array dimension; currently tested for 2-4 |
-| `INPUT_FIFO_DEPTH` | `2*N` | Per-lane activation FIFO depth |
-| `OUTPUT_FIFO_DEPTH` | `2*N` | Per-lane result FIFO depth |
+| `WIDTH` | `16` | Signed input and weight width; must be >= 1 |
+| `N` | `3` | Square matrix and systolic-array dimension; must be >= 2, tested for 2-4 |
+| `INPUT_FIFO_DEPTH` | `2*N` | Per-lane activation FIFO depth; must be >= 2 |
+| `OUTPUT_FIFO_DEPTH` | `2*N` | Per-lane result FIFO depth; must be >= 2 |
+
+`N=2` and FIFO depth `2` are the lower regression boundaries. Larger parameter
+values are limited by device resources.
 
 ## Verification
 

@@ -19,6 +19,10 @@ module signedFifo #(
     logic        [PTR_WIDTH-1:0] readPtr, writePtr;
     logic                        pushAccepted, popAccepted;
 
+    initial begin
+        if (DEPTH < 2) $fatal(1, "FIFO DEPTH must be >= 2");
+    end
+
     assign empty        = (values == 0);
     assign full         = (values == DEPTH);
     assign popAccepted  = pop && !empty;
