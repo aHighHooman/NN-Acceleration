@@ -144,7 +144,31 @@ With ModelSim commands (`vlib`, `vlog`, and `vsim`) on `PATH`, run:
 pwsh -File scripts/run_modelsim.ps1
 ```
 
-The current regressions complete with zero simulation errors. FPGA resource utilization, Fmax, and timing closure are not reported yet.
+The current regressions complete with zero simulation errors.
+
+### FPGA build snapshot
+
+A Quartus Prime 25.1 Standard Lite compilation completed successfully for the
+default `N=3`, `WIDTH=16` configuration, targeting the DE1-SoC Cyclone V
+`5CSEMA5F31C6` device.
+
+| Metric | Post-fit result |
+|---|---:|
+| Logic utilization | 666 / 32,070 ALMs (2%) |
+| Registers | 1,230 |
+| Block memory | 1,044 / 4,065,280 bits (<1%) |
+| RAM blocks | 7 / 397 (2%) |
+| DSP blocks | 9 / 87 (10%) |
+| I/O pins | 30 / 457 (7%) |
+
+The project constrains `clk` to 50 MHz in `NN_Acceleration.sdc`. The post-fit
+Timing Analyzer passes that requirement at every analyzed corner, with
+worst-case setup slack of 10.954 ns, worst-case hold slack of 0.154 ns, and a
+worst reported slow-corner same-clock-domain Fmax estimate of 110.55 MHz.
+
+The design is not yet fully timing-constrained or ready for board programming:
+the externally supplied SPI `sclk`, input/output delays, relationships between
+clock domains, and DE1-SoC pin locations still need explicit constraints.
 
 ## Repository layout
 
@@ -164,7 +188,9 @@ The current regressions complete with zero simulation errors. FPGA resource util
 |   `-- weightStationaryMatrixMultiplierTop_tb.sv
 |-- Quartus Stuff/
 |   |-- NN_Acceleration.qpf
-|   `-- NN_Acceleration.qsf
+|   |-- NN_Acceleration.qsf
+|   |-- NN_Acceleration.sdc
+|   `-- NN_Acceleration_assignment_defaults.qdf
 |-- scripts/
 |   `-- run_modelsim.ps1
 |-- systolic_array_3x3_dataflow.tex
