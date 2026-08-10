@@ -18,9 +18,9 @@
 
 This note matches the \textbf{weight-stationary} RTL in:
 \begin{itemize}
-    \item \texttt{weightStationaryVariant/systolicArrayWeightStationary.sv}
-    \item \texttt{weightStationaryVariant/multiplierBlockWeightStationary.sv}
-    \item \texttt{weightStationaryVariant/matrixMultiplierWeightStationary.sv}
+    \item \texttt{weightStationaryVariant/weightStationarySystolicArray.sv}
+    \item \texttt{weightStationaryVariant/weightStationaryProcessingElement.sv}
+    \item \texttt{weightStationaryVariant/weightStationaryMatrixMultiplier.sv}
     \item \texttt{memory/signedFifo.sv}
 \end{itemize}
 
@@ -272,7 +272,7 @@ These three products are accumulated down column 2 as the partial sum travels do
 
 \section*{10. What the Bottom Outputs Mean}
 
-The array output in \texttt{systolicArrayWeightStationary.sv} is:
+The array output in \texttt{weightStationarySystolicArray.sv} is:
 \[
 \texttt{result[j]} = \texttt{verticalData[N][j]}.
 \]

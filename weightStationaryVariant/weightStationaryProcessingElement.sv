@@ -1,4 +1,4 @@
-module multiplierBlockWeightStationary #(
+module weightStationaryProcessingElement #(
     parameter int WIDTH = 16,
     parameter int RESULT_WIDTH = 2*WIDTH
 )(

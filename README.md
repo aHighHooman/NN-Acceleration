@@ -154,14 +154,14 @@ The current regressions complete with zero simulation errors. FPGA resource util
 |-- memory/
 |   `-- signedFifo.sv
 |-- weightStationaryVariant/
-|   |-- matrixMultiplierWeightStationary.sv
-|   |-- matrixMultiplierWeightStationarySPI.sv
-|   |-- systolicArrayWeightStationary.sv
-|   |-- multiplierBlockWeightStationary.sv
-|   |-- activationLayer.sv
-|   |-- reluActivation.sv
-|   |-- matrixMultiplierWeightStationary_tb.sv
-|   `-- matrixMultiplierWeightStationarySPI_tb.sv
+|   |-- weightStationaryMatrixMultiplier.sv
+|   |-- weightStationaryMatrixMultiplierTop.sv
+|   |-- weightStationarySystolicArray.sv
+|   |-- weightStationaryProcessingElement.sv
+|   |-- outputActivation.sv
+|   |-- relu.sv
+|   |-- weightStationaryMatrixMultiplier_tb.sv
+|   `-- weightStationaryMatrixMultiplierTop_tb.sv
 |-- Quartus Stuff/
 |   |-- NN_Acceleration.qpf
 |   `-- NN_Acceleration.qsf

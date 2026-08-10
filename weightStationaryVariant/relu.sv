@@ -1,4 +1,4 @@
-module reluActivation #(
+module relu #(
     parameter int WIDTH = 16
 )(
     input  logic signed [WIDTH-1:0] inputData,

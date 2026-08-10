@@ -1,4 +1,4 @@
-module matrixMultiplierWeightStationary #(
+module weightStationaryMatrixMultiplier #(
     parameter int WIDTH = 16,
     parameter int N = 3,
     parameter int INPUT_FIFO_DEPTH = 2*N,
@@ -178,7 +178,7 @@ module matrixMultiplierWeightStationary #(
         end
     end
 
-    systolicArrayWeightStationary #(.WIDTH(WIDTH), .N(N)) systolicArr (
+    weightStationarySystolicArray #(.WIDTH(WIDTH), .N(N)) systolicArray (
         .clk(clk), .rst_n(rst_n), .advance(arrayAdvance), .loadWeight(weightPop),
         .row(rowData_OrchToSyst), .rowValid(validData_OrchToSyst),
         .col(weightData_FifoToLoader), .result(resultData_SystToFifo),
@@ -186,7 +186,7 @@ module matrixMultiplierWeightStationary #(
         .pipelineBusy(pipelineBusy)
     );
 
-    activationLayer #(.WIDTH(RESULT_WIDTH), .N(N)) resultActivation (
+    outputActivation #(.WIDTH(RESULT_WIDTH), .N(N)) resultActivation (
         .inputData(resultData_SystToFifo), .passThrough(passThrough),
         .outputData(activatedResultData)
     );

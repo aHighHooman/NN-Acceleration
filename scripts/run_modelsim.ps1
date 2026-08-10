@@ -17,15 +17,15 @@ New-Item -ItemType Directory -Path $buildDir | Out-Null
 
 $sources = @(
     (Join-Path $projectRoot "memory/signedFifo.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/reluActivation.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/activationLayer.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/multiplierBlockWeightStationary.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/systolicArrayWeightStationary.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/relu.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/outputActivation.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryProcessingElement.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationarySystolicArray.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplier.sv"),
     (Join-Path $projectRoot "SPI_Module.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationarySPI.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationarySPI_tb.sv")
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplierTop.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplier_tb.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplierTop_tb.sv")
 )
 
 Push-Location $buildDir
@@ -36,15 +36,15 @@ try {
     & vlog -sv @sources
     if ($LASTEXITCODE -ne 0) { throw "vlog failed." }
 
-    & vsim -c work.matrixMultiplierWeightStationary_tb `
+    & vsim -c work.weightStationaryMatrixMultiplier_tb `
         -l core-regression.log -do "run -all; quit -f"
     if ($LASTEXITCODE -ne 0) { throw "Core regression failed." }
 
-    & vsim -c work.matrixMultiplierWeightStationarySPI_tb `
+    & vsim -c work.weightStationaryMatrixMultiplierTop_tb `
         -l spi-regression.log -do "run -all; quit -f"
     if ($LASTEXITCODE -ne 0) { throw "SPI regression failed." }
 
-    & vsim -c work.matrixMultiplierWeightStationary -GINPUT_FIFO_DEPTH=1 `
+    & vsim -c work.weightStationaryMatrixMultiplier -GINPUT_FIFO_DEPTH=1 `
         -l invalid-parameter.log -do "run -all; quit -f"
     if (-not (Select-String -Path invalid-parameter.log -SimpleMatch `
             -Pattern "WIDTH>=1, N>=2, FIFO depths>=2" -Quiet)) {

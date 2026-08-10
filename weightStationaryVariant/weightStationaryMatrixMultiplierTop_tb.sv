@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module matrixMultiplierWeightStationarySPI_tb;
+module weightStationaryMatrixMultiplierTop_tb;
     localparam int WIDTH = 8;
     localparam int N = 2;
     localparam int RESULT_WIDTH = 2*WIDTH + $clog2(N);
@@ -15,7 +15,7 @@ module matrixMultiplierWeightStationarySPI_tb;
     logic weightCs_n[N], weightMosi[N];
     logic activationCs_n[N], activationMosi[N];
 
-    matrixMultiplierWeightStationarySPI #(
+    weightStationaryMatrixMultiplierTop #(
         .WIDTH(WIDTH),
         .N(N)
     ) dut (

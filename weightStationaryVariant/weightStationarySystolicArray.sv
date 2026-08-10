@@ -1,4 +1,4 @@
-module systolicArrayWeightStationary #(
+module weightStationarySystolicArray #(
     parameter int WIDTH = 16,
     parameter int N = 3
 )(
@@ -36,7 +36,7 @@ module systolicArrayWeightStationary #(
 
         for (i = 0; i < N; i++) begin : row_loop
             for (j = 0; j < N; j++) begin : col_loop
-                multiplierBlockWeightStationary #(.WIDTH(WIDTH), .RESULT_WIDTH(FINAL_RESULT_WIDTH)) mb (
+                weightStationaryProcessingElement #(.WIDTH(WIDTH), .RESULT_WIDTH(FINAL_RESULT_WIDTH)) pe (
                     .clk(clk), .rst_n(rst_n), .advance(advance), .loadWeight(loadWeight),
                     .leftIn(horizontalData[i][j]), .leftValid(horizontalValid[i][j]),
                     .topIn(verticalData[i][j]), .topValid(verticalValid[i][j]),

@@ -1,4 +1,4 @@
-module matrixMultiplierWeightStationarySPI #(
+module weightStationaryMatrixMultiplierTop #(
     parameter int WIDTH = 16,
     parameter int N = 3,
     parameter int INPUT_FIFO_DEPTH = 2*N,
@@ -144,7 +144,7 @@ module matrixMultiplierWeightStationarySPI #(
         end
     end
 
-    matrixMultiplierWeightStationary #(
+    weightStationaryMatrixMultiplier #(
         .WIDTH(WIDTH), .N(N),
         .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH),
         .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)
