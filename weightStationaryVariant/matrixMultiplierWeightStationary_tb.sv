@@ -46,13 +46,13 @@ module matrixMultiplierWeightStationary_testcase #(
     end
 
     initial begin
-        matrix_t weight_identity, input_basic, input_arbitrary;
+        matrix_t weight_identity, activation_basic, activation_arbitrary;
         matrix_t weight_arbitrary;
-        matrix_t input_signed, weight_signed;
-        matrix_t input_signed_edge;
-        matrix_t input_signed_mixed, weight_signed_mixed;
-        matrix_t input_positive_overflow, weight_positive_overflow;
-        matrix_t input_negative_overflow, weight_negative_overflow;
+        matrix_t activation_signed, weight_signed;
+        matrix_t activation_signed_edge;
+        matrix_t activation_signed_mixed, weight_signed_mixed;
+        matrix_t activation_positive_overflow, weight_positive_overflow;
+        matrix_t activation_negative_overflow, weight_negative_overflow;
 
         data_t min_data, max_data;
 
@@ -64,17 +64,17 @@ module matrixMultiplierWeightStationary_testcase #(
         for (int row = 0; row < N; row++)
             for (int col = 0; col < N; col++) begin
                 weight_identity[row][col] = (row == col) ? 1 : 0;
-                input_basic[row][col] = row * N + col + 1;
-                input_arbitrary[row][col] = (row * 3 + col * 2 + 1) % 7 - 3;
+                activation_basic[row][col] = row * N + col + 1;
+                activation_arbitrary[row][col] = (row * 3 + col * 2 + 1) % 7 - 3;
                 weight_arbitrary[row][col] = (row * 2 + col * 3 + 2) % 9 - 4;
-                input_signed[row][col] = (row * 5 + col * 3 + 2) % 11 - 5;
+                activation_signed[row][col] = (row * 5 + col * 3 + 2) % 11 - 5;
                 weight_signed[row][col] = (row * 4 + col * 5 + 1) % 13 - 6;
-                input_signed_edge[row][col] = input_arbitrary[row][col];
-                input_signed_mixed[row][col] = (row * 7 + col * 5 + 2) % 17 - 8;
+                activation_signed_edge[row][col] = activation_arbitrary[row][col];
+                activation_signed_mixed[row][col] = (row * 7 + col * 5 + 2) % 17 - 8;
                 weight_signed_mixed[row][col] = (row * 11 + col * 3 + 1) % 15 - 7;
-                input_positive_overflow[row][col] = min_data;
+                activation_positive_overflow[row][col] = min_data;
                 weight_positive_overflow[row][col] = min_data;
-                input_negative_overflow[row][col] = min_data;
+                activation_negative_overflow[row][col] = min_data;
                 weight_negative_overflow[row][col] = max_data;
             end
 
@@ -93,67 +93,78 @@ module matrixMultiplierWeightStationary_testcase #(
         repeat (3) @(posedge clk);
         @(negedge clk) rst_n = 1'b1;
 
-        // Two input matrices are transmitted back-to-back under one stationary weight matrix.
+        // Two activation matrices are transmitted back-to-back under one stationary weight matrix.
         send_weights("identity weights", weight_identity, NO_BUBBLES);
         fork
             begin
-                send_input("basic input", input_basic, NO_BUBBLES);
-                send_input("back-to-back arbitrary input", input_arbitrary, NO_BUBBLES);
+                send_activations("basic activations", activation_basic, NO_BUBBLES);
+                send_activations("back-to-back arbitrary activations",
+                                 activation_arbitrary, NO_BUBBLES);
             end
             begin
-                expect_result("basic input x identity weights",
-                              input_basic, weight_identity, WITH_BACKPRESSURE, RAW_RESULTS);
-                expect_result("arbitrary input x identity weights",
-                              input_arbitrary, weight_identity, WITH_BACKPRESSURE, RAW_RESULTS);
+                expect_result("basic activations x identity weights",
+                              activation_basic, weight_identity,
+                              WITH_BACKPRESSURE, RAW_RESULTS);
+                expect_result("arbitrary activations x identity weights",
+                              activation_arbitrary, weight_identity,
+                              WITH_BACKPRESSURE, RAW_RESULTS);
             end
         join
 
         request_weight_reload();
-        send_weights("arbitrary weights with input bubbles", weight_arbitrary, WITH_BUBBLES);
+        send_weights("arbitrary weights with weight bubbles", weight_arbitrary, WITH_BUBBLES);
         fork
-            send_input("basic input with input bubbles", input_basic, WITH_BUBBLES);
-            expect_result("basic input x arbitrary weights",
-                          input_basic, weight_arbitrary, WITH_BACKPRESSURE, RAW_RESULTS);
+            send_activations("basic activations with activation bubbles",
+                             activation_basic, WITH_BUBBLES);
+            expect_result("basic activations x arbitrary weights",
+                          activation_basic, weight_arbitrary,
+                          WITH_BACKPRESSURE, RAW_RESULTS);
         join
 
         request_weight_reload();
         send_weights("signed weights", weight_signed, NO_BUBBLES);
         fork
-            send_input("signed input", input_signed, NO_BUBBLES);
-            expect_result("signed input x signed weights pass-through",
-                          input_signed, weight_signed, WITH_BACKPRESSURE, RAW_RESULTS);
+            send_activations("signed activations", activation_signed, NO_BUBBLES);
+            expect_result("signed activations x signed weights pass-through",
+                          activation_signed, weight_signed,
+                          WITH_BACKPRESSURE, RAW_RESULTS);
         join
 
         @(negedge clk) passThrough = 1'b0;
         fork
-            send_input("signed input for ReLU", input_signed, NO_BUBBLES);
-            expect_result("signed input x signed weights ReLU",
-                          input_signed, weight_signed, WITH_BACKPRESSURE, RELU_RESULTS);
+            send_activations("signed activations for ReLU", activation_signed, NO_BUBBLES);
+            expect_result("signed activations x signed weights ReLU",
+                          activation_signed, weight_signed,
+                          WITH_BACKPRESSURE, RELU_RESULTS);
         join
 
         request_weight_reload();
         send_weights("signed identity weights", weight_identity, NO_BUBBLES);
         fork
-            send_input("signed edge-value input", input_signed_edge, NO_BUBBLES);
-            expect_result("signed edge-value input x identity weights ReLU",
-                          input_signed_edge, weight_identity, NO_BACKPRESSURE, RELU_RESULTS);
+            send_activations("signed edge-value activations",
+                             activation_signed_edge, NO_BUBBLES);
+            expect_result("signed edge-value activations x identity weights ReLU",
+                          activation_signed_edge, weight_identity,
+                          NO_BACKPRESSURE, RELU_RESULTS);
         join
 
         @(negedge clk) passThrough = 1'b1;
         request_weight_reload();
         send_weights("additional signed weights", weight_signed_mixed, NO_BUBBLES);
         fork
-            send_input("additional signed input pass-through", input_signed_mixed, NO_BUBBLES);
-            expect_result("additional signed input x signed weights pass-through",
-                          input_signed_mixed, weight_signed_mixed,
+            send_activations("additional signed activations pass-through",
+                             activation_signed_mixed, NO_BUBBLES);
+            expect_result("additional signed activations x signed weights pass-through",
+                          activation_signed_mixed, weight_signed_mixed,
                           NO_BACKPRESSURE, RAW_RESULTS);
         join
 
         @(negedge clk) passThrough = 1'b0;
         fork
-            send_input("additional signed input ReLU", input_signed_mixed, NO_BUBBLES);
-            expect_result("additional signed input x signed weights ReLU",
-                          input_signed_mixed, weight_signed_mixed,
+            send_activations("additional signed activations ReLU",
+                             activation_signed_mixed, NO_BUBBLES);
+            expect_result("additional signed activations x signed weights ReLU",
+                          activation_signed_mixed, weight_signed_mixed,
                           NO_BACKPRESSURE, RELU_RESULTS);
         join
 
@@ -161,18 +172,20 @@ module matrixMultiplierWeightStationary_testcase #(
         request_weight_reload();
         send_weights("positive-overflow weights", weight_positive_overflow, NO_BUBBLES);
         fork
-            send_input("positive-overflow input", input_positive_overflow, NO_BUBBLES);
+            send_activations("positive-overflow activations",
+                             activation_positive_overflow, NO_BUBBLES);
             expect_result("full-width positive accumulation",
-                          input_positive_overflow, weight_positive_overflow,
+                          activation_positive_overflow, weight_positive_overflow,
                           NO_BACKPRESSURE, RAW_RESULTS);
         join
 
         request_weight_reload();
         send_weights("negative-overflow weights", weight_negative_overflow, NO_BUBBLES);
         fork
-            send_input("negative-overflow input", input_negative_overflow, NO_BUBBLES);
+            send_activations("negative-overflow activations",
+                             activation_negative_overflow, NO_BUBBLES);
             expect_result("full-width negative accumulation",
-                          input_negative_overflow, weight_negative_overflow,
+                          activation_negative_overflow, weight_negative_overflow,
                           NO_BACKPRESSURE, RAW_RESULTS);
         join
 
@@ -197,7 +210,11 @@ module matrixMultiplierWeightStationary_testcase #(
         wait(weightsLoaded);
     endtask
 
-    task send_input(input string label, input matrix_t input_matrix, input bit add_bubbles);
+    task send_activations(
+        input string label,
+        input matrix_t activation_matrix,
+        input bit add_bubbles
+    );
         $display("\n%0dx%0d: Sending %s", N, N, label);
         for (int row = 0; row < N; row++) begin
             if (add_bubbles && row == 1) begin
@@ -206,14 +223,14 @@ module matrixMultiplierWeightStationary_testcase #(
             end
             @(negedge clk);
             while (!activationReady) @(negedge clk);
-            for (int k = 0; k < N; k++) activationData[k] = input_matrix[row][k];
+            for (int k = 0; k < N; k++) activationData[k] = activation_matrix[row][k];
             activationValid = 1'b1;
             @(posedge clk);
         end
         @(negedge clk) activationValid = 1'b0;
     endtask
 
-    task expect_result(input string label, input matrix_t input_matrix,
+    task expect_result(input string label, input matrix_t activation_matrix,
                        input matrix_t weight_matrix,
                        input bit add_backpressure, input bit expected_pass_through);
         result_matrix_t actual, expected;
@@ -225,7 +242,7 @@ module matrixMultiplierWeightStationary_testcase #(
             for (int col = 0; col < N; col++) begin
                 expected[row][col] = '0;
                 for (int k = 0; k < N; k++) begin
-                    product = input_matrix[row][k] * weight_matrix[k][col];
+                    product = activation_matrix[row][k] * weight_matrix[k][col];
                     expected[row][col] += product;
                 end
                 if (!expected_pass_through && expected[row][col][RESULT_WIDTH-1])
