@@ -10,6 +10,12 @@ module matrixMultiplierWeightStationary_testcase #(
 );
     localparam int CLK_PERIOD = 10;
     localparam int RESULT_WIDTH = 2*WIDTH + $clog2(N);
+    localparam bit NO_BUBBLES = 1'b0;
+    localparam bit WITH_BUBBLES = 1'b1;
+    localparam bit NO_BACKPRESSURE = 1'b0;
+    localparam bit WITH_BACKPRESSURE = 1'b1;
+    localparam bit RELU_RESULTS = 1'b0;
+    localparam bit RAW_RESULTS = 1'b1;
 
     typedef logic signed [WIDTH-1:0] data_t;
     typedef logic signed [RESULT_WIDTH-1:0] result_t;
@@ -40,134 +46,38 @@ module matrixMultiplierWeightStationary_testcase #(
     end
 
     initial begin
-        matrix_t identity, a_basic, a_arbitrary, b_arbitrary;
-        matrix_t a_signed, b_signed, a_signed_edge, a_signed_mixed, b_signed_mixed;
-        matrix_t a_positive_overflow, b_positive_overflow;
-        matrix_t a_negative_overflow, b_negative_overflow;
+        matrix_t weight_identity, input_basic, input_arbitrary;
+        matrix_t weight_arbitrary;
+        matrix_t input_signed, weight_signed;
+        matrix_t input_signed_edge;
+        matrix_t input_signed_mixed, weight_signed_mixed;
+        matrix_t input_positive_overflow, weight_positive_overflow;
+        matrix_t input_negative_overflow, weight_negative_overflow;
 
-        build_test_matrices(identity, a_basic, a_arbitrary, b_arbitrary,
-                            a_signed, b_signed, a_signed_edge,
-                            a_signed_mixed, b_signed_mixed);
-        build_overflow_matrices(a_positive_overflow, b_positive_overflow,
-                                a_negative_overflow, b_negative_overflow);
-        initialize_signals();
-        apply_reset();
+        data_t min_data, max_data;
 
-        // Two A matrices are transmitted back-to-back under one stationary B.
-        send_weights("identity weights", identity, 1'b0);
-        fork
-            begin
-                send_activations("basic A", a_basic, 1'b0);
-                send_activations("back-to-back arbitrary A", a_arbitrary, 1'b0);
-            end
-            begin
-                receive_and_check("basic A x identity", a_basic, identity, 1'b1, 1'b1);
-                receive_and_check("arbitrary A x identity", a_arbitrary, identity, 1'b1, 1'b1);
-            end
-        join
+        min_data = {1'b1, {(WIDTH-1){1'b0}}};
+        max_data = {1'b0, {(WIDTH-1){1'b1}}};
 
-        request_weight_reload();
-        send_weights("arbitrary weights with input bubbles", b_arbitrary, 1'b1);
-        fork
-            send_activations("basic A with input bubbles", a_basic, 1'b1);
-            receive_and_check("basic A x arbitrary B", a_basic, b_arbitrary, 1'b1, 1'b1);
-        join
-
-        request_weight_reload();
-        send_weights("signed weights", b_signed, 1'b0);
-        fork
-            send_activations("signed A", a_signed, 1'b0);
-            receive_and_check("signed A x signed B pass-through", a_signed, b_signed, 1'b1, 1'b1);
-        join
-
-        set_pass_through(1'b0);
-        fork
-            send_activations("signed A for ReLU", a_signed, 1'b0);
-            receive_and_check("signed A x signed B ReLU", a_signed, b_signed, 1'b1, 1'b0);
-        join
-
-        request_weight_reload();
-        send_weights("signed identity weights", identity, 1'b0);
-        fork
-            send_activations("signed edge-value A", a_signed_edge, 1'b0);
-            receive_and_check("signed edge-value A x identity ReLU",
-                              a_signed_edge, identity, 1'b0, 1'b0);
-        join
-
-        set_pass_through(1'b1);
-        request_weight_reload();
-        send_weights("additional signed weights", b_signed_mixed, 1'b0);
-        fork
-            send_activations("additional signed A pass-through", a_signed_mixed, 1'b0);
-            receive_and_check("additional signed A x B pass-through",
-                              a_signed_mixed, b_signed_mixed, 1'b0, 1'b1);
-        join
-
-        set_pass_through(1'b0);
-        fork
-            send_activations("additional signed A ReLU", a_signed_mixed, 1'b0);
-            receive_and_check("additional signed A x B ReLU",
-                              a_signed_mixed, b_signed_mixed, 1'b0, 1'b0);
-        join
-
-        set_pass_through(1'b1);
-        request_weight_reload();
-        send_weights("positive-overflow weights", b_positive_overflow, 1'b0);
-        fork
-            send_activations("positive-overflow activations", a_positive_overflow, 1'b0);
-            receive_and_check("full-width positive accumulation",
-                              a_positive_overflow, b_positive_overflow, 1'b0, 1'b1);
-        join
-
-        request_weight_reload();
-        send_weights("negative-overflow weights", b_negative_overflow, 1'b0);
-        fork
-            send_activations("negative-overflow activations", a_negative_overflow, 1'b0);
-            receive_and_check("full-width negative accumulation",
-                              a_negative_overflow, b_negative_overflow, 1'b0, 1'b1);
-        join
-
-        $display("\nPASS: all %0dx%0d weight-stationary tests completed.", N, N);
-        done = 1'b1;
-    end
-
-    task build_test_matrices(
-        output matrix_t identity, output matrix_t a_basic, output matrix_t a_arbitrary,
-        output matrix_t b_arbitrary, output matrix_t a_signed, output matrix_t b_signed,
-        output matrix_t a_signed_edge, output matrix_t a_signed_mixed,
-        output matrix_t b_signed_mixed
-    );
+        // Keep the inputs beside the scenarios that use them. The formulas give
+        // every supported N a deterministic mix of positive and negative data.
         for (int row = 0; row < N; row++)
             for (int col = 0; col < N; col++) begin
-                identity[row][col]    = (row == col) ? 1 : 0;
-                a_basic[row][col]     = row * N + col + 1;
-                a_arbitrary[row][col] = (row * 3 + col * 2 + 1) % 7 - 3;
-                b_arbitrary[row][col] = (row * 2 + col * 3 + 2) % 9 - 4;
-                a_signed[row][col]    = (row * 5 + col * 3 + 2) % 11 - 5;
-                b_signed[row][col]    = (row * 4 + col * 5 + 1) % 13 - 6;
-                a_signed_edge[row][col] = (row * 3 + col * 2 + 1) % 7 - 3;
-                a_signed_mixed[row][col] = (row * 7 + col * 5 + 2) % 17 - 8;
-                b_signed_mixed[row][col] = (row * 11 + col * 3 + 1) % 15 - 7;
+                weight_identity[row][col] = (row == col) ? 1 : 0;
+                input_basic[row][col] = row * N + col + 1;
+                input_arbitrary[row][col] = (row * 3 + col * 2 + 1) % 7 - 3;
+                weight_arbitrary[row][col] = (row * 2 + col * 3 + 2) % 9 - 4;
+                input_signed[row][col] = (row * 5 + col * 3 + 2) % 11 - 5;
+                weight_signed[row][col] = (row * 4 + col * 5 + 1) % 13 - 6;
+                input_signed_edge[row][col] = input_arbitrary[row][col];
+                input_signed_mixed[row][col] = (row * 7 + col * 5 + 2) % 17 - 8;
+                weight_signed_mixed[row][col] = (row * 11 + col * 3 + 1) % 15 - 7;
+                input_positive_overflow[row][col] = min_data;
+                weight_positive_overflow[row][col] = min_data;
+                input_negative_overflow[row][col] = min_data;
+                weight_negative_overflow[row][col] = max_data;
             end
-    endtask
 
-    task build_overflow_matrices(
-        output matrix_t a_positive, output matrix_t b_positive,
-        output matrix_t a_negative, output matrix_t b_negative
-    );
-        data_t minData, maxData;
-        minData = {1'b1, {(WIDTH-1){1'b0}}};
-        maxData = {1'b0, {(WIDTH-1){1'b1}}};
-        for (int row = 0; row < N; row++)
-            for (int col = 0; col < N; col++) begin
-                a_positive[row][col] = minData;
-                b_positive[row][col] = minData;
-                a_negative[row][col] = minData;
-                b_negative[row][col] = maxData;
-            end
-    endtask
-
-    task initialize_signals();
         done = 1'b0;
         rst_n = 1'b0;
         weightValid = 1'b0;
@@ -175,20 +85,103 @@ module matrixMultiplierWeightStationary_testcase #(
         resultReady = 1'b0;
         passThrough = 1'b1;
         reloadWeights = 1'b0;
-        for (int i = 0; i < N; i++) begin
-            weightData[i] = '0;
-            activationData[i] = '0;
+        for (int lane = 0; lane < N; lane++) begin
+            weightData[lane] = '0;
+            activationData[lane] = '0;
         end
-    endtask
 
-    task apply_reset();
         repeat (3) @(posedge clk);
         @(negedge clk) rst_n = 1'b1;
-    endtask
 
-    task send_weights(input string label, input matrix_t matrixB, input bit add_bubbles);
+        // Two input matrices are transmitted back-to-back under one stationary weight matrix.
+        send_weights("identity weights", weight_identity, NO_BUBBLES);
+        fork
+            begin
+                send_input("basic input", input_basic, NO_BUBBLES);
+                send_input("back-to-back arbitrary input", input_arbitrary, NO_BUBBLES);
+            end
+            begin
+                expect_result("basic input x identity weights",
+                              input_basic, weight_identity, WITH_BACKPRESSURE, RAW_RESULTS);
+                expect_result("arbitrary input x identity weights",
+                              input_arbitrary, weight_identity, WITH_BACKPRESSURE, RAW_RESULTS);
+            end
+        join
+
+        request_weight_reload();
+        send_weights("arbitrary weights with input bubbles", weight_arbitrary, WITH_BUBBLES);
+        fork
+            send_input("basic input with input bubbles", input_basic, WITH_BUBBLES);
+            expect_result("basic input x arbitrary weights",
+                          input_basic, weight_arbitrary, WITH_BACKPRESSURE, RAW_RESULTS);
+        join
+
+        request_weight_reload();
+        send_weights("signed weights", weight_signed, NO_BUBBLES);
+        fork
+            send_input("signed input", input_signed, NO_BUBBLES);
+            expect_result("signed input x signed weights pass-through",
+                          input_signed, weight_signed, WITH_BACKPRESSURE, RAW_RESULTS);
+        join
+
+        @(negedge clk) passThrough = 1'b0;
+        fork
+            send_input("signed input for ReLU", input_signed, NO_BUBBLES);
+            expect_result("signed input x signed weights ReLU",
+                          input_signed, weight_signed, WITH_BACKPRESSURE, RELU_RESULTS);
+        join
+
+        request_weight_reload();
+        send_weights("signed identity weights", weight_identity, NO_BUBBLES);
+        fork
+            send_input("signed edge-value input", input_signed_edge, NO_BUBBLES);
+            expect_result("signed edge-value input x identity weights ReLU",
+                          input_signed_edge, weight_identity, NO_BACKPRESSURE, RELU_RESULTS);
+        join
+
+        @(negedge clk) passThrough = 1'b1;
+        request_weight_reload();
+        send_weights("additional signed weights", weight_signed_mixed, NO_BUBBLES);
+        fork
+            send_input("additional signed input pass-through", input_signed_mixed, NO_BUBBLES);
+            expect_result("additional signed input x signed weights pass-through",
+                          input_signed_mixed, weight_signed_mixed,
+                          NO_BACKPRESSURE, RAW_RESULTS);
+        join
+
+        @(negedge clk) passThrough = 1'b0;
+        fork
+            send_input("additional signed input ReLU", input_signed_mixed, NO_BUBBLES);
+            expect_result("additional signed input x signed weights ReLU",
+                          input_signed_mixed, weight_signed_mixed,
+                          NO_BACKPRESSURE, RELU_RESULTS);
+        join
+
+        @(negedge clk) passThrough = 1'b1;
+        request_weight_reload();
+        send_weights("positive-overflow weights", weight_positive_overflow, NO_BUBBLES);
+        fork
+            send_input("positive-overflow input", input_positive_overflow, NO_BUBBLES);
+            expect_result("full-width positive accumulation",
+                          input_positive_overflow, weight_positive_overflow,
+                          NO_BACKPRESSURE, RAW_RESULTS);
+        join
+
+        request_weight_reload();
+        send_weights("negative-overflow weights", weight_negative_overflow, NO_BUBBLES);
+        fork
+            send_input("negative-overflow input", input_negative_overflow, NO_BUBBLES);
+            expect_result("full-width negative accumulation",
+                          input_negative_overflow, weight_negative_overflow,
+                          NO_BACKPRESSURE, RAW_RESULTS);
+        join
+
+        $display("\nPASS: all %0dx%0d weight-stationary tests completed.", N, N);
+        done = 1'b1;
+    end
+
+    task send_weights(input string label, input matrix_t weight_matrix, input bit add_bubbles);
         $display("\n=== %0dx%0d: Loading %s ===", N, N, label);
-        display_input_matrix("Matrix B", matrixB);
         for (int row = N-1; row >= 0; row--) begin
             if (add_bubbles && row == N-2) begin
                 @(negedge clk) weightValid = 1'b0;
@@ -196,7 +189,7 @@ module matrixMultiplierWeightStationary_testcase #(
             end
             @(negedge clk);
             while (!weightReady) @(negedge clk);
-            for (int col = 0; col < N; col++) weightData[col] = matrixB[row][col];
+            for (int col = 0; col < N; col++) weightData[col] = weight_matrix[row][col];
             weightValid = 1'b1;
             @(posedge clk);
         end
@@ -204,9 +197,8 @@ module matrixMultiplierWeightStationary_testcase #(
         wait(weightsLoaded);
     endtask
 
-    task send_activations(input string label, input matrix_t matrixA, input bit add_bubbles);
+    task send_input(input string label, input matrix_t input_matrix, input bit add_bubbles);
         $display("\n%0dx%0d: Sending %s", N, N, label);
-        display_input_matrix("Matrix A", matrixA);
         for (int row = 0; row < N; row++) begin
             if (add_bubbles && row == 1) begin
                 @(negedge clk) activationValid = 1'b0;
@@ -214,23 +206,32 @@ module matrixMultiplierWeightStationary_testcase #(
             end
             @(negedge clk);
             while (!activationReady) @(negedge clk);
-            for (int k = 0; k < N; k++) activationData[k] = matrixA[row][k];
+            for (int k = 0; k < N; k++) activationData[k] = input_matrix[row][k];
             activationValid = 1'b1;
             @(posedge clk);
         end
         @(negedge clk) activationValid = 1'b0;
     endtask
 
-    task receive_and_check(input string label, input matrix_t matrixA, input matrix_t matrixB,
-                           input bit add_backpressure, input bit expected_pass_through);
+    task expect_result(input string label, input matrix_t input_matrix,
+                       input matrix_t weight_matrix,
+                       input bit add_backpressure, input bit expected_pass_through);
         result_matrix_t actual, expected;
+        result_t product;
         int errors;
         errors = 0;
-        multiply_reference(matrixA, matrixB, expected);
-        if (!expected_pass_through)
-            for (int row = 0; row < N; row++)
-                for (int col = 0; col < N; col++)
-                    if (expected[row][col][RESULT_WIDTH-1]) expected[row][col] = '0;
+
+        for (int row = 0; row < N; row++)
+            for (int col = 0; col < N; col++) begin
+                expected[row][col] = '0;
+                for (int k = 0; k < N; k++) begin
+                    product = input_matrix[row][k] * weight_matrix[k][col];
+                    expected[row][col] += product;
+                end
+                if (!expected_pass_through && expected[row][col][RESULT_WIDTH-1])
+                    expected[row][col] = '0;
+            end
+
         for (int row = 0; row < N; row++) begin
             bit accepted;
             accepted = 1'b0;
@@ -249,8 +250,6 @@ module matrixMultiplierWeightStationary_testcase #(
             end
         end
         @(negedge clk) resultReady = 1'b0;
-        display_result_matrix("Expected A x B", expected);
-        display_result_matrix("Received A x B", actual);
         for (int row = 0; row < N; row++)
             for (int col = 0; col < N; col++)
                 if (actual[row][col] !== expected[row][col]) begin
@@ -268,47 +267,6 @@ module matrixMultiplierWeightStationary_testcase #(
         @(posedge clk);
         @(negedge clk) reloadWeights = 1'b0;
         wait(!weightsLoaded);
-    endtask
-
-    task set_pass_through(input bit enabled);
-        @(negedge clk) passThrough = enabled;
-        $display("%0dx%0d: passThrough=%0b", N, N, enabled);
-    endtask
-
-    task multiply_reference(input matrix_t a, input matrix_t b, output result_matrix_t c);
-        result_t product;
-        for (int row = 0; row < N; row++)
-            for (int col = 0; col < N; col++) begin
-                c[row][col] = '0;
-                for (int k = 0; k < N; k++) begin
-                    product = a[row][k] * b[k][col];
-                    c[row][col] = c[row][col] + product;
-                end
-            end
-    endtask
-
-    task display_input_matrix(input string label, input matrix_t matrix);
-        $display("%s:", label);
-        for (int row = 0; row < N; row++) begin
-            $write("  [");
-            for (int col = 0; col < N; col++) begin
-                $write("%0d", matrix[row][col]);
-                if (col < N-1) $write(", ");
-            end
-            $display("]");
-        end
-    endtask
-
-    task display_result_matrix(input string label, input result_matrix_t matrix);
-        $display("%s:", label);
-        for (int row = 0; row < N; row++) begin
-            $write("  [");
-            for (int col = 0; col < N; col++) begin
-                $write("%0d", matrix[row][col]);
-                if (col < N-1) $write(", ");
-            end
-            $display("]");
-        end
     endtask
 
     result_t heldResult[N];
