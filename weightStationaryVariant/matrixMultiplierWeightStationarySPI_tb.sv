@@ -40,48 +40,8 @@ module matrixMultiplierWeightStationarySPI_tb;
     end
 
     initial begin
-        data_t weightVector[N], activationVector[N];
-        result_t received[N];
+        data_t weight_vector[N], activation_vector[N];
 
-        initialize_signals();
-        repeat (3) @(posedge sclk);
-        repeat (3) @(posedge clk);
-        rst_n = 1'b1;
-
-        // Identity weights are loaded from the final row to the first row.
-        weightVector[0] = 0;
-        weightVector[1] = 1;
-        send_weight_vector(weightVector);
-
-        weightVector[0] = 1;
-        weightVector[1] = 0;
-        send_weight_vector(weightVector);
-        wait(weightsLoaded);
-
-        activationVector[0] = 2;
-        activationVector[1] = -3;
-        send_activation_vector(activationVector);
-
-        activationVector[0] = 4;
-        activationVector[1] = 5;
-        send_activation_vector(activationVector);
-
-        receive_result_vector(received);
-        check_result("row 0", received, 2, -3);
-
-        receive_result_vector(received);
-        check_result("row 1", received, 4, 5);
-
-        $display("PASS: asynchronous-clock SPI integration test completed.");
-        $finish;
-    end
-
-    initial begin
-        #100_000;
-        $fatal(1, "FAIL: asynchronous-clock SPI integration test timed out.");
-    end
-
-    task initialize_signals();
         rst_n = 1'b0;
         passThrough = 1'b1;
         reloadWeights = 1'b0;
@@ -92,60 +52,95 @@ module matrixMultiplierWeightStationarySPI_tb;
             weightMosi[lane] = 1'b0;
             activationMosi[lane] = 1'b0;
         end
-    endtask
+
+        repeat (3) @(posedge sclk);
+        repeat (3) @(posedge clk);
+        rst_n = 1'b1;
+
+        // Identity weights are loaded from the final row to the first row.
+        weight_vector[0] = 0;
+        weight_vector[1] = 1;
+        send_weight_vector(weight_vector);
+
+        weight_vector[0] = 1;
+        weight_vector[1] = 0;
+        send_weight_vector(weight_vector);
+        wait(weightsLoaded);
+
+        activation_vector[0] = 2;
+        activation_vector[1] = -3;
+        send_activation_vector(activation_vector);
+
+        activation_vector[0] = 4;
+        activation_vector[1] = 5;
+        send_activation_vector(activation_vector);
+
+        expect_result_row("row 0", 2, -3);
+        expect_result_row("row 1", 4, 5);
+
+        $display("PASS: asynchronous-clock SPI integration test completed.");
+        $finish;
+    end
+
+    initial begin
+        #100_000;
+        $fatal(1, "FAIL: asynchronous-clock SPI integration test timed out.");
+    end
 
     task send_weight_vector(input data_t vector[N]);
         wait(weightReady);
-        send_input_vector(vector, 1'b1);
-    endtask
-
-    task send_activation_vector(input data_t vector[N]);
-        wait(activationReady);
-        send_input_vector(vector, 1'b0);
-    endtask
-
-    task send_input_vector(input data_t vector[N], input bit isWeight);
         @(negedge sclk);
-        for (int lane = 0; lane < N; lane++) begin
-            if (isWeight)
-                weightCs_n[lane] = 1'b0;
-            else
-                activationCs_n[lane] = 1'b0;
-        end
+        for (int lane = 0; lane < N; lane++)
+            weightCs_n[lane] = 1'b0;
 
         for (int bitIndex = WIDTH-1; bitIndex >= 0; bitIndex--) begin
-            for (int lane = 0; lane < N; lane++) begin
-                if (isWeight)
-                    weightMosi[lane] = vector[lane][bitIndex];
-                else
-                    activationMosi[lane] = vector[lane][bitIndex];
-            end
+            for (int lane = 0; lane < N; lane++)
+                weightMosi[lane] = vector[lane][bitIndex];
             @(posedge sclk);
             @(negedge sclk);
         end
 
-        for (int lane = 0; lane < N; lane++) begin
-            if (isWeight)
-                weightCs_n[lane] = 1'b1;
-            else
-                activationCs_n[lane] = 1'b1;
-        end
+        for (int lane = 0; lane < N; lane++)
+            weightCs_n[lane] = 1'b1;
     endtask
 
-    task receive_result_vector(output result_t vector[N]);
-        bit resultAvailable;
-        resultAvailable = 1'b0;
+    task send_activation_vector(input data_t vector[N]);
+        wait(activationReady);
+        @(negedge sclk);
+        for (int lane = 0; lane < N; lane++)
+            activationCs_n[lane] = 1'b0;
+
+        for (int bitIndex = WIDTH-1; bitIndex >= 0; bitIndex--) begin
+            for (int lane = 0; lane < N; lane++)
+                activationMosi[lane] = vector[lane][bitIndex];
+            @(posedge sclk);
+            @(negedge sclk);
+        end
+
+        for (int lane = 0; lane < N; lane++)
+            activationCs_n[lane] = 1'b1;
+    endtask
+
+    task expect_result_row(
+        input string label,
+        input result_t expected0,
+        input result_t expected1
+    );
+        result_t actual[N];
+        bit result_available;
+
+        result_available = 1'b0;
 
         // Poll only through top-level signals. Failed polls raise CS again before
         // the next SCLK edge, so no result bit is consumed.
-        while (!resultAvailable) begin
+        while (!result_available) begin
             @(negedge sclk);
             for (int lane = 0; lane < N; lane++) cs_n[lane] = 1'b0;
             #1;
-            resultAvailable = 1'b1;
+            result_available = 1'b1;
             for (int lane = 0; lane < N; lane++)
-                resultAvailable &= misoValid[lane];
-            if (!resultAvailable)
+                result_available &= misoValid[lane];
+            if (!result_available)
                 for (int lane = 0; lane < N; lane++) cs_n[lane] = 1'b1;
         end
 
@@ -154,20 +149,13 @@ module matrixMultiplierWeightStationarySPI_tb;
             for (int lane = 0; lane < N; lane++) begin
                 assert(misoValid[lane])
                     else $fatal(1, "FAIL: MISO lane %0d was not valid.", lane);
-                vector[lane][bitIndex] = miso[lane];
+                actual[lane][bitIndex] = miso[lane];
             end
         end
 
         @(negedge sclk);
         for (int lane = 0; lane < N; lane++) cs_n[lane] = 1'b1;
-    endtask
 
-    task check_result(
-        input string label,
-        input result_t actual[N],
-        input result_t expected0,
-        input result_t expected1
-    );
         if (actual[0] !== expected0 || actual[1] !== expected1)
             $fatal(1, "FAIL: %s got [%0d, %0d], expected [%0d, %0d].",
                    label, actual[0], actual[1], expected0, expected1);
