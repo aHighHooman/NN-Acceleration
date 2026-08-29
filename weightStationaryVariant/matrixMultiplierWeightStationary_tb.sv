@@ -16,11 +16,21 @@ module matrixMultiplierWeightStationary_testcase #(
     localparam bit WITH_BACKPRESSURE = 1'b1;
     localparam bit RELU_RESULTS = 1'b0;
     localparam bit RAW_RESULTS = 1'b1;
+    localparam int unsigned RANDOM_SEED = 32'h5eed_2026;
 
     typedef logic signed [WIDTH-1:0] data_t;
     typedef logic signed [RESULT_WIDTH-1:0] result_t;
     typedef data_t matrix_t[N][N];
     typedef result_t result_matrix_t[N][N];
+
+    function automatic data_t random_data();
+        logic [WIDTH-1:0] value;
+
+        value = '0;
+        for (int bit_index = 0; bit_index < WIDTH; bit_index += 32)
+            value = (value << 32) | $urandom();
+        return data_t'(value);
+    endfunction
 
     logic clk, rst_n;
     data_t weightData[N], activationData[N];
@@ -55,23 +65,25 @@ module matrixMultiplierWeightStationary_testcase #(
         matrix_t activation_negative_overflow, weight_negative_overflow;
 
         data_t min_data, max_data;
+        int unsigned random_seed;
 
         min_data = {1'b1, {(WIDTH-1){1'b0}}};
         max_data = {1'b0, {(WIDTH-1){1'b1}}};
+        random_seed = RANDOM_SEED;
+        void'($urandom(random_seed));
 
-        // Keep the inputs beside the scenarios that use them. The formulas give
-        // every supported N a deterministic mix of positive and negative data.
         for (int row = 0; row < N; row++)
             for (int col = 0; col < N; col++) begin
                 weight_identity[row][col] = (row == col) ? 1 : 0;
                 activation_basic[row][col] = row * N + col + 1;
-                activation_arbitrary[row][col] = (row * 3 + col * 2 + 1) % 7 - 3;
-                weight_arbitrary[row][col] = (row * 2 + col * 3 + 2) % 9 - 4;
-                activation_signed[row][col] = (row * 5 + col * 3 + 2) % 11 - 5;
-                weight_signed[row][col] = (row * 4 + col * 5 + 1) % 13 - 6;
-                activation_signed_edge[row][col] = activation_arbitrary[row][col];
-                activation_signed_mixed[row][col] = (row * 7 + col * 5 + 2) % 17 - 8;
-                weight_signed_mixed[row][col] = (row * 11 + col * 3 + 1) % 15 - 7;
+                activation_arbitrary[row][col] = random_data();
+                weight_arbitrary[row][col] = random_data();
+                activation_signed[row][col] = random_data();
+                weight_signed[row][col] = random_data();
+                activation_signed_edge[row][col] =
+                    (row == col) ? 1 : ((row == 0 && col == 1) ? -1 : 0);
+                activation_signed_mixed[row][col] = random_data();
+                weight_signed_mixed[row][col] = random_data();
                 activation_positive_overflow[row][col] = min_data;
                 weight_positive_overflow[row][col] = min_data;
                 activation_negative_overflow[row][col] = min_data;
