@@ -11,6 +11,7 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $buildDir = Join-Path $projectRoot "build/uvm"
+$uvmDir = Join-Path $projectRoot "uvm"
 
 # Prefer the recent Questa installed with Quartus.  PATH on machines upgraded
 # from older Quartus releases often still points at ModelSim 20.x.
@@ -77,7 +78,7 @@ try {
     # uses seeded $urandom stimulus and counter-based coverage so it remains
     # runnable when svverification-licensed constrained randomization and
     # covergroups are unavailable.
-    & $vlog -sv -L mtiUvm -timescale 1ns/1ps "+incdir+$uvmSource" @rtlSources @uvmSources
+    & $vlog -sv -L mtiUvm -timescale 1ns/1ps "+incdir+$uvmSource" "+incdir+$uvmDir" @rtlSources @uvmSources
     if ($LASTEXITCODE -ne 0) { throw "RTL/UVM testbench compilation failed." }
 
     $logPath = Join-Path $buildDir "$TestName.log"
