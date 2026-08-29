@@ -1,10 +1,10 @@
 param(
     [ValidateSet(
         "nn_uvm_smoke_test",
-        "nn_uvm_relu_test",
-        "nn_uvm_starter_regression_test"
+        "nn_uvm_regression_test"
     )]
-    [string]$TestName = "nn_uvm_starter_regression_test"
+    [string]$TestName = "nn_uvm_regression_test",
+    [string]$Seed = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,13 +59,11 @@ $rtlSources = @(
     (Join-Path $projectRoot "weightStationaryVariant/activationLayer.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/multiplierBlockWeightStationary.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/systolicArrayWeightStationary.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary.sv"),
-    (Join-Path $projectRoot "SPI_Module.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationarySPI.sv")
+    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary.sv")
 )
 
 $uvmSources = @(
-    (Join-Path $projectRoot "uvm/nn_uvm_if.sv"),
+    (Join-Path $projectRoot "uvm/nn_core_if.sv"),
     (Join-Path $projectRoot "uvm/nn_uvm_pkg.sv"),
     (Join-Path $projectRoot "uvm/nn_uvm_tb_top.sv")
 )
@@ -75,20 +73,33 @@ try {
     & $vlib work
     if ($LASTEXITCODE -ne 0) { throw "vlib failed." }
 
-    # Questa ships a compiled mtiUvm library.  Using it lets the directed UVM
-    # starter run with the FPGA Starter license.  Constrained randomization and
-    # covergroups still require the separate svverification feature.
+    # Questa ships a compiled mtiUvm library.  The environment intentionally
+    # uses seeded $urandom stimulus and counter-based coverage so it remains
+    # runnable when svverification-licensed constrained randomization and
+    # covergroups are unavailable.
     & $vlog -sv -L mtiUvm -timescale 1ns/1ps "+incdir+$uvmSource" @rtlSources @uvmSources
     if ($LASTEXITCODE -ne 0) { throw "RTL/UVM testbench compilation failed." }
 
     $logPath = Join-Path $buildDir "$TestName.log"
-    & $vsim -c -L mtiUvm work.nn_uvm_tb_top "+UVM_TESTNAME=$TestName" `
-        -l $logPath -do "run -all; quit -f"
+    $simArgs = @(
+        "-c",
+        "-L", "mtiUvm",
+        "work.nn_uvm_tb_top",
+        "+UVM_TESTNAME=$TestName"
+    )
+    if ($Seed -ne "") {
+        $simArgs += "+NN_SEED=$Seed"
+    }
+    $simArgs += @("-l", $logPath, "-do", "run -all; quit -f")
+    & $vsim @simArgs
     if ($LASTEXITCODE -ne 0) { throw "$TestName simulation failed." }
 
     $logText = Get-Content -Raw $logPath
     if ($logText -match "UVM_(ERROR|FATAL)\s*:\s*[1-9]") {
         throw "$TestName completed with UVM errors. See $logPath"
+    }
+    if ($logText -match "\*\* Error:") {
+        throw "$TestName completed with simulator/assertion errors. See $logPath"
     }
 }
 finally {

@@ -110,28 +110,28 @@ pwsh -File scripts/run_modelsim.ps1
 
 The current regressions complete with zero simulation errors.
 
-### UVM learning environment
+### UVM core verification environment
 
-A partial UVM environment is available in [`uvm/`](uvm/). It implements
-two end-to-end `N=2`, `WIDTH=8` cases using a sequence, sequencer, SPI host
-driver, passive result monitor, reference-model scoreboard, and analysis
-subscriber. The original directed tests remain unchanged. The starter avoids
-constrained-random and covergroup constructs so it can run with the Questa FPGA
-Starter license; adding them is one of the guided exercises.
+A core-level UVM environment is available in [`uvm/`](uvm/). It connects
+directly to `matrixMultiplierWeightStationary`, with an active ready/valid
+driver, passive accepted-input reconstruction, passive result monitor,
+independent signed reference model/scoreboard, protocol assertions, and
+license-safe coverage counters. The scoreboard derives matrices from traffic
+accepted by the DUT rather than copying the driver's expected values.
 
-The runner uses Questa's precompiled `mtiUvm` library (UVM 1.1d in the current
-Quartus 25.1 installation) so the directed starter works with that license.
-
-Run the two-case starter regression with the Questa installation bundled with
-Quartus 25.1:
+The regression uses seeded `$urandom` stimulus instead of constrained
+randomization and covergroups, so it remains usable with the Questa FPGA
+Starter license. The seed is printed in the log and can be replayed:
 
 ```powershell
 pwsh -File scripts/run_uvm.ps1
+pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_smoke_test
+pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_regression_test -Seed 12345
 ```
 
-See [`uvm/EXERCISES.md`](uvm/EXERCISES.md) for an incremental path to add
-constrained-random clock ratios, partial frames, reset injection, lane skew,
-passive input prediction, coverage crosses, and protocol assertions.
+The UVM compile targets the direct core interface at `N=3`, `WIDTH=8` for a
+fast regression. The existing directed regression remains the reference for
+the supported 2x2, 3x3, and 4x4 configurations.
 
 ### FPGA build snapshot
 
@@ -177,7 +177,12 @@ clock domains, and DE1-SoC pin locations still need explicit constraints.
 |   |-- NN_Acceleration.qpf
 |   `-- NN_Acceleration.qsf
 |-- scripts/
-|   `-- run_modelsim.ps1
+|   |-- run_modelsim.ps1
+|   `-- run_uvm.ps1
+|-- uvm/
+|   |-- nn_core_if.sv
+|   |-- nn_uvm_pkg.sv
+|   `-- nn_uvm_tb_top.sv
 |-- systolic_array_3x3_dataflow.tex
 `-- systolic_array_3x3_dataflow.pdf
 ```
