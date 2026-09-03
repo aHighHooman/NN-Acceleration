@@ -179,12 +179,8 @@ clock domains, and DE1-SoC pin locations still need explicit constraints.
 |-- scripts/
 |   |-- run_modelsim.ps1
 |   `-- run_uvm.ps1
-|-- uvm/
+`-- uvm/
 |   |-- nn_core_if.sv
 |   |-- nn_uvm_pkg.sv
 |   `-- nn_uvm_tb_top.sv
-|-- systolic_array_3x3_dataflow.tex
-`-- systolic_array_3x3_dataflow.pdf
 ```
-
-The accompanying data-flow note derives the 3x3 mapping and shows how the diagonal activation wavefront produces `C = A x B`.
