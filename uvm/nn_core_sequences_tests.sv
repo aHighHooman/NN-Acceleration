@@ -259,6 +259,18 @@
             item.stall_percent = 25;
             send_item(item);
 
+            // Stress burst: deterministic output backpressure fills the existing
+            // result/activation buffering and forces the producer to hold a row.
+            for (int stress_matrix = 0; stress_matrix < 5; stress_matrix++) begin
+                item = nn_core_matrix_item::type_id::create($sformatf(
+                    "activation_backpressure_%0d", stress_matrix));
+                fill_random_activations(item);
+                item.pass_through = 1'b0;
+                item.activation_bubbles = 1'b0;
+                item.stall_percent = 100;
+                send_item(item);
+            end
+
             // Reset while a new weight frame is only partially accepted.  No
             // matrix is expected from this intentionally aborted item.
             item = nn_core_matrix_item::type_id::create("reset_partial_weights");

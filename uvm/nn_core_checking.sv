@@ -118,6 +118,7 @@
         bit result_last_seen;
         int unsigned weight_bubble_cycles;
         int unsigned activation_bubble_cycles;
+        int unsigned activation_stall_cycles;
         int unsigned output_stall_cycles;
         int unsigned reload_count;
         int unsigned reset_count;
@@ -141,6 +142,7 @@
             result_last_seen = 1'b0;
             weight_bubble_cycles = 0;
             activation_bubble_cycles = 0;
+            activation_stall_cycles = 0;
             output_stall_cycles = 0;
             reload_count = 0;
             reset_count = 0;
@@ -220,6 +222,9 @@
                             vif.monitor_cb.activationReady &&
                             !vif.monitor_cb.activationValid)
                             activation_bubble_cycles++;
+                        if (vif.monitor_cb.activationValid &&
+                            !vif.monitor_cb.activationReady)
+                            activation_stall_cycles++;
                         if (vif.monitor_cb.activationValid && vif.monitor_cb.activationReady) begin
                             if (activation_rows_in_frame == N-1)
                                 activation_rows_in_frame = 0;
@@ -253,6 +258,8 @@
                 `uvm_error("COVERAGE", "weight input bubble bin was not observed")
             if (activation_bubble_cycles == 0)
                 `uvm_error("COVERAGE", "activation input bubble bin was not observed")
+            if (activation_stall_cycles == 0)
+                `uvm_error("COVERAGE", "activation input backpressure bin was not observed")
             if (output_stall_cycles == 0)
                 `uvm_error("COVERAGE", "output backpressure bin was not observed")
             if (reload_count == 0)
@@ -269,8 +276,9 @@
                 matrix_count, pass_through_count, relu_count,
                 negative_operand_count, repeated_weight_matrix_count), UVM_NONE)
             `uvm_info("COVERAGE", $sformatf(
-                "weightBubbles=%0d activationBubbles=%0d outputStallCycles=%0d reloads=%0d injectedResets=%0d",
+                "weightBubbles=%0d activationBubbles=%0d activationStallCycles=%0d outputStallCycles=%0d reloads=%0d injectedResets=%0d",
                 weight_bubble_cycles, activation_bubble_cycles,
-                output_stall_cycles, reload_count, reset_count), UVM_NONE)
+                activation_stall_cycles, output_stall_cycles,
+                reload_count, reset_count), UVM_NONE)
         endfunction
     endclass
