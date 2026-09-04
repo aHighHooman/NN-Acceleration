@@ -268,7 +268,7 @@
                 item.pass_through = 1'b0;
                 item.activation_bubbles = 1'b0;
                 item.stall_percent = 0;
-                item.stall_until_activation_backpressure = 1'b1;
+                item.stall_until_activation_backpressure = (stress_matrix == 0);
                 send_item(item);
             end
 

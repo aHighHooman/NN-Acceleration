@@ -57,8 +57,8 @@
                 seq_item_port.get_next_item(req);
                 active_stall_percent = (req.stall_percent > 100) ?
                                        100 : req.stall_percent;
-                activation_backpressure_stress_active =
-                    req.stall_until_activation_backpressure;
+                if (req.stall_until_activation_backpressure)
+                    activation_backpressure_stress_active = 1'b1;
                 `uvm_info("DRV", {"Driving ", req.convert2string()}, UVM_MEDIUM)
 
                 if (req.reload_before)
