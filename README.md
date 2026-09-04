@@ -181,6 +181,11 @@ clock domains, and DE1-SoC pin locations still need explicit constraints.
 |   `-- run_uvm.ps1
 `-- uvm/
 |   |-- nn_core_if.sv
+|   |-- nn_core_items.sv
+|   |-- nn_core_driver.sv
+|   |-- nn_core_monitors.sv
+|   |-- nn_core_checking.sv
+|   |-- nn_core_sequences_tests.sv
 |   |-- nn_uvm_pkg.sv
 |   `-- nn_uvm_tb_top.sv
 ```
