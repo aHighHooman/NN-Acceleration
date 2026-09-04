@@ -16,6 +16,7 @@
         bit weight_bubbles;
         bit activation_bubbles;
         int unsigned stall_percent;
+        bit stall_until_activation_backpressure;
         bit wait_for_drain;
 
         reset_phase_e reset_phase;
@@ -35,6 +36,7 @@
             weight_bubbles = 1'b0;
             activation_bubbles = 1'b0;
             stall_percent = 0;
+            stall_until_activation_backpressure = 1'b0;
             wait_for_drain = 1'b0;
             reset_phase = NN_RESET_NONE;
             reset_after_rows = 0;
@@ -47,10 +49,10 @@
 
         function string convert2string();
             return $sformatf(
-                "passThrough=%0b loadWeights=%0b reload=%0b bubbles(w/a)=%0b/%0b stall=%0d reset=%0d",
+                "passThrough=%0b loadWeights=%0b reload=%0b bubbles(w/a)=%0b/%0b stall=%0d stallUntilActivationBackpressure=%0b reset=%0d",
                 pass_through, load_weights, reload_before,
                 weight_bubbles, activation_bubbles, stall_percent,
-                reset_phase);
+                stall_until_activation_backpressure, reset_phase);
         endfunction
     endclass
 

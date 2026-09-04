@@ -11,8 +11,7 @@
         int unsigned ready_cycle;
         int unsigned stall_run;
         bit reset_active;
-        bit deliberate_stall_released;
-        bit previous_item_was_deliberate_stall;
+        bit activation_backpressure_stress_active;
         bit current_mode;
         bit current_mode_valid;
 
@@ -23,8 +22,7 @@
             ready_cycle = 0;
             stall_run = 0;
             reset_active = 1'b0;
-            deliberate_stall_released = 1'b0;
-            previous_item_was_deliberate_stall = 1'b0;
+            activation_backpressure_stress_active = 1'b0;
             current_mode = 1'b1;
             current_mode_valid = 1'b0;
         endfunction
@@ -59,13 +57,8 @@
                 seq_item_port.get_next_item(req);
                 active_stall_percent = (req.stall_percent > 100) ?
                                        100 : req.stall_percent;
-                if (active_stall_percent == 100) begin
-                    if (!previous_item_was_deliberate_stall)
-                        deliberate_stall_released = 1'b0;
-                end else begin
-                    deliberate_stall_released = 1'b1;
-                end
-                previous_item_was_deliberate_stall = active_stall_percent == 100;
+                activation_backpressure_stress_active =
+                    req.stall_until_activation_backpressure;
                 `uvm_info("DRV", {"Driving ", req.convert2string()}, UVM_MEDIUM)
 
                 if (req.reload_before)
@@ -112,21 +105,20 @@
                 if (!vif.rst_n || reset_active) begin
                     vif.resultReady = 1'b0;
                     stall_run = 0;
-                end else if (active_stall_percent == 0) begin
-                    vif.resultReady = 1'b1;
-                    stall_run = 0;
-                end else if (active_stall_percent == 100 &&
-                             !deliberate_stall_released) begin
-                    // The stress item holds output back until it has caused
-                    // input-side backpressure, then lets the DUT drain.
+                end else if (activation_backpressure_stress_active) begin
+                    // Hold output back until the pressure reaches the input,
+                    // then return to this item's ordinary stall policy.
                     if (vif.activationValid && !vif.activationReady) begin
                         vif.resultReady = 1'b1;
-                        deliberate_stall_released = 1'b1;
+                        activation_backpressure_stress_active = 1'b0;
                         stall_run = 0;
                     end else begin
                         vif.resultReady = 1'b0;
                         stall_run++;
                     end
+                end else if (active_stall_percent == 0) begin
+                    vif.resultReady = 1'b1;
+                    stall_run = 0;
                 end else begin
                     // Periodic releases keep backpressure coverage deterministic and bounded.
                     if (stall_run >= 4 || (ready_cycle % 5) == 0) begin
