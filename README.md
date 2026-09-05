@@ -23,13 +23,13 @@ flowchart LR
         A_FIFO["N activation FIFOs"]
         SKEW["Activation skew network"]
         ARRAY["N x N weight-stationary PE array"]
-        ACT["ReLU / pass-through"]
         R_FIFO["N result FIFOs"]
+        ACT["Combinational activation layer"]
     end
 
     W_RX --> W_CDC --> W_FIFO --> ARRAY
     A_RX --> A_CDC --> A_FIFO --> SKEW --> ARRAY
-    ARRAY --> ACT --> R_FIFO --> R_CDC --> R_TX
+    ARRAY --> R_FIFO --> ACT --> R_CDC --> R_TX
 ```
 
 Each processing element stores one weight and performs a signed multiply-accumulate while forwarding the activation and partial sum:
@@ -77,7 +77,8 @@ sequenceDiagram
 - Send activation rows in normal order: row `0` through row `N-1`.
 - Each result transfer is one output row. Lane `j` carries output column `j`.
 - Result width is `2*WIDTH + $clog2(N)` bits.
-- `passThrough = 1` preserves signed results; `passThrough = 0` applies ReLU.
+- `matrixMultiplierWeightStationary` produces the raw signed `X * W` matrix product.
+- `nnAccelerator` applies the combinational activation layer to that raw result: `passThrough = 1` preserves it and `passThrough = 0` applies ReLU.
 - Assert `reloadWeights` only while `reloadReady` is high.
 - `weightReady` and `activationReady` indicate when a complete parallel SPI vector may be started.
 
@@ -97,7 +98,8 @@ The self-checking regression covers:
 - 2x2, 3x3, and 4x4 arrays
 - signed and edge-case operands
 - worst-case positive and negative accumulation
-- ReLU and pass-through output modes
+- raw signed matrix-product results
+- composed pass-through and ReLU accelerator results
 - input bubbles, output backpressure, and back-to-back matrices
 - weight reloads
 - asynchronous `clk`/`sclk` SPI input and output transfers
@@ -166,6 +168,7 @@ clock domains, and DE1-SoC pin locations still need explicit constraints.
 |   `-- signedFifo.sv
 |-- weightStationaryVariant/
 |   |-- matrixMultiplierWeightStationary.sv
+|   |-- nnAccelerator.sv
 |   |-- matrixMultiplierWeightStationarySPI.sv
 |   |-- systolicArrayWeightStationary.sv
 |   |-- multiplierBlockWeightStationary.sv
