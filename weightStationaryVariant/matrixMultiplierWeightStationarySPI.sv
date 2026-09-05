@@ -144,7 +144,7 @@ module matrixMultiplierWeightStationarySPI #(
         end
     end
 
-    matrixMultiplierWeightStationary #(
+    nnAccelerator #(
         .WIDTH(WIDTH), .N(N),
         .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH),
         .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)
