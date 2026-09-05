@@ -14,8 +14,6 @@ module matrixMultiplierWeightStationary_testcase #(
     localparam bit WITH_BUBBLES = 1'b1;
     localparam bit NO_BACKPRESSURE = 1'b0;
     localparam bit WITH_BACKPRESSURE = 1'b1;
-    localparam bit RELU_RESULTS = 1'b0;
-    localparam bit RAW_RESULTS = 1'b1;
     localparam int unsigned RANDOM_SEED = 32'h5eed_2026;
 
     typedef logic signed [WIDTH-1:0] data_t;
@@ -37,7 +35,6 @@ module matrixMultiplierWeightStationary_testcase #(
     logic weightValid, weightReady, activationValid, activationReady;
     result_t resultData[N];
     logic resultValid, resultReady, resultLast;
-    logic passThrough;
     logic weightsLoaded, reloadWeights, reloadReady;
 
     matrixMultiplierWeightStationary #(.WIDTH(WIDTH), .N(N)) dut (
@@ -45,7 +42,7 @@ module matrixMultiplierWeightStationary_testcase #(
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
         .activationData(activationData), .activationValid(activationValid),
         .activationReady(activationReady), .resultData(resultData),
-        .resultValid(resultValid), .resultReady(resultReady), .passThrough(passThrough),
+        .resultValid(resultValid), .resultReady(resultReady),
         .resultLast(resultLast),
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights), .reloadReady(reloadReady)
     );
@@ -95,7 +92,6 @@ module matrixMultiplierWeightStationary_testcase #(
         weightValid = 1'b0;
         activationValid = 1'b0;
         resultReady = 1'b0;
-        passThrough = 1'b1;
         reloadWeights = 1'b0;
         for (int lane = 0; lane < N; lane++) begin
             weightData[lane] = '0;
@@ -116,10 +112,10 @@ module matrixMultiplierWeightStationary_testcase #(
             begin
                 expect_result("basic activations x identity weights",
                               activation_basic, weight_identity,
-                              WITH_BACKPRESSURE, RAW_RESULTS);
+                              WITH_BACKPRESSURE);
                 expect_result("arbitrary activations x identity weights",
                               activation_arbitrary, weight_identity,
-                              WITH_BACKPRESSURE, RAW_RESULTS);
+                              WITH_BACKPRESSURE);
             end
         join
 
@@ -130,24 +126,23 @@ module matrixMultiplierWeightStationary_testcase #(
                              activation_basic, WITH_BUBBLES);
             expect_result("basic activations x arbitrary weights",
                           activation_basic, weight_arbitrary,
-                          WITH_BACKPRESSURE, RAW_RESULTS);
+                          WITH_BACKPRESSURE);
         join
 
         request_weight_reload();
         send_weights("signed weights", weight_signed, NO_BUBBLES);
         fork
             send_activations("signed activations", activation_signed, NO_BUBBLES);
-            expect_result("signed activations x signed weights pass-through",
+            expect_result("signed activations x signed weights",
                           activation_signed, weight_signed,
-                          WITH_BACKPRESSURE, RAW_RESULTS);
+                          WITH_BACKPRESSURE);
         join
 
-        @(negedge clk) passThrough = 1'b0;
         fork
-            send_activations("signed activations for ReLU", activation_signed, NO_BUBBLES);
-            expect_result("signed activations x signed weights ReLU",
+            send_activations("repeated signed activations", activation_signed, NO_BUBBLES);
+            expect_result("repeated signed activations x signed weights",
                           activation_signed, weight_signed,
-                          WITH_BACKPRESSURE, RELU_RESULTS);
+                          WITH_BACKPRESSURE);
         join
 
         request_weight_reload();
@@ -155,32 +150,29 @@ module matrixMultiplierWeightStationary_testcase #(
         fork
             send_activations("signed edge-value activations",
                              activation_signed_edge, NO_BUBBLES);
-            expect_result("signed edge-value activations x identity weights ReLU",
+            expect_result("signed edge-value activations x identity weights",
                           activation_signed_edge, weight_identity,
-                          NO_BACKPRESSURE, RELU_RESULTS);
+                          NO_BACKPRESSURE);
         join
 
-        @(negedge clk) passThrough = 1'b1;
         request_weight_reload();
         send_weights("additional signed weights", weight_signed_mixed, NO_BUBBLES);
         fork
-            send_activations("additional signed activations pass-through",
+            send_activations("additional signed activations",
                              activation_signed_mixed, NO_BUBBLES);
-            expect_result("additional signed activations x signed weights pass-through",
+            expect_result("additional signed activations x signed weights",
                           activation_signed_mixed, weight_signed_mixed,
-                          NO_BACKPRESSURE, RAW_RESULTS);
+                          NO_BACKPRESSURE);
         join
 
-        @(negedge clk) passThrough = 1'b0;
         fork
-            send_activations("additional signed activations ReLU",
+            send_activations("repeated additional signed activations",
                              activation_signed_mixed, NO_BUBBLES);
-            expect_result("additional signed activations x signed weights ReLU",
+            expect_result("repeated additional signed activations x signed weights",
                           activation_signed_mixed, weight_signed_mixed,
-                          NO_BACKPRESSURE, RELU_RESULTS);
+                          NO_BACKPRESSURE);
         join
 
-        @(negedge clk) passThrough = 1'b1;
         request_weight_reload();
         send_weights("positive-overflow weights", weight_positive_overflow, NO_BUBBLES);
         fork
@@ -188,7 +180,7 @@ module matrixMultiplierWeightStationary_testcase #(
                              activation_positive_overflow, NO_BUBBLES);
             expect_result("full-width positive accumulation",
                           activation_positive_overflow, weight_positive_overflow,
-                          NO_BACKPRESSURE, RAW_RESULTS);
+                          NO_BACKPRESSURE);
         join
 
         request_weight_reload();
@@ -198,7 +190,7 @@ module matrixMultiplierWeightStationary_testcase #(
                              activation_negative_overflow, NO_BUBBLES);
             expect_result("full-width negative accumulation",
                           activation_negative_overflow, weight_negative_overflow,
-                          NO_BACKPRESSURE, RAW_RESULTS);
+                          NO_BACKPRESSURE);
         join
 
         $display("\nPASS: all %0dx%0d weight-stationary tests completed.", N, N);
@@ -244,7 +236,7 @@ module matrixMultiplierWeightStationary_testcase #(
 
     task expect_result(input string label, input matrix_t activation_matrix,
                        input matrix_t weight_matrix,
-                       input bit add_backpressure, input bit expected_pass_through);
+                       input bit add_backpressure);
         result_matrix_t actual, expected;
         result_t product;
         int errors;
@@ -257,8 +249,6 @@ module matrixMultiplierWeightStationary_testcase #(
                     product = activation_matrix[row][k] * weight_matrix[k][col];
                     expected[row][col] += product;
                 end
-                if (!expected_pass_through && expected[row][col][RESULT_WIDTH-1])
-                    expected[row][col] = '0;
             end
 
         for (int row = 0; row < N; row++) begin

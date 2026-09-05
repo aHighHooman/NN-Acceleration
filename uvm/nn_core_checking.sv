@@ -26,7 +26,7 @@
 
         // This model starts from passive accepted input traffic.  It uses a
         // wider signed accumulator, then applies the DUT's result-width
-        // truncation and post-accumulation ReLU behavior.
+        // truncation.
         function void predict(nn_core_matrix_item item,
                               output result_matrix_t expected);
             longint signed sum;
@@ -42,8 +42,6 @@
                         sum += activation_value * weight_value;
                     end
                     expected[row][col] = result_t'(sum);
-                    if (!item.pass_through && expected[row][col][RESULT_WIDTH-1])
-                        expected[row][col] = '0;
                 end
             end
         endfunction
@@ -111,8 +109,6 @@
         uvm_analysis_imp_result #(nn_core_result_row, nn_core_coverage) result_imp;
 
         int unsigned matrix_count;
-        int unsigned pass_through_count;
-        int unsigned relu_count;
         int unsigned negative_operand_count;
         int unsigned repeated_weight_matrix_count;
         bit result_last_seen;
@@ -135,8 +131,6 @@
             matrix_imp = new("matrix_imp", this);
             result_imp = new("result_imp", this);
             matrix_count = 0;
-            pass_through_count = 0;
-            relu_count = 0;
             negative_operand_count = 0;
             repeated_weight_matrix_count = 0;
             result_last_seen = 1'b0;
@@ -164,10 +158,6 @@
         function void write_matrix(nn_core_matrix_item item);
             bit has_negative;
             matrix_count++;
-            if (item.pass_through)
-                pass_through_count++;
-            else
-                relu_count++;
 
             has_negative = 1'b0;
             for (int row = 0; row < N; row++) begin
@@ -246,10 +236,6 @@
         function void check_broad_coverage();
             if (matrix_count == 0)
                 `uvm_error("COVERAGE", "no accepted activation matrices were observed")
-            if (pass_through_count == 0)
-                `uvm_error("COVERAGE", "pass-through mode bin was not observed")
-            if (relu_count == 0)
-                `uvm_error("COVERAGE", "ReLU mode bin was not observed")
             if (negative_operand_count == 0)
                 `uvm_error("COVERAGE", "negative operand bin was not observed")
             if (repeated_weight_matrix_count == 0)
@@ -272,8 +258,8 @@
 
         function void report_phase(uvm_phase phase);
             `uvm_info("COVERAGE", $sformatf(
-                "matrices=%0d passThrough=%0d ReLU=%0d negativeOperands=%0d repeatedUnderWeights=%0d",
-                matrix_count, pass_through_count, relu_count,
+                "matrices=%0d negativeOperands=%0d repeatedUnderWeights=%0d",
+                matrix_count,
                 negative_operand_count, repeated_weight_matrix_count), UVM_NONE)
             `uvm_info("COVERAGE", $sformatf(
                 "weightBubbles=%0d activationBubbles=%0d activationStallCycles=%0d outputStallCycles=%0d reloads=%0d injectedResets=%0d",

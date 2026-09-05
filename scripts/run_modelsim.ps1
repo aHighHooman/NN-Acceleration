@@ -22,6 +22,7 @@ $sources = @(
     (Join-Path $projectRoot "weightStationaryVariant/multiplierBlockWeightStationary.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/systolicArrayWeightStationary.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/nnAccelerator.sv"),
     (Join-Path $projectRoot "SPI_Module.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationarySPI.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv"),

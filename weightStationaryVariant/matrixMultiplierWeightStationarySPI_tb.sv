@@ -78,6 +78,19 @@ module matrixMultiplierWeightStationarySPI_tb;
         expect_result_row("row 0", 2, -3);
         expect_result_row("row 1", 4, 5);
 
+        passThrough = 1'b0;
+
+        activation_vector[0] = -6;
+        activation_vector[1] = 7;
+        send_activation_vector(activation_vector);
+
+        activation_vector[0] = 8;
+        activation_vector[1] = -9;
+        send_activation_vector(activation_vector);
+
+        expect_result_row("ReLU row 0", 0, 7);
+        expect_result_row("ReLU row 1", 8, 0);
+
         $display("PASS: asynchronous-clock SPI integration test completed.");
         $finish;
     end

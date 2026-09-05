@@ -9,7 +9,6 @@
     class nn_core_matrix_item extends uvm_sequence_item;
         data_t weights[N][N];
         data_t activations[N][N];
-        bit pass_through;
 
         bit load_weights;
         bit reload_before;
@@ -30,7 +29,6 @@
 
         function new(string name = "nn_core_matrix_item");
             super.new(name);
-            pass_through = 1'b1;
             load_weights = 1'b0;
             reload_before = 1'b0;
             weight_bubbles = 1'b0;
@@ -49,8 +47,8 @@
 
         function string convert2string();
             return $sformatf(
-                "passThrough=%0b loadWeights=%0b reload=%0b bubbles(w/a)=%0b/%0b stall=%0d stallUntilActivationBackpressure=%0b reset=%0d",
-                pass_through, load_weights, reload_before,
+                "loadWeights=%0b reload=%0b bubbles(w/a)=%0b/%0b stall=%0d stallUntilActivationBackpressure=%0b reset=%0d",
+                load_weights, reload_before,
                 weight_bubbles, activation_bubbles, stall_percent,
                 stall_until_activation_backpressure, reset_phase);
         endfunction

@@ -14,8 +14,6 @@
         int unsigned activation_rows_seen;
         int unsigned weight_generation;
         bit have_weights;
-        bit matrix_mode_valid;
-        bit matrix_mode;
         bit in_reset;
 
         function new(string name, uvm_component parent);
@@ -25,8 +23,6 @@
             activation_rows_seen = 0;
             weight_generation = 0;
             have_weights = 1'b0;
-            matrix_mode_valid = 1'b0;
-            matrix_mode = 1'b1;
             in_reset = 1'b0;
         endfunction
 
@@ -41,7 +37,6 @@
             weight_rows_seen = 0;
             activation_rows_seen = 0;
             have_weights = 1'b0;
-            matrix_mode_valid = 1'b0;
         endfunction
 
         function void publish_matrix();
@@ -53,7 +48,6 @@
                     item.activations[row][col] = activation_matrix[row][col];
                 end
             end
-            item.pass_through = matrix_mode;
             item.weight_generation = weight_generation;
             matrix_ap.write(item);
         endfunction
@@ -98,18 +92,10 @@
                                 activation_matrix[activation_rows_seen][lane] =
                                     vif.monitor_cb.activationData[lane];
 
-                            if (!matrix_mode_valid) begin
-                                matrix_mode = vif.monitor_cb.passThrough;
-                                matrix_mode_valid = 1'b1;
-                            end else if (matrix_mode != vif.monitor_cb.passThrough) begin
-                                `uvm_error("INPUT_FRAME", "passThrough changed inside an accepted activation matrix")
-                            end
-
                             activation_rows_seen++;
                             if (activation_rows_seen == N) begin
                                 publish_matrix();
                                 activation_rows_seen = 0;
-                                matrix_mode_valid = 1'b0;
                             end
                         end
                     end

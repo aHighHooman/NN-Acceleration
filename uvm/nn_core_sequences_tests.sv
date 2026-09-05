@@ -192,7 +192,6 @@
             item = nn_core_matrix_item::type_id::create("smoke_matrix");
             fill_identity_weights(item);
             fill_signed_activations(item);
-            item.pass_through = 1'b1;
             item.load_weights = 1'b1;
             item.stall_percent = 0;
             send_item(item);
@@ -211,11 +210,10 @@
 
             random_state = (random_seed == 0) ? DEFAULT_SEED : random_seed;
 
-            // Matrix 0: signed pass-through under identity weights.
+            // Matrix 0: signed multiplication under identity weights.
             item = nn_core_matrix_item::type_id::create("identity_signed");
             fill_identity_weights(item);
             fill_signed_activations(item);
-            item.pass_through = 1'b1;
             item.load_weights = 1'b1;
             item.stall_percent = 35;
             send_item(item);
@@ -224,26 +222,23 @@
             // case and includes activation bubbles.
             item = nn_core_matrix_item::type_id::create("identity_random");
             fill_random_activations(item);
-            item.pass_through = 1'b1;
             item.load_weights = 1'b0;
             item.activation_bubbles = 1'b1;
             item.stall_percent = 45;
             send_item(item);
 
-            // Matrix 2: mode change after the preceding results have drained.
-            item = nn_core_matrix_item::type_id::create("identity_relu");
+            // Matrix 2: another signed matrix under the stationary weights.
+            item = nn_core_matrix_item::type_id::create("identity_signed_repeat");
             fill_signed_activations(item);
-            item.pass_through = 1'b0;
             item.activation_bubbles = 1'b1;
             item.stall_percent = 30;
             send_item(item);
 
             // Matrix 3: new stationary weights, with bubbles in both input
             // streams and an explicit reload boundary.
-            item = nn_core_matrix_item::type_id::create("random_weights_pass");
+            item = nn_core_matrix_item::type_id::create("random_weights");
             fill_random_weights(item);
             fill_random_activations(item);
-            item.pass_through = 1'b1;
             item.load_weights = 1'b1;
             item.reload_before = 1'b1;
             item.weight_bubbles = 1'b1;
@@ -251,10 +246,9 @@
             item.stall_percent = 40;
             send_item(item);
 
-            // Matrix 4: reuse those weights in ReLU mode.
-            item = nn_core_matrix_item::type_id::create("random_weights_relu");
+            // Matrix 4: reuse those weights for another signed multiplication.
+            item = nn_core_matrix_item::type_id::create("random_weights_reused");
             fill_random_activations(item);
-            item.pass_through = 1'b0;
             item.activation_bubbles = 1'b1;
             item.stall_percent = 25;
             send_item(item);
@@ -265,7 +259,6 @@
                 item = nn_core_matrix_item::type_id::create($sformatf(
                     "activation_backpressure_%0d", stress_matrix));
                 fill_random_activations(item);
-                item.pass_through = 1'b0;
                 item.activation_bubbles = 1'b0;
                 item.stall_percent = 0;
                 item.stall_until_activation_backpressure = (stress_matrix == 0);
@@ -287,7 +280,6 @@
             item = nn_core_matrix_item::type_id::create("recovered_after_weight_reset");
             fill_edge_case_weights(item);
             fill_edge_case_activations(item);
-            item.pass_through = 1'b1;
             item.load_weights = 1'b1;
             item.activation_bubbles = 1'b1;
             item.stall_percent = 35;
@@ -298,7 +290,6 @@
             // from being intentionally discarded by this reset.
             item = nn_core_matrix_item::type_id::create("reset_partial_activation");
             fill_edge_case_activations(item);
-            item.pass_through = 1'b1;
             item.wait_for_drain = 1'b1;
             item.reset_phase = NN_RESET_DURING_ACTIVATION;
             item.reset_after_rows = 1;
@@ -307,19 +298,17 @@
             send_item(item);
 
             // Post-reset recovery must reload weights because reset clears the
-            // stationary array, then verify both output activation modes again.
+            // stationary array, then verify raw signed output again.
             item = nn_core_matrix_item::type_id::create("recovered_after_activation_reset");
             fill_identity_weights(item);
             fill_signed_activations(item);
-            item.pass_through = 1'b1;
             item.load_weights = 1'b1;
             item.weight_bubbles = 1'b1;
             item.stall_percent = 35;
             send_item(item);
 
-            item = nn_core_matrix_item::type_id::create("final_relu_random");
+            item = nn_core_matrix_item::type_id::create("final_random");
             fill_random_activations(item);
-            item.pass_through = 1'b0;
             item.activation_bubbles = 1'b1;
             item.stall_percent = 45;
             send_item(item);

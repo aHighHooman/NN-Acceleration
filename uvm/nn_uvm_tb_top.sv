@@ -24,7 +24,6 @@ module nn_uvm_tb_top;
         .resultData(bus.resultData),
         .resultValid(bus.resultValid),
         .resultReady(bus.resultReady),
-        .passThrough(bus.passThrough),
         .resultLast(bus.resultLast),
         .weightsLoaded(bus.weightsLoaded),
         .reloadWeights(bus.reloadWeights),
@@ -41,7 +40,6 @@ module nn_uvm_tb_top;
         bus.weightValid = 1'b0;
         bus.activationValid = 1'b0;
         bus.resultReady = 1'b0;
-        bus.passThrough = 1'b1;
         bus.reloadWeights = 1'b0;
         for (int lane = 0; lane < N; lane++) begin
             bus.weightData[lane] = '0;

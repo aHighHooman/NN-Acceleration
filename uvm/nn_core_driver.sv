@@ -12,8 +12,6 @@
         int unsigned stall_run;
         bit reset_active;
         bit activation_backpressure_stress_active;
-        bit current_mode;
-        bit current_mode_valid;
 
         function new(string name, uvm_component parent);
             super.new(name, parent);
@@ -23,8 +21,6 @@
             stall_run = 0;
             reset_active = 1'b0;
             activation_backpressure_stress_active = 1'b0;
-            current_mode = 1'b1;
-            current_mode_valid = 1'b0;
         endfunction
 
         function void build_phase(uvm_phase phase);
@@ -83,13 +79,11 @@
                 if (req.reset_phase == NN_RESET_DURING_ACTIVATION) begin
                     if (req.wait_for_drain)
                         wait_for_idle();
-                    set_pass_through(req.pass_through);
                     drive_activation_rows(req, req.reset_after_rows);
                     reset_dut();
                 end else begin
                     if (req.wait_for_drain)
                         wait_for_idle();
-                    set_pass_through(req.pass_through);
                     drive_activation_rows(req, N);
                 end
 
@@ -153,7 +147,6 @@
             @(negedge vif.clk);
             vif.rst_n = 1'b1;
             reset_active = 1'b0;
-            current_mode_valid = 1'b0;
         endtask
 
         task request_weight_reload();
@@ -188,16 +181,8 @@
                 @(posedge vif.clk);
                 cycles++;
                 if (cycles > 100000)
-                    `uvm_fatal("DRAIN_TIMEOUT", "core did not drain before a mode/reset boundary")
+                    `uvm_fatal("DRAIN_TIMEOUT", "core did not drain before a reset boundary")
             end
-        endtask
-
-        task set_pass_through(input bit pass_through_value);
-            if (current_mode_valid && current_mode != pass_through_value)
-                wait_for_idle();
-            vif.passThrough = pass_through_value;
-            current_mode = pass_through_value;
-            current_mode_valid = 1'b1;
         endtask
 
         task drive_weight_rows(nn_core_matrix_item item);

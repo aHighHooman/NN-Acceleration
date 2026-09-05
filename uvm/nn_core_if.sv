@@ -23,7 +23,6 @@ interface nn_core_if #(
     logic signed [RESULT_WIDTH-1:0] resultData [N];
     logic resultValid;
     logic resultReady;
-    logic passThrough;
     logic resultLast;
 
     logic weightsLoaded;
@@ -40,7 +39,7 @@ interface nn_core_if #(
         input weightData, weightValid, weightReady;
         input activationData, activationValid, activationReady;
         input resultData, resultValid, resultReady, resultLast;
-        input passThrough, weightsLoaded, reloadWeights, reloadReady;
+        input weightsLoaded, reloadWeights, reloadReady;
     endclocking
 
     // A small set of cycle-level properties is kept here because these are
