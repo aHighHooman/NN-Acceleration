@@ -47,6 +47,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/multip
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/systolicArrayWeightStationary.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/reluActivation.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/activationLayer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/weightedVectorReduction.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/matrixMultiplierWeightStationary.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/nnAccelerator.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/matrixMultiplierWeightStationarySPI.sv

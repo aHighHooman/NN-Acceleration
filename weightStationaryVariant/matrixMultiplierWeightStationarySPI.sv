@@ -1,6 +1,7 @@
 module matrixMultiplierWeightStationarySPI #(
     parameter int WIDTH = 16,
     parameter int N = 3,
+    parameter int REDUCTION_WEIGHT_WIDTH = WIDTH,
     parameter int INPUT_FIFO_DEPTH = 2*N,
     parameter int OUTPUT_FIFO_DEPTH = 2*N
 )(
@@ -9,6 +10,8 @@ module matrixMultiplierWeightStationarySPI #(
     output logic                    weightReady,
     output logic                    activationReady,
     input  logic                    passThrough,
+    input  logic                    reduceOutput,
+    input  logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight [N],
     output logic                    weightsLoaded,
     input  logic                    reloadWeights,
     output logic                    reloadReady,
@@ -22,7 +25,9 @@ module matrixMultiplierWeightStationarySPI #(
     input  logic                    activationMosi [N]
 );
 
-    localparam int RESULT_WIDTH = 2*WIDTH + $clog2(N);
+    localparam int ACTIVATED_WIDTH = 2*WIDTH + $clog2(N);
+    localparam int RESULT_WIDTH = ACTIVATED_WIDTH
+                                  + REDUCTION_WEIGHT_WIDTH + $clog2(N);
 
     logic signed [WIDTH-1:0] weightData[N], activationData[N];
     logic weightValid, activationValid;
@@ -146,6 +151,7 @@ module matrixMultiplierWeightStationarySPI #(
 
     nnAccelerator #(
         .WIDTH(WIDTH), .N(N),
+        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
         .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH),
         .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)
     ) accelerator (
@@ -154,6 +160,7 @@ module matrixMultiplierWeightStationarySPI #(
         .activationData(activationData), .activationValid(activationValid),
         .activationReady(activationFifoReady), .resultData(resultData),
         .resultValid(resultValid), .resultReady(resultReady), .passThrough(passThrough),
+        .reduceOutput(reduceOutput), .reductionWeight(reductionWeight),
         .resultLast(), .weightsLoaded(weightsLoaded),
         .reloadWeights(reloadWeights), .reloadReady(reloadReady)
     );
