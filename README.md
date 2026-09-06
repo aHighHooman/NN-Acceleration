@@ -25,11 +25,12 @@ flowchart LR
         ARRAY["N x N weight-stationary PE array"]
         R_FIFO["N result FIFOs"]
         ACT["Combinational activation layer"]
+        REDUCE["Combinational weighted vector reduction"]
     end
 
     W_RX --> W_CDC --> W_FIFO --> ARRAY
     A_RX --> A_CDC --> A_FIFO --> SKEW --> ARRAY
-    ARRAY --> R_FIFO --> ACT --> R_CDC --> R_TX
+    ARRAY --> R_FIFO --> ACT --> REDUCE --> R_CDC --> R_TX
 ```
 
 Each processing element stores one weight and performs a signed multiply-accumulate while forwarding the activation and partial sum:
@@ -75,10 +76,12 @@ sequenceDiagram
 - Send weight rows in reverse order: row `N-1` through row `0`.
 - Wait for `weightsLoaded` before sending activations.
 - Send activation rows in normal order: row `0` through row `N-1`.
-- Each result transfer is one output row. Lane `j` carries output column `j`.
-- Result width is `2*WIDTH + $clog2(N)` bits.
+- Each result transfer corresponds to one activated output vector. In vector mode lane `j` carries element `j`; in reduction mode lane 0 carries that vector's scalar prediction and the remaining lanes carry zero.
+- Accelerator/SPI result-lane width is `2*WIDTH + REDUCTION_WEIGHT_WIDTH + 2*$clog2(N)` bits so a reduced prediction is never truncated. Unreduced activated elements are sign-extended to this width.
 - `matrixMultiplierWeightStationary` produces the raw signed `X * W` matrix product.
-- `nnAccelerator` applies the combinational activation layer to that raw result: `passThrough = 1` preserves it and `passThrough = 0` applies ReLU.
+- `nnAccelerator` applies activation first (`passThrough = 1` preserves the raw value; `passThrough = 0` applies ReLU), then feeds that one activated output vector to `weightedVectorReduction`.
+- `reduceOutput = 0` returns the sign-extended activated vector. `reduceOutput = 1` returns the full-width weighted prediction in lane 0 and zero in lanes `1:N-1`.
+- `reductionWeight[N]` is a direct workload-configuration input. It is not stored or updated internally and, like `passThrough` and `reduceOutput`, must remain stable while work is in flight.
 - Assert `reloadWeights` only while `reloadReady` is high.
 - `weightReady` and `activationReady` indicate when a complete parallel SPI vector may be started.
 
@@ -88,6 +91,7 @@ sequenceDiagram
 | --- | ---: | --- |
 | `WIDTH` | `16` | Signed input and weight width |
 | `N` | `3` | Square matrix and systolic-array dimension; currently tested for 2-4 |
+| `REDUCTION_WEIGHT_WIDTH` | `WIDTH` | Signed weighted-readout coefficient width |
 | `INPUT_FIFO_DEPTH` | `2*N` | Per-lane activation FIFO depth |
 | `OUTPUT_FIFO_DEPTH` | `2*N` | Per-lane result FIFO depth |
 
@@ -98,8 +102,10 @@ The self-checking regression covers:
 - 2x2, 3x3, and 4x4 arrays
 - signed and edge-case operands
 - worst-case positive and negative accumulation
+- weighted vector reduction with signed operands, cancellation, and full-width accumulation
 - raw signed matrix-product results
 - composed pass-through and ReLU accelerator results
+- composed activation-to-reduction behavior, one scalar per activated vector, including predictions wider than the activated element width
 - input bubbles, output backpressure, and back-to-back matrices
 - weight reloads
 - asynchronous `clk`/`sclk` SPI input and output transfers
@@ -174,6 +180,8 @@ clock domains, and DE1-SoC pin locations still need explicit constraints.
 |   |-- multiplierBlockWeightStationary.sv
 |   |-- activationLayer.sv
 |   |-- reluActivation.sv
+|   |-- weightedVectorReduction.sv
+|   |-- weightedVectorReduction_tb.sv
 |   |-- matrixMultiplierWeightStationary_tb.sv
 |   `-- matrixMultiplierWeightStationarySPI_tb.sv
 |-- Quartus Stuff/
