@@ -157,8 +157,9 @@ module matrixMultiplierWeightStationarySPI #(
     ) accelerator (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightFifoReady),
-        .activationData(activationData), .activationValid(activationValid),
+        .activationData(activationData), .targetData('0), .activationValid(activationValid),
         .activationReady(activationFifoReady), .resultData(resultData),
+        .resultTargetData(), .learningDirection(),
         .resultValid(resultValid), .resultReady(resultReady), .passThrough(passThrough),
         .reduceOutput(reduceOutput), .reductionWeight(reductionWeight),
         .resultLast(), .weightsLoaded(weightsLoaded),
