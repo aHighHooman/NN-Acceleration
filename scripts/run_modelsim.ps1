@@ -28,6 +28,7 @@ $sources = @(
     (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationarySPI.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationarySPI_tb.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/nnAccelerator_tb.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/weightedVectorReduction_tb.sv")
 )
 
@@ -50,9 +51,13 @@ try {
     & vsim -c work.weightedVectorReduction_tb `
         -l reduction-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
     if ($LASTEXITCODE -ne 0) { throw "Weighted reduction regression failed." }
+
+    & vsim -c work.nnAccelerator_tb `
+        -l accelerator-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
+    if ($LASTEXITCODE -ne 0) { throw "Accelerator target/comparator regression failed." }
 }
 finally {
     Pop-Location
 }
 
-Write-Output "PASS: core, asynchronous-clock SPI, and weighted reduction regressions completed."
+Write-Output "PASS: core, asynchronous-clock SPI, reduction, and target/comparator regressions completed."
