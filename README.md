@@ -91,6 +91,7 @@ sequenceDiagram
 | --- | ---: | --- |
 | `WIDTH` | `16` | Signed input and weight width |
 | `N` | `3` | Square matrix and systolic-array dimension; currently tested for 2-4 |
+| `TARGET_WIDTH` | `WIDTH` | Signed target width; narrower targets are sign-extended for prediction comparison |
 | `REDUCTION_WEIGHT_WIDTH` | `WIDTH` | Signed weighted-readout coefficient width |
 | `INPUT_FIFO_DEPTH` | `2*N` | Per-lane activation FIFO depth |
 | `OUTPUT_FIFO_DEPTH` | `2*N` | Per-lane result FIFO depth |
@@ -106,6 +107,9 @@ The self-checking regression covers:
 - raw signed matrix-product results
 - composed pass-through and ReLU accelerator results
 - composed activation-to-reduction behavior, one scalar per activated vector, including predictions wider than the activated element width
+- atomic activation/target acceptance, including target-FIFO-full backpressure
+- ordered target comparison for back-to-back and bubbled samples, with vectors chosen to expose off-by-one pairing
+- signed target comparison for all three learning directions, including negative narrow-target sign extension and stable output stalls
 - input bubbles, output backpressure, and back-to-back matrices
 - weight reloads
 - asynchronous `clk`/`sclk` SPI input and output transfers
@@ -116,7 +120,19 @@ With ModelSim commands (`vlib`, `vlog`, and `vsim`) on `PATH`, run:
 pwsh -File scripts/run_modelsim.ps1
 ```
 
-The current regressions complete with zero simulation errors.
+With ModelSim configured, the regression script treats any simulation error as
+a failure.
+
+At the `nnAccelerator` boundary, `targetData` is accepted atomically with the
+complete `activationData[N]` vector on `activationValid && activationReady`.
+One ordered target FIFO contributes to activation backpressure and presents its
+head as `resultTargetData`; that head advances only with the shared
+`resultValid && resultReady` result transaction. No fixed pipeline latency is
+used to align targets and predictions. While `resultValid` is asserted, the
+signed 2-bit `learningDirection` compares that target head with the full scalar
+prediction: `+1` when the target is greater, `0` when equal, and `-1` when the
+target is less. Narrower operands are sign-extended for the comparison, and the
+target, prediction, and direction remain stable together under backpressure.
 
 ### UVM core verification environment
 
