@@ -1,9 +1,9 @@
 `timescale 1ns / 1ps
 
-// Integration-level directed verification for queued resident reduction
-// updates and the Phase 5E common weight-version boundary. The scoreboard snapshots the
-// PE weights as each accepted sample actually enters the array, so it also
-// checks that every result uses one coherent pre- or post-update weight version.
+// Integration-level directed verification for the final Phase 5F training
+// semantics.  The scoreboard follows every accepted sample and every ordered
+// matrix/reduction update package across bubbles, backpressure, and explicit
+// update-wave stalls.
 module nnAccelerator_tb;
     localparam int WIDTH = 8;
     localparam int TARGET_WIDTH = 7;
@@ -16,7 +16,8 @@ module nnAccelerator_tb;
     localparam int SCALE = 1 << FRACTION_BITS;
     localparam int HALF = 1 << (REDUCTION_FRACTION_BITS - 1);
     localparam int PREDICTION_WIDTH = 2*WIDTH + 2*$clog2(N);
-    localparam int SAMPLE_COUNT = 10;
+    localparam int SAMPLE_COUNT = 14;
+    localparam int UPDATE_STAGES = 2*N - 1;
 
     typedef logic signed [PREDICTION_WIDTH-1:0] result_t;
     typedef logic signed [TARGET_WIDTH-1:0] target_t;
@@ -40,19 +41,26 @@ module nnAccelerator_tb;
     logic expectedTrainingEnable[0:SAMPLE_COUNT-1];
     logic signed [WIDTH-1:0] acceptedInput[0:SAMPLE_COUNT-1][N];
     logic signed [WIDTH-1:0] sampleMatrixWeight[0:SAMPLE_COUNT-1][N][N];
+    integer sampleMatrixVersion[0:SAMPLE_COUNT-1];
     logic signed [WIDTH-1:0] modelMatrixWeight[N][N];
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] modelReductionWeight[N];
     logic signed [1:0] pendingReductionDirection[0:SAMPLE_COUNT-1][N];
+    integer pendingReductionSampleIndex[0:SAMPLE_COUNT-1];
+    integer acceptedUpdateSampleIndex[0:SAMPLE_COUNT-1];
     integer reductionQueueHead, reductionQueueTail, reductionQueueCount;
-    integer matrixEntryCount;
+    integer matrixEntryCount, acceptedUpdateCount, completedUpdateCount;
+    integer matrixVersion, reductionVersion, lastCommittedSample;
     bit sawBackToBack, sawBubble;
     bit sawPositive, sawZero, sawNegative;
+    bit sawOverlappingUpdates, sawUpdateWaveStall;
+    bit sawOldWeightVersion, sawUpdatedWeightVersion;
+    bit sawReductionIncrement, sawReductionDecrement;
 
     nnAccelerator #(
         .WIDTH(WIDTH), .N(N), .TARGET_WIDTH(TARGET_WIDTH),
         .FRACTION_BITS(FRACTION_BITS),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
-        .INPUT_FIFO_DEPTH(2), .OUTPUT_FIFO_DEPTH(2)
+        .INPUT_FIFO_DEPTH(4), .OUTPUT_FIFO_DEPTH(2)
     ) dut (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
@@ -124,18 +132,30 @@ module nnAccelerator_tb;
         result_t expectedPredictionNow;
         logic signed [1:0] expectedDirectionNow;
         integer rawResult[N];
+        integer liveUpdateStages;
 
         if (!rst_n) begin
             cycleCount        = 0;
             acceptedCount     = 0;
             consumedCount     = 0;
             matrixEntryCount  = 0;
+            acceptedUpdateCount = 0;
+            completedUpdateCount = 0;
+            matrixVersion = 0;
+            reductionVersion = 0;
+            lastCommittedSample = -1;
             lastAcceptedCycle = -2;
             sawBackToBack     = 0;
             sawBubble         = 0;
             sawPositive       = 0;
             sawZero           = 0;
             sawNegative       = 0;
+            sawOverlappingUpdates = 0;
+            sawUpdateWaveStall = 0;
+            sawOldWeightVersion = 0;
+            sawUpdatedWeightVersion = 0;
+            sawReductionIncrement = 0;
+            sawReductionDecrement = 0;
             reductionQueueHead = 0;
             reductionQueueTail = 0;
             reductionQueueCount = 0;
@@ -147,6 +167,13 @@ module nnAccelerator_tb;
             modelMatrixWeight[1][1] = 4*SCALE;
         end else begin
             cycleCount = cycleCount + 1;
+
+            liveUpdateStages = 0;
+            for (int stage = 0; stage < UPDATE_STAGES; stage++)
+                if (dut.matrixEngine.systolicArr.updateValidPipe[stage])
+                    liveUpdateStages = liveUpdateStages + 1;
+            if (liveUpdateStages >= 2)
+                sawOverlappingUpdates = 1;
 
             if (dut.targetPush !== (activationValid && activationReady))
                 $fatal(1, "target push did not equal the external sample handshake");
@@ -194,6 +221,7 @@ module nnAccelerator_tb;
                     for (int columnIndex = 0; columnIndex < N; columnIndex++)
                         sampleMatrixWeight[matrixEntryCount][rowIndex][columnIndex] =
                             modelMatrixWeight[rowIndex][columnIndex];
+                sampleMatrixVersion[matrixEntryCount] = matrixVersion;
                 matrixEntryCount = matrixEntryCount + 1;
             end
 
@@ -224,6 +252,7 @@ module nnAccelerator_tb;
                         endcase
                     end
                 end
+                matrixVersion = matrixVersion + 1;
             end
 
             if (activationValid && activationReady) begin
@@ -263,6 +292,14 @@ module nnAccelerator_tb;
                     $fatal(1, "sample %0d matrix update valid got %0b, expected %0b",
                            consumedCount, matrixUpdateValid,
                            expectedTrainingEnable[consumedCount]);
+                if (sampleMatrixVersion[consumedCount] != reductionVersion)
+                    $fatal(1, "sample %0d crossed mismatched matrix/reduction versions %0d/%0d",
+                           consumedCount, sampleMatrixVersion[consumedCount],
+                           reductionVersion);
+                if (sampleMatrixVersion[consumedCount] == 0)
+                    sawOldWeightVersion = 1;
+                else
+                    sawUpdatedWeightVersion = 1;
                 expectedPredictionNow = phase5_prediction(
                     acceptedInput[consumedCount][0],
                     acceptedInput[consumedCount][1],
@@ -324,6 +361,9 @@ module nnAccelerator_tb;
                 end
 
                 if (expectedTrainingEnable[consumedCount]) begin
+                    acceptedUpdateSampleIndex[acceptedUpdateCount] = consumedCount;
+                    acceptedUpdateCount = acceptedUpdateCount + 1;
+                    pendingReductionSampleIndex[reductionQueueTail] = consumedCount;
                     reductionQueueTail = reductionQueueTail + 1;
                     reductionQueueCount = reductionQueueCount + 1;
                 end
@@ -345,6 +385,13 @@ module nnAccelerator_tb;
             if (dut.matrixUpdateComplete) begin
                 if (reductionQueueCount == 0)
                     $fatal(1, "reference reduction queue underflow");
+                if (pendingReductionSampleIndex[reductionQueueHead] <=
+                    lastCommittedSample)
+                    $fatal(1, "reduction packages committed out of sample order: %0d after %0d",
+                           pendingReductionSampleIndex[reductionQueueHead],
+                           lastCommittedSample);
+                lastCommittedSample =
+                    pendingReductionSampleIndex[reductionQueueHead];
                 for (int lane = 0; lane < N; lane++) begin
                     if ($signed(dut.reductionUpdateHead[2*lane +: 2]) !==
                         pendingReductionDirection[reductionQueueHead][lane])
@@ -352,19 +399,25 @@ module nnAccelerator_tb;
                                lane);
                     case (pendingReductionDirection[reductionQueueHead][lane])
                         2'sd1: if (modelReductionWeight[lane] !=
-                                      {1'b0, {(REDUCTION_WEIGHT_WIDTH-1){1'b1}}})
+                                      {1'b0, {(REDUCTION_WEIGHT_WIDTH-1){1'b1}}}) begin
+                            sawReductionIncrement = 1;
                             modelReductionWeight[lane] =
                                 modelReductionWeight[lane] + 1;
+                        end
                         -2'sd1: if (modelReductionWeight[lane] !=
-                                       {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}})
+                                       {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}}) begin
+                            sawReductionDecrement = 1;
                             modelReductionWeight[lane] =
                                 modelReductionWeight[lane] - 1;
+                        end
                         default: modelReductionWeight[lane] =
                                      modelReductionWeight[lane];
                     endcase
                 end
                 reductionQueueHead = reductionQueueHead + 1;
                 reductionQueueCount = reductionQueueCount - 1;
+                completedUpdateCount = completedUpdateCount + 1;
+                reductionVersion = reductionVersion + 1;
             end
         end
     end
@@ -374,6 +427,9 @@ module nnAccelerator_tb;
         result_t heldPrediction;
         logic signed [1:0] heldDirection;
         logic heldTrainingEnable;
+        logic signed [WIDTH-1:0] inferenceMatrixWeight[N][N];
+        logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
+            inferenceReductionWeight[N];
 
         clk = 0;
         rst_n = 0;
@@ -405,51 +461,51 @@ module nnAccelerator_tb;
         send_weight_row(2*SCALE, -1*SCALE);
         wait(weightsLoaded);
 
-        // x0/x1/x2 produce stored predictions 0, -40, and -16 (real values
-        // 0, -2.5, and -1) with stored targets 32, -48, and -16. Correct
-        // directions are +1, -1, 0. Pairing targets one
-        // position late instead yields -1, +1, +1.
-        // The first two samples are accepted on consecutive cycles with
-        // training enabled and disabled respectively. The third returns the
-        // live input to one before the disabled sample reaches completion,
-        // exposing any accidental use of the unbuffered control.
+        // Four consecutive accepted samples carry the exact Phase 5F
+        // training pattern 0,1,0,1.  All four are in flight before the first
+        // result is released, and the live input is returned to zero after
+        // sample 3, so it disagrees with that buffered training transaction.
         @(negedge clk);
         activationData[0] = 7*SCALE;
         activationData[1] = -1*SCALE;
         targetData = 2*SCALE;
-        trainingEnable = 1;
+        trainingEnable = 0;
         activationValid = 1;
         if (!activationReady)
-            $fatal(1, "first sample was unexpectedly backpressured");
+            $fatal(1, "sample 0 was unexpectedly backpressured");
         @(posedge clk);
         @(negedge clk);
         activationData[0] = 2*SCALE;
         activationData[1] = -1*SCALE;
         targetData = -3*SCALE;
-        trainingEnable = 0;
+        trainingEnable = 1;
         if (!activationReady)
-            $fatal(1, "second back-to-back sample was unexpectedly backpressured");
+            $fatal(1, "sample 1 was unexpectedly backpressured");
         @(posedge clk);
-
-        // Keep x2 asserted while the two-entry target FIFO is full. Even if
-        // the matrix input can accept, neither half of this sample may move.
         @(negedge clk);
         activationData[0] = 5*SCALE;
         activationData[1] = -1*SCALE;
         targetData = -1*SCALE;
+        trainingEnable = 0;
+        if (!activationReady)
+            $fatal(1, "sample 2 was unexpectedly backpressured");
+        @(posedge clk);
+        @(negedge clk);
+        activationData[0] = 2*SCALE;
+        activationData[1] = 0;
+        targetData = 2*SCALE;
         trainingEnable = 1;
-        wait(dut.targetFull && dut.matrixActivationReady);
-        repeat (3) begin
-            #1;
-            if (activationReady || dut.matrixActivationValid ||
-                !dut.trainingEnableFull ||
-                dut.targetPush || acceptedCount != 2)
-                $fatal(1, "metadata-full backpressure did not hold the complete sample");
-            @(negedge clk);
-        end
+        if (!activationReady)
+            $fatal(1, "sample 3 was unexpectedly backpressured");
+        @(posedge clk);
+        @(negedge clk);
+        activationValid = 0;
+        trainingEnable = 0;
+        if (acceptedCount != 4)
+            $fatal(1, "the alternating training pattern was not accepted consecutively");
 
-        // Hold the first output for several cycles. Prediction, selected FIFO
-        // head, and comparator output must be one stable transaction.
+        // Hold the first output for several cycles. Prediction, target, input
+        // signs, and buffered training enable must remain one stable tuple.
         wait(resultValid);
         @(negedge clk);
         heldTarget = resultTargetData;
@@ -468,32 +524,60 @@ module nnAccelerator_tb;
                 $fatal(1, "prediction or buffered metadata changed while output was stalled");
         end
 
-        // Permit exactly one result handshake. Full-FIFO lookahead accepts x2
-        // on that edge. One target pops and one pushes, leaving target1 (-3),
-        // not target2, selected next.
+        // Drain the alternating sequence.  Only sample indices 1 and 3 may
+        // create matrix/reduction update packages.
         resultReady = 1;
-        @(posedge clk);
-        @(negedge clk);
-        resultReady = 0;
-        activationValid = 0;
-        if (acceptedCount != 3 || consumedCount != 1 ||
-            dut.targetFifo.values != 2)
-            $fatal(1, "simultaneous target pop/push accounting was not 3 accepted, 1 consumed, 2 queued");
-        wait(resultValid);
-        @(negedge clk);
-        if (resultTargetData !== -3*SCALE ||
-            dut.trainingEnableHead !== 1'b0 || trainingEnable !== 1'b1)
-            $fatal(1, "next sample did not retain target/training metadata: target=%0d bufferedTrain=%0b liveTrain=%0b",
-                   resultTargetData, dut.trainingEnableHead, trainingEnable);
+        wait_for_consumed(4);
+        if (acceptedUpdateCount != 2 ||
+            acceptedUpdateSampleIndex[0] != 1 ||
+            acceptedUpdateSampleIndex[1] != 3)
+            $fatal(1, "alternating training pattern updated samples [%0d,%0d], expected [1,3]",
+                   acceptedUpdateSampleIndex[0], acceptedUpdateSampleIndex[1]);
+        wait_for_reduction_updates();
 
-        // Drain x1/x2, then add intentional input bubbles. These samples also
-        // retain negative predictions and repeat all comparator outcomes.
+        // Inference-only traffic continues to predict through bubbles and
+        // output backpressure without changing either resident weight set.
+        inferenceMatrixWeight[0][0] =
+            dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg;
+        inferenceMatrixWeight[0][1] =
+            dut.matrixEngine.systolicArr.row_loop[0].col_loop[1].mb.weightReg;
+        inferenceMatrixWeight[1][0] =
+            dut.matrixEngine.systolicArr.row_loop[1].col_loop[0].mb.weightReg;
+        inferenceMatrixWeight[1][1] =
+            dut.matrixEngine.systolicArr.row_loop[1].col_loop[1].mb.weightReg;
+        for (int lane = 0; lane < N; lane++)
+            inferenceReductionWeight[lane] = dut.residentReductionWeight[lane];
+        resultReady = 0;
+        send_sample_with_bubbles(SCALE, 0, SCALE, 0, 1);
+        send_sample_with_bubbles(-SCALE, SCALE, 0, 0, 2);
+        send_sample_with_bubbles(0, -SCALE, -SCALE, 0, 1);
+        wait(resultValid);
+        repeat (3) @(negedge clk);
         resultReady = 1;
-        wait_for_consumed(3);
+        wait_for_consumed(7);
+        wait(!dut.matrixEngine.pipelineBusy);
+        @(negedge clk);
+        if (acceptedUpdateCount != 2)
+            $fatal(1, "an inference-only sample generated a learning update");
+        if (dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg !== inferenceMatrixWeight[0][0] ||
+            dut.matrixEngine.systolicArr.row_loop[0].col_loop[1].mb.weightReg !== inferenceMatrixWeight[0][1] ||
+            dut.matrixEngine.systolicArr.row_loop[1].col_loop[0].mb.weightReg !== inferenceMatrixWeight[1][0] ||
+            dut.matrixEngine.systolicArr.row_loop[1].col_loop[1].mb.weightReg !== inferenceMatrixWeight[1][1])
+            $fatal(1, "inference changed a matrix PE weight");
+        for (int lane = 0; lane < N; lane++)
+            if (dut.residentReductionWeight[lane] !==
+                inferenceReductionWeight[lane])
+                $fatal(1, "inference changed reduction weight %0d", lane);
+
+        // Back-to-back training results place packages in successive update
+        // stages.  Freeze arrayAdvance while both are live and prove that the
+        // matrix wave and ordered reduction queue resume at the same boundary.
         send_sample_with_bubbles(2*SCALE, 0, 2*SCALE, 1, 2); // 1 -> +1
-        send_sample_with_bubbles(2*SCALE, -1*SCALE, -3*SCALE, 1, 3); // -2.5 -> -1
+        send_sample_with_bubbles(2*SCALE, -1*SCALE, -3*SCALE, 1, 0); // -2.5 -> -1
+        stall_active_update_wave();
+        wait_for_consumed(9);
         send_sample_with_bubbles(0, -1*SCALE, -7*SCALE/2, 1, 1);   // -3.5 -> 0
-        wait_for_consumed(6);
+        wait_for_consumed(10);
 
         // Exercise both saturation endpoints without relying on arithmetic
         // overflow. The first sample requests a decrement of a resident MIN;
@@ -502,7 +586,7 @@ module nnAccelerator_tb;
         reductionWeight[1] = {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}};
         load_reduction_vector();
         send_sample_with_bubbles(2*SCALE, SCALE, -(1 << (TARGET_WIDTH-1)), 1, 1);
-        wait_for_consumed(7);
+        wait_for_consumed(11);
         wait_for_reduction_updates();
         @(negedge clk);
         if (dut.residentReductionWeight[1] !==
@@ -511,7 +595,7 @@ module nnAccelerator_tb;
 
         load_reduction_vector();
         send_sample_with_bubbles(0, SCALE, (1 << (TARGET_WIDTH-1))-1, 1, 1);
-        wait_for_consumed(8);
+        wait_for_consumed(12);
         wait_for_reduction_updates();
         @(negedge clk);
         if (dut.residentReductionWeight[0] !==
@@ -527,7 +611,7 @@ module nnAccelerator_tb;
         passThrough = 0;
         send_sample_with_bubbles(7*SCALE, -1*SCALE,
                                  (1 << (TARGET_WIDTH-1))-1, 1, 1);
-        wait_for_consumed(9);
+        wait_for_consumed(13);
 
         // A nonzero error with an all-zero input must update neither the
         // reduction weights nor any matrix PE: row directions are all zero
@@ -560,8 +644,22 @@ module nnAccelerator_tb;
             $fatal(1, "did not observe both consecutive and bubbled accepted samples");
         if (!sawPositive || !sawZero || !sawNegative)
             $fatal(1, "did not observe all three learning-direction outcomes");
+        if (!sawOverlappingUpdates)
+            $fatal(1, "did not observe multiple learning packages in successive update stages");
+        if (!sawUpdateWaveStall)
+            $fatal(1, "did not complete the directed update-wave stall");
+        if (!sawOldWeightVersion || !sawUpdatedWeightVersion)
+            $fatal(1, "did not observe both sides of the shared matrix/reduction version boundary");
+        if (!sawReductionIncrement || !sawReductionDecrement)
+            $fatal(1, "did not observe both signed reduction-weight LSB steps");
+        if (acceptedUpdateCount != completedUpdateCount)
+            $fatal(1, "accepted/completed learning packages differ: %0d/%0d",
+                   acceptedUpdateCount, completedUpdateCount);
+        if (REDUCTION_WEIGHT_WIDTH != 8 ||
+            (1.0 / (1 << REDUCTION_FRACTION_BITS)) != 0.0078125)
+            $fatal(1, "reduction weight LSB is not the required Q1.7 1/128");
 
-        $display("PASS: Phase 5E ordered matrix/reduction commits, saturation, and backpressure.");
+        $display("PASS: Phase 5F per-sample training, coherent versions, ordered/stalled updates, Q1.7 steps, and inference stability.");
         $finish;
     end
 
@@ -599,6 +697,84 @@ module nnAccelerator_tb;
         @(negedge clk) loadReductionWeights = 1;
         @(posedge clk);
         @(negedge clk) loadReductionWeights = 0;
+    endtask
+
+    task stall_active_update_wave();
+        logic heldStageValid[UPDATE_STAGES];
+        logic signed [1:0] heldStageRow[UPDATE_STAGES][N];
+        logic signed [1:0] heldStageColumn[UPDATE_STAGES][N];
+        logic signed [2*N-1:0] heldReductionHead;
+        logic signed [WIDTH-1:0] heldMatrixWeight[N][N];
+        logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
+            heldReductionWeight[N];
+        integer heldQueueCount, heldQueueHead, heldCompletedCount;
+        begin
+            wait ((dut.matrixEngine.systolicArr.updateValidPipe[0] &&
+                   dut.matrixEngine.systolicArr.updateValidPipe[1]) ||
+                  (dut.matrixEngine.systolicArr.updateValidPipe[1] &&
+                   dut.matrixEngine.systolicArr.updateValidPipe[2]));
+            @(negedge clk);
+            force dut.matrixEngine.arrayAdvance = 1'b0;
+            #1;
+
+            heldQueueCount = reductionQueueCount;
+            heldQueueHead = reductionQueueHead;
+            heldCompletedCount = completedUpdateCount;
+            heldReductionHead = dut.reductionUpdateHead;
+            heldMatrixWeight[0][0] = dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg;
+            heldMatrixWeight[0][1] = dut.matrixEngine.systolicArr.row_loop[0].col_loop[1].mb.weightReg;
+            heldMatrixWeight[1][0] = dut.matrixEngine.systolicArr.row_loop[1].col_loop[0].mb.weightReg;
+            heldMatrixWeight[1][1] = dut.matrixEngine.systolicArr.row_loop[1].col_loop[1].mb.weightReg;
+            for (int stage = 0; stage < UPDATE_STAGES; stage++) begin
+                heldStageValid[stage] =
+                    dut.matrixEngine.systolicArr.updateValidPipe[stage];
+                for (int lane = 0; lane < N; lane++) begin
+                    heldStageRow[stage][lane] =
+                        dut.matrixEngine.systolicArr.updateRowPipe[stage][lane];
+                    heldStageColumn[stage][lane] =
+                        dut.matrixEngine.systolicArr.updateColumnPipe[stage][lane];
+                end
+            end
+            for (int lane = 0; lane < N; lane++)
+                heldReductionWeight[lane] = dut.residentReductionWeight[lane];
+
+            repeat (3) begin
+                @(posedge clk); #1;
+                if (dut.matrixUpdateComplete ||
+                    reductionQueueCount != heldQueueCount ||
+                    reductionQueueHead != heldQueueHead ||
+                    completedUpdateCount != heldCompletedCount ||
+                    dut.reductionUpdateHead !== heldReductionHead)
+                    $fatal(1, "reduction update queue moved during arrayAdvance stall");
+                for (int stage = 0; stage < UPDATE_STAGES; stage++) begin
+                    if (dut.matrixEngine.systolicArr.updateValidPipe[stage] !==
+                        heldStageValid[stage])
+                        $fatal(1, "matrix update stage %0d moved during stall", stage);
+                    for (int lane = 0; lane < N; lane++) begin
+                        if (dut.matrixEngine.systolicArr.updateRowPipe[stage][lane] !==
+                                heldStageRow[stage][lane] ||
+                            dut.matrixEngine.systolicArr.updateColumnPipe[stage][lane] !==
+                                heldStageColumn[stage][lane])
+                            $fatal(1, "matrix update package changed during stall at stage %0d lane %0d",
+                                   stage, lane);
+                    end
+                end
+                if (dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg !== heldMatrixWeight[0][0] ||
+                    dut.matrixEngine.systolicArr.row_loop[0].col_loop[1].mb.weightReg !== heldMatrixWeight[0][1] ||
+                    dut.matrixEngine.systolicArr.row_loop[1].col_loop[0].mb.weightReg !== heldMatrixWeight[1][0] ||
+                    dut.matrixEngine.systolicArr.row_loop[1].col_loop[1].mb.weightReg !== heldMatrixWeight[1][1])
+                    $fatal(1, "matrix PE weight changed during update-wave stall");
+                for (int lane = 0; lane < N; lane++)
+                    if (dut.residentReductionWeight[lane] !==
+                        heldReductionWeight[lane])
+                        $fatal(1, "reduction weight %0d changed during update-wave stall", lane);
+            end
+
+            @(negedge clk);
+            release dut.matrixEngine.arrayAdvance;
+            sawUpdateWaveStall = 1;
+            wait(completedUpdateCount > heldCompletedCount);
+        end
     endtask
 
     task wait_for_reduction_updates();

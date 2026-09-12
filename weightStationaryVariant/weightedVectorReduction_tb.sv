@@ -25,6 +25,16 @@ module weightedVectorReduction_tb;
     );
 
     initial begin
+        if (REDUCTION_WEIGHT_WIDTH != 8 ||
+            (1.0 / (1 << (REDUCTION_WEIGHT_WIDTH-1))) != 0.0078125)
+            $fatal(1, "8-bit reduction coefficients are not Q1.7 with a 1/128 LSB");
+        if ($bits(dut.product[0]) !=
+                MATRIX_RESULT_WIDTH + REDUCTION_WEIGHT_WIDTH ||
+            $bits(dut.accumulator) !=
+                MATRIX_RESULT_WIDTH + REDUCTION_WEIGHT_WIDTH + $clog2(N) ||
+            $bits(prediction) != MATRIX_RESULT_WIDTH + $clog2(N))
+            $fatal(1, "weighted reduction intermediate/output widths changed");
+
         set_values(64, 32, 16, 8, 64, 64, 64, 64);
         check_prediction("positive fractional weights", 7680, 15);
 
@@ -50,7 +60,7 @@ module weightedVectorReduction_tb;
         set_values(-128, -128, -128, -128, 127, 127, 127, 127);
         check_prediction("negative arithmetic rescale", -65024, -127);
 
-        $display("PASS: weighted vector reduction tests completed.");
+        $display("PASS: full-width products/accumulation, one final arithmetic rescale, and architectural prediction width.");
         $finish;
     end
 

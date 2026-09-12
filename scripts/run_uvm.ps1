@@ -1,7 +1,8 @@
 param(
     [ValidateSet(
         "nn_uvm_smoke_test",
-        "nn_uvm_regression_test"
+        "nn_uvm_regression_test",
+        "nn_uvm_training_test"
     )]
     [string]$TestName = "nn_uvm_regression_test",
     [string]$Seed = ""
@@ -41,8 +42,14 @@ $uvmSource = Join-Path $questaRoot "verilog_src/uvm-1.1d/src"
 # Questa 2025.1+ reads SALT_LICENSE_SERVER.  Some Intel installers still leave
 # a valid node-locked path in SALT_LICENSE_FILE, so bridge it for this process
 # without changing the user's machine-wide environment.
-if (-not $env:SALT_LICENSE_SERVER -and $env:SALT_LICENSE_FILE) {
-    $env:SALT_LICENSE_SERVER = $env:SALT_LICENSE_FILE
+if (-not $env:SALT_LICENSE_SERVER) {
+    $userSaltLicense = [Environment]::GetEnvironmentVariable(
+        "SALT_LICENSE_SERVER", "User")
+    if ($userSaltLicense) {
+        $env:SALT_LICENSE_SERVER = $userSaltLicense
+    } elseif ($env:SALT_LICENSE_FILE) {
+        $env:SALT_LICENSE_SERVER = $env:SALT_LICENSE_FILE
+    }
 }
 
 if (-not (Test-Path -LiteralPath (Join-Path $uvmSource "uvm_macros.svh"))) {
@@ -56,15 +63,22 @@ New-Item -ItemType Directory -Path $buildDir | Out-Null
 
 $rtlSources = @(
     (Join-Path $projectRoot "memory/signedFifo.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/reluActivation.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/activationLayer.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightedVectorReduction.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/multiplierBlockWeightStationary.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/systolicArrayWeightStationary.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary.sv")
+    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/nnAccelerator.sv")
 )
 
 $uvmSources = @(
     (Join-Path $projectRoot "uvm/nn_core_if.sv"),
+    (Join-Path $projectRoot "uvm/nn_training_if.sv"),
     (Join-Path $projectRoot "uvm/nn_uvm_pkg.sv"),
-    (Join-Path $projectRoot "uvm/nn_uvm_tb_top.sv")
+    (Join-Path $projectRoot "uvm/nn_training_uvm_pkg.sv"),
+    (Join-Path $projectRoot "uvm/nn_uvm_tb_top.sv"),
+    (Join-Path $projectRoot "uvm/nn_training_uvm_tb_top.sv")
 )
 
 Push-Location $buildDir
@@ -80,10 +94,15 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "RTL/UVM testbench compilation failed." }
 
     $logPath = Join-Path $buildDir "$TestName.log"
+    $topLevel = if ($TestName -eq "nn_uvm_training_test") {
+        "work.nn_training_uvm_tb_top"
+    } else {
+        "work.nn_uvm_tb_top"
+    }
     $simArgs = @(
         "-c",
         "-L", "mtiUvm",
-        "work.nn_uvm_tb_top",
+        $topLevel,
         "+UVM_TESTNAME=$TestName"
     )
     if ($Seed -ne "") {

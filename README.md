@@ -125,24 +125,35 @@ The self-checking regression covers:
 - composed activation-to-reduction behavior, one rescaled scalar per activated vector at the architectural prediction width
 - atomic activation/target/training-enable acceptance, including metadata-FIFO-full backpressure
 - ordered target comparison for back-to-back and bubbled samples, with vectors chosen to expose off-by-one pairing
-- consecutive enabled/disabled/enabled samples, proving that only buffered enabled samples issue matrix and queued reduction-weight updates
+- four consecutive samples with `trainingEnable = 0,1,0,1`, proving that only samples 1 and 3 issue matrix and queued reduction-weight updates after the live input has changed
+- mixed training/inference traffic with input bubbles and output backpressure, checking target, input-sign, prediction, and buffered-training alignment
+- inference-only prediction traffic with before/after snapshots of every matrix PE and resident reduction weight
 - signed target comparison for all three learning directions, including negative narrow-target sign extension and stable output stalls
-- ordered reduction-update queuing, final-stage commit, shared stalls, and signed one-LSB saturation at both endpoints
+- ordered overlapping reduction-update queuing, final-stage commit, shared `arrayAdvance` stalls with complete stage/queue snapshots, and signed one-LSB saturation at both endpoints
 - aligned ternary matrix-update packages, including zero input signs and a closed ReLU gate
 - positive, zero, and negative PE updates with both saturation endpoints
 - anti-diagonal update order, overlapping update packages, and shared data/update stalls
-- coherent old/new matrix-weight versions across the update boundary
+- coherent old/new matrix and reduction-weight versions across the shared update boundary
 - input bubbles, output backpressure, and back-to-back matrices
 - weight reloads
 - asynchronous `clk`/`sclk` SPI input and output transfers
 
-With ModelSim commands (`vlib`, `vlog`, and `vsim`) on `PATH`, run:
+The scripts discover the Quartus-installed Questa under
+`C:\altera_lite\25.1std\questa_fse\win64`; a different installation can be
+selected with `NN_ACCEL_QUESTA_BIN`. Run the directed regression with:
 
 ```powershell
 pwsh -File scripts/run_modelsim.ps1
 ```
 
-With ModelSim configured, the regression script treats any simulation error as
+Run the core UVM regression and the focused Phase 5F accelerator UVM test with:
+
+```powershell
+pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_regression_test
+pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_training_test
+```
+
+With Questa configured, the regression scripts treat any simulation error as
 a failure.
 
 At the `nnAccelerator` boundary, `targetData` and `trainingEnable` are accepted
@@ -179,6 +190,13 @@ independent signed reference model/scoreboard, protocol assertions, and
 license-safe coverage counters. The scoreboard derives matrices from traffic
 accepted by the DUT rather than copying the driver's expected values.
 
+`nn_uvm_training_test` adds an accelerator-level Phase 5F scenario. It drives
+four consecutive samples with the exact `0,1,0,1` training-enable pattern,
+checks the buffered target/sign/training tuple at result handshakes, holds a
+result under backpressure, and follows with bubbled inference-only traffic.
+Observation-only connections snapshot every resident matrix and reduction
+weight before and after the inference block.
+
 The regression uses seeded `$urandom` stimulus instead of constrained
 randomization and covergroups, so it remains usable with the Questa FPGA
 Starter license. The seed is printed in the log and can be replayed:
@@ -195,7 +213,7 @@ the supported 2x2, 3x3, and 4x4 configurations.
 
 ### FPGA build snapshot
 
-A Quartus Prime 25.1 Standard Lite compilation completed successfully for the
+A Quartus Prime Lite Edition 25.1 compilation completed successfully for the
 default `N=3`, `WIDTH=16` configuration, targeting the DE1-SoC Cyclone V
 `5CSEMA5F31C6` device.
 
