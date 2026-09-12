@@ -13,6 +13,7 @@ module matrixMultiplierWeightStationarySPI #(
     input  logic                    passThrough,
     input  logic                    reduceOutput,
     input  logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight [N],
+    input  logic                    loadReductionWeights,
     output logic                    weightsLoaded,
     input  logic                    reloadWeights,
     output logic                    reloadReady,
@@ -162,8 +163,10 @@ module matrixMultiplierWeightStationarySPI #(
         .activationData(activationData), .targetData('0), .activationValid(activationValid),
         .activationReady(activationFifoReady), .resultData(resultData),
         .resultTargetData(), .learningDirection(),
+        .rowDirection(), .columnDirection(), .matrixUpdateValid(),
         .resultValid(resultValid), .resultReady(resultReady), .passThrough(passThrough),
         .reduceOutput(reduceOutput), .reductionWeight(reductionWeight),
+        .loadReductionWeights(loadReductionWeights),
         .resultLast(), .weightsLoaded(weightsLoaded),
         .reloadWeights(reloadWeights), .reloadReady(reloadReady)
     );

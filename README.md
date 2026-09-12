@@ -25,12 +25,16 @@ flowchart LR
         ARRAY["N x N weight-stationary PE array"]
         R_FIFO["N result FIFOs"]
         ACT["Combinational activation layer"]
-        REDUCE["Combinational weighted vector reduction"]
+        REDUCE["Resident weighted vector reduction"]
+        TRAIN["Aligned SSLMS package generator"]
     end
 
     W_RX --> W_CDC --> W_FIFO --> ARRAY
     A_RX --> A_CDC --> A_FIFO --> SKEW --> ARRAY
     ARRAY --> R_FIFO --> ACT --> REDUCE --> R_CDC --> R_TX
+    A_FIFO --> TRAIN
+    ACT --> TRAIN
+    REDUCE --> TRAIN
 ```
 
 Each processing element stores one weight and performs a signed multiply-accumulate while forwarding the activation and partial sum:
@@ -83,7 +87,11 @@ sequenceDiagram
 - Reduction weights are signed fractional coefficients with `REDUCTION_WEIGHT_WIDTH - 1` fractional bits and magnitude at most one. The reduction retains each complete product and accumulates at `MATRIX_RESULT_WIDTH + REDUCTION_WEIGHT_WIDTH + $clog2(N)` bits.
 - After the full weighted sum is complete, one arithmetic right shift by `FRACTION_BITS + REDUCTION_WEIGHT_WIDTH - 1` returns the prediction to the input/target binary-point position. Only then is it narrowed to the architectural prediction width.
 - `reduceOutput = 0` returns the sign-extended activated vector. `reduceOutput = 1` returns the rescaled prediction in lane 0 and zero in lanes `1:N-1`.
-- `reductionWeight[N]` is a direct workload-configuration input. It is not stored or updated internally and, like `passThrough` and `reduceOutput`, must remain stable while work is in flight.
+- `reductionWeight[N]` is the initialization vector for resident reduction-weight registers. Pulsing `loadReductionWeights` copies the complete vector atomically. Loading has priority over learning and can change a combinational prediction, so configuration software must use it only while the sample pipeline is quiescent.
+- Every `resultValid && resultReady` training completion applies one saturating stored-LSB update to each resident reduction weight. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively.
+- The same completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the pre-update resident reduction-weight signs and the pass-through/ReLU activation gate. Phase 5B only creates this package; it does not modify matrix PE weights.
+- Phase 5C can apply each nonzero matrix direction as one stored-code step; with `FRACTION_BITS = 4`, that PE-weight step is `mu = 1/16`.
+- Original input signs and targets are pushed and popped by the same sample events. Either FIFO can therefore backpressure the complete activation/target/sign transaction, and their heads remain paired with the current prediction under result stalls.
 - Assert `reloadWeights` only while `reloadReady` is high.
 - `weightReady` and `activationReady` indicate when a complete parallel SPI vector may be started.
 
@@ -113,6 +121,8 @@ The self-checking regression covers:
 - atomic activation/target acceptance, including target-FIFO-full backpressure
 - ordered target comparison for back-to-back and bubbled samples, with vectors chosen to expose off-by-one pairing
 - signed target comparison for all three learning directions, including negative narrow-target sign extension and stable output stalls
+- resident reduction-weight loading and signed one-LSB updates at both saturation endpoints
+- aligned ternary matrix-update packages, including zero input signs and a closed ReLU gate
 - input bubbles, output backpressure, and back-to-back matrices
 - weight reloads
 - asynchronous `clk`/`sclk` SPI input and output transfers
@@ -136,6 +146,12 @@ signed 2-bit `learningDirection` compares that target head with the full scalar
 prediction: `+1` when the target is greater, `0` when equal, and `-1` when the
 target is less. Narrower operands are sign-extended for the comparison, and the
 target, prediction, and direction remain stable together under backpressure.
+An equally deep packed FIFO carries two-bit signs for every original input lane.
+On the result handshake, those signs and the current pre-activation values form
+one `rowDirection`/`columnDirection` package while the resident reduction
+weights receive their independent saturating update. Because nonblocking state
+updates occur after the edge, the package always observes the same pre-update
+reduction weights that produced its prediction.
 
 ### UVM core verification environment
 

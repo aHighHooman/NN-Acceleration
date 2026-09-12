@@ -17,10 +17,14 @@ module nnAccelerator #(
     input  logic                              activationValid,
     output logic                              activationReady,
     input  logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight [N],
+    input  logic                              loadReductionWeights,
     input  logic                              reduceOutput,
     output logic signed [2*WIDTH+2*$clog2(N)-1:0] resultData [N],
     output logic signed [TARGET_WIDTH-1:0]    resultTargetData,
     output logic signed [1:0]                 learningDirection,
+    output logic signed [1:0]                 rowDirection [N],
+    output logic signed [1:0]                 columnDirection [N],
+    output logic                              matrixUpdateValid,
     output logic                              resultValid,
     input  logic                              resultReady,
     output logic                              resultLast,
@@ -34,28 +38,41 @@ module nnAccelerator #(
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
     localparam int COMPARE_WIDTH = (PREDICTION_WIDTH > TARGET_WIDTH)
                                    ? PREDICTION_WIDTH : TARGET_WIDTH;
+    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
+        REDUCTION_WEIGHT_MIN = {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}};
+    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
+        REDUCTION_WEIGHT_MAX = {1'b0, {(REDUCTION_WEIGHT_WIDTH-1){1'b1}}};
+    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
+        REDUCTION_WEIGHT_ONE = {{(REDUCTION_WEIGHT_WIDTH-1){1'b0}}, 1'b1};
 
     logic signed [MATRIX_RESULT_WIDTH-1:0] rawResultData[N];
     logic signed [MATRIX_RESULT_WIDTH-1:0] activatedData[N];
+    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] residentReductionWeight[N];
     logic signed [PREDICTION_WIDTH-1:0] prediction;
     logic signed [COMPARE_WIDTH-1:0] comparePrediction, compareTarget;
+    logic signed [2*N-1:0] inputSignPushData, inputSignHead;
+    logic signed [1:0] reductionDirection[N];
     logic matrixActivationValid, matrixActivationReady;
     logic matrixResultValid, matrixResultReady, matrixResultLast;
     logic targetPush, targetPop, targetFull, targetEmpty;
-    logic targetCanAccept;
+    logic inputSignFull, inputSignEmpty;
+    logic samplePush, samplePop, sampleCanAccept;
 
     // The activation vector and target are one input transaction.  Gate the
     // matrix valid as well as the external ready so neither side can advance
     // alone when the target queue applies backpressure.
-    assign targetPop             = resultValid && resultReady;
-    assign targetCanAccept       = !targetFull || targetPop;
-    assign activationReady       = matrixActivationReady && targetCanAccept;
-    assign matrixActivationValid = activationValid && targetCanAccept;
-    assign targetPush            = activationValid && activationReady;
+    assign samplePop             = resultValid && resultReady;
+    assign sampleCanAccept       = (!targetFull && !inputSignFull) || samplePop;
+    assign activationReady       = matrixActivationReady && sampleCanAccept;
+    assign matrixActivationValid = activationValid && sampleCanAccept;
+    assign samplePush            = activationValid && activationReady;
+    assign targetPush            = samplePush;
+    assign targetPop             = samplePop;
 
-    assign resultValid       = matrixResultValid && !targetEmpty;
-    assign matrixResultReady = resultReady && !targetEmpty;
-    assign resultLast        = matrixResultLast && !targetEmpty;
+    assign resultValid       = matrixResultValid && !targetEmpty && !inputSignEmpty;
+    assign matrixResultReady = resultReady && !targetEmpty && !inputSignEmpty;
+    assign resultLast        = matrixResultLast && !targetEmpty && !inputSignEmpty;
+    assign matrixUpdateValid = samplePop;
 
     // Compare the rescaled architectural prediction with the aligned FIFO
     // head. Assignment to the wider signed signals sign-extends either side.
@@ -72,6 +89,49 @@ module nnAccelerator #(
         end
     end
 
+    // Capture the original input signs as a compact vector. Two-bit signed
+    // values encode the complete ternary set: 2'b01, 2'b00, and 2'b11.
+    always_comb begin
+        inputSignPushData = '0;
+        for (int lane = 0; lane < N; lane++) begin
+            if (activationData[lane] == '0)
+                inputSignPushData[2*lane +: 2] = 2'sd0;
+            else if (activationData[lane][WIDTH-1])
+                inputSignPushData[2*lane +: 2] = -2'sd1;
+            else
+                inputSignPushData[2*lane +: 2] = 2'sd1;
+        end
+    end
+
+    // Both update vectors describe the FIFO-head sample. Matrix-update valid
+    // is the result handshake, so no package is emitted while an output is
+    // stalled. The resident weights here are the values used by this sample;
+    // their sequential update takes effect only after the handshake edge.
+    always_comb begin
+        for (int lane = 0; lane < N; lane++) begin
+            rowDirection[lane] = $signed(inputSignHead[2*lane +: 2]);
+            columnDirection[lane] = 2'sd0;
+            reductionDirection[lane] = 2'sd0;
+
+            if (activatedData[lane] != '0) begin
+                if (activatedData[lane][MATRIX_RESULT_WIDTH-1])
+                    reductionDirection[lane] = -learningDirection;
+                else
+                    reductionDirection[lane] = learningDirection;
+            end
+
+            if ((passThrough ||
+                 (!rawResultData[lane][MATRIX_RESULT_WIDTH-1] &&
+                  (rawResultData[lane] != '0))) &&
+                (residentReductionWeight[lane] != '0)) begin
+                if (residentReductionWeight[lane][REDUCTION_WEIGHT_WIDTH-1])
+                    columnDirection[lane] = -learningDirection;
+                else
+                    columnDirection[lane] = learningDirection;
+            end
+        end
+    end
+
     // FIFO order, rather than a cycle count, carries each scalar target to the
     // result transaction produced by the corresponding activation vector.
     signedFifo #(
@@ -83,6 +143,46 @@ module nnAccelerator #(
         .pop(targetPop), .popData(resultTargetData),
         .full(targetFull), .empty(targetEmpty), .values()
     );
+
+    signedFifo #(
+        .WIDTH(2*N),
+        .DEPTH(INPUT_FIFO_DEPTH)
+    ) inputSignFifo (
+        .clk(clk), .rst_n(rst_n),
+        .push(samplePush), .pushData(inputSignPushData),
+        .pop(samplePop), .popData(inputSignHead),
+        .full(inputSignFull), .empty(inputSignEmpty), .values()
+    );
+
+    // A load establishes the resident readout state. Thereafter every
+    // completed sample applies exactly one signed stored-integer step: one LSB
+    // in the resident reduction-weight representation.
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            for (int lane = 0; lane < N; lane++)
+                residentReductionWeight[lane] <= '0;
+        end else if (loadReductionWeights) begin
+            for (int lane = 0; lane < N; lane++)
+                residentReductionWeight[lane] <= reductionWeight[lane];
+        end else if (samplePop) begin
+            for (int lane = 0; lane < N; lane++) begin
+                case (reductionDirection[lane])
+                    2'sd1: begin
+                        if (residentReductionWeight[lane] != REDUCTION_WEIGHT_MAX)
+                            residentReductionWeight[lane] <=
+                                residentReductionWeight[lane] + REDUCTION_WEIGHT_ONE;
+                    end
+                    -2'sd1: begin
+                        if (residentReductionWeight[lane] != REDUCTION_WEIGHT_MIN)
+                            residentReductionWeight[lane] <=
+                                residentReductionWeight[lane] - REDUCTION_WEIGHT_ONE;
+                    end
+                    default: residentReductionWeight[lane] <=
+                                 residentReductionWeight[lane];
+                endcase
+            end
+        end
+    end
 
     matrixMultiplierWeightStationary #(
         .WIDTH(WIDTH), .N(N),
@@ -109,7 +209,7 @@ module nnAccelerator #(
         .FRACTION_BITS(FRACTION_BITS)
     ) weightedReadout (
         .inputData(activatedData),
-        .reductionWeight(reductionWeight),
+        .reductionWeight(residentReductionWeight),
         .prediction(prediction)
     );
 

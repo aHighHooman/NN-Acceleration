@@ -17,6 +17,7 @@ module matrixMultiplierWeightStationarySPI_tb;
     logic clk, sclk, rst_n;
     logic weightReady, activationReady, passThrough, reduceOutput;
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N];
+    logic loadReductionWeights;
     logic weightsLoaded, reloadWeights, reloadReady;
     logic cs_n[N], miso[N], misoValid[N];
     logic weightCs_n[N], weightMosi[N];
@@ -31,7 +32,8 @@ module matrixMultiplierWeightStationarySPI_tb;
         .clk(clk), .rst_n(rst_n),
         .weightReady(weightReady), .activationReady(activationReady),
         .passThrough(passThrough), .reduceOutput(reduceOutput),
-        .reductionWeight(reductionWeight), .weightsLoaded(weightsLoaded),
+        .reductionWeight(reductionWeight),
+        .loadReductionWeights(loadReductionWeights), .weightsLoaded(weightsLoaded),
         .reloadWeights(reloadWeights), .reloadReady(reloadReady),
         .sclk(sclk), .cs_n(cs_n), .miso(miso), .misoValid(misoValid),
         .weightCs_n(weightCs_n), .weightMosi(weightMosi),
@@ -56,6 +58,7 @@ module matrixMultiplierWeightStationarySPI_tb;
         passThrough = 1'b1;
         reduceOutput = 1'b0;
         reloadWeights = 1'b0;
+        loadReductionWeights = 1'b0;
         for (int lane = 0; lane < N; lane++) begin
             reductionWeight[lane] = '0;
             cs_n[lane] = 1'b1;
@@ -68,6 +71,10 @@ module matrixMultiplierWeightStationarySPI_tb;
         repeat (3) @(posedge sclk);
         repeat (3) @(posedge clk);
         rst_n = 1'b1;
+
+        loadReductionWeights = 1'b1;
+        @(posedge clk);
+        @(negedge clk) loadReductionWeights = 1'b0;
 
         // Fixed-point identity weights preserve the transmitted activation
         // values in real units; raw matrix codes retain the 2*FRACTION_BITS
@@ -114,6 +121,7 @@ module matrixMultiplierWeightStationarySPI_tb;
         passThrough = 1'b1;
         reductionWeight[0] = -16384; // -0.5
         reductionWeight[1] = 16384;  //  0.5
+        load_reduction_vector();
         reduceOutput = 1'b1;
 
         activation_vector[0] = 10;
@@ -131,6 +139,7 @@ module matrixMultiplierWeightStationarySPI_tb;
         // Configuration changes occur only after both prior results are read.
         reductionWeight[0] = -16384;
         reductionWeight[1] = 16384;
+        load_reduction_vector();
 
         activation_vector[0] = 2;
         activation_vector[1] = 3;
@@ -148,6 +157,7 @@ module matrixMultiplierWeightStationarySPI_tb;
         passThrough = 1'b0;
         reductionWeight[0] = -32768; // -1.0
         reductionWeight[1] = 24576;  //  0.75
+        load_reduction_vector();
 
         activation_vector[0] = -6;
         activation_vector[1] = 7;
@@ -172,6 +182,7 @@ module matrixMultiplierWeightStationarySPI_tb;
         passThrough = 1'b1;
         reductionWeight[0] = 32767;
         reductionWeight[1] = 32767;
+        load_reduction_vector();
 
         activation_vector[0] = -128;
         activation_vector[1] = -128;
@@ -195,6 +206,7 @@ module matrixMultiplierWeightStationarySPI_tb;
         // product path; two -2^30 terms also reach exactly -2^31.
         reductionWeight[0] = -32768;
         reductionWeight[1] = -32768;
+        load_reduction_vector();
 
         send_activation_vector(activation_vector);
         send_activation_vector(activation_vector);
@@ -226,6 +238,12 @@ module matrixMultiplierWeightStationarySPI_tb;
 
         for (int lane = 0; lane < N; lane++)
             weightCs_n[lane] = 1'b1;
+    endtask
+
+    task load_reduction_vector();
+        @(negedge clk) loadReductionWeights = 1'b1;
+        @(posedge clk);
+        @(negedge clk) loadReductionWeights = 1'b0;
     endtask
 
     task send_activation_vector(input data_t vector[N]);

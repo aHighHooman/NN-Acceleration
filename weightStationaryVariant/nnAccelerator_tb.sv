@@ -1,8 +1,8 @@
 `timescale 1ns / 1ps
 
-// Integration-level directed verification for the Phase 5A fixed-point result,
-// Phase 4 target alignment, and learning-direction path. The scoreboard uses
-// accepted ready/valid transactions only; it does not assume a pipeline latency.
+// Integration-level directed verification for the Phase 5B resident reduction
+// state and aligned SSLMS package. The scoreboard uses accepted ready/valid
+// transactions only; it does not assume a pipeline latency.
 module nnAccelerator_tb;
     localparam int WIDTH = 8;
     localparam int TARGET_WIDTH = 7;
@@ -14,7 +14,7 @@ module nnAccelerator_tb;
     localparam int SCALE = 1 << FRACTION_BITS;
     localparam int HALF = 1 << (REDUCTION_FRACTION_BITS - 1);
     localparam int PREDICTION_WIDTH = 2*WIDTH + 2*$clog2(N);
-    localparam int SAMPLE_COUNT = 6;
+    localparam int SAMPLE_COUNT = 9;
 
     typedef logic signed [PREDICTION_WIDTH-1:0] result_t;
     typedef logic signed [TARGET_WIDTH-1:0] target_t;
@@ -26,14 +26,16 @@ module nnAccelerator_tb;
     logic signed [WIDTH-1:0] reductionWeight[N];
     result_t resultData[N];
     logic signed [1:0] learningDirection;
+    logic signed [1:0] rowDirection[N], columnDirection[N];
+    logic matrixUpdateValid, loadReductionWeights;
     logic reduceOutput, resultValid, resultReady, resultLast;
     logic weightsLoaded, reloadWeights, reloadReady, passThrough;
 
     integer cycleCount, acceptedCount, consumedCount;
     integer lastAcceptedCycle;
     target_t expectedTarget[0:SAMPLE_COUNT-1];
-    result_t expectedPrediction[0:SAMPLE_COUNT-1];
-    logic signed [1:0] expectedDirection[0:SAMPLE_COUNT-1];
+    logic signed [WIDTH-1:0] acceptedInput[0:SAMPLE_COUNT-1][N];
+    logic signed [WIDTH-1:0] modelReductionWeight[N];
     bit sawBackToBack, sawBubble;
     bit sawPositive, sawZero, sawNegative;
 
@@ -46,9 +48,12 @@ module nnAccelerator_tb;
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
         .activationData(activationData), .targetData(targetData),
         .activationValid(activationValid), .activationReady(activationReady),
-        .reductionWeight(reductionWeight), .reduceOutput(reduceOutput),
+        .reductionWeight(reductionWeight),
+        .loadReductionWeights(loadReductionWeights), .reduceOutput(reduceOutput),
         .resultData(resultData), .resultTargetData(resultTargetData),
         .learningDirection(learningDirection),
+        .rowDirection(rowDirection), .columnDirection(columnDirection),
+        .matrixUpdateValid(matrixUpdateValid),
         .resultValid(resultValid), .resultReady(resultReady), .resultLast(resultLast),
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights),
         .reloadReady(reloadReady), .passThrough(passThrough)
@@ -62,20 +67,50 @@ module nnAccelerator_tb;
     // final rescale.
     function automatic result_t phase5_prediction(
         input logic signed [WIDTH-1:0] x0,
-        input logic signed [WIDTH-1:0] x1
+        input logic signed [WIDTH-1:0] x1,
+        input logic signed [WIDTH-1:0] reduction0,
+        input logic signed [WIDTH-1:0] reduction1,
+        input logic applyPassThrough
     );
         integer xw0, xw1;
         integer fullReduction;
         begin
             xw0 = x0 * (2*SCALE) + x1 * (3*SCALE);
             xw1 = x0 * (-1*SCALE) + x1 * (4*SCALE);
-            fullReduction = xw0 * HALF + xw1 * HALF;
+            if (!applyPassThrough) begin
+                if (xw0 < 0) xw0 = 0;
+                if (xw1 < 0) xw1 = 0;
+            end
+            fullReduction = xw0 * reduction0 + xw1 * reduction1;
             phase5_prediction = fullReduction >>> RESCALE_SHIFT;
         end
     endfunction
 
+    function automatic logic signed [1:0] ternary_sign(input integer value);
+        if (value > 0)
+            ternary_sign = 2'sd1;
+        else if (value < 0)
+            ternary_sign = -2'sd1;
+        else
+            ternary_sign = 2'sd0;
+    endfunction
+
+    function automatic logic signed [1:0] ternary_product(
+        input logic signed [1:0] left,
+        input logic signed [1:0] right
+    );
+        if ((left == 2'sd0) || (right == 2'sd0))
+            ternary_product = 2'sd0;
+        else if (left == right)
+            ternary_product = 2'sd1;
+        else
+            ternary_product = -2'sd1;
+    endfunction
+
     always @(posedge clk) begin
-        result_t acceptedPrediction;
+        result_t expectedPredictionNow;
+        logic signed [1:0] expectedDirectionNow;
+        integer rawResult[N];
 
         if (!rst_n) begin
             cycleCount        = 0;
@@ -87,6 +122,8 @@ module nnAccelerator_tb;
             sawPositive       = 0;
             sawZero           = 0;
             sawNegative       = 0;
+            for (int lane = 0; lane < N; lane++)
+                modelReductionWeight[lane] = 0;
         end else begin
             cycleCount = cycleCount + 1;
 
@@ -97,6 +134,23 @@ module nnAccelerator_tb;
                 $fatal(1, "activation and target were not accepted atomically");
             if (dut.targetPop !== (resultValid && resultReady))
                 $fatal(1, "target pop did not equal the result handshake");
+            if (dut.samplePush !== dut.targetPush ||
+                dut.inputSignFifo.values !== dut.targetFifo.values)
+                $fatal(1, "target and input-sign FIFOs lost alignment");
+            if (matrixUpdateValid !== (resultValid && resultReady))
+                $fatal(1, "matrix update valid did not equal result completion");
+            for (int lane = 0; lane < N; lane++) begin
+                if (dut.residentReductionWeight[lane] !==
+                    modelReductionWeight[lane])
+                    $fatal(1, "resident reduction weight %0d got %0d, expected %0d",
+                           lane, dut.residentReductionWeight[lane],
+                           modelReductionWeight[lane]);
+            end
+
+            if (loadReductionWeights) begin
+                for (int lane = 0; lane < N; lane++)
+                    modelReductionWeight[lane] = reductionWeight[lane];
+            end
 
             if (activationValid && activationReady) begin
                 if (acceptedCount >= SAMPLE_COUNT)
@@ -109,16 +163,9 @@ module nnAccelerator_tb;
                     sawBubble = 1;
                 lastAcceptedCycle = cycleCount;
 
-                acceptedPrediction = phase5_prediction(activationData[0],
-                                                       activationData[1]);
                 expectedTarget[acceptedCount] = targetData;
-                expectedPrediction[acceptedCount] = acceptedPrediction;
-                if ($signed(targetData) > $signed(acceptedPrediction))
-                    expectedDirection[acceptedCount] = 2'sd1;
-                else if ($signed(targetData) < $signed(acceptedPrediction))
-                    expectedDirection[acceptedCount] = -2'sd1;
-                else
-                    expectedDirection[acceptedCount] = 2'sd0;
+                for (int lane = 0; lane < N; lane++)
+                    acceptedInput[acceptedCount][lane] = activationData[lane];
                 acceptedCount = acceptedCount + 1;
             end
 
@@ -129,17 +176,63 @@ module nnAccelerator_tb;
                     $fatal(1, "target %0d got %0d, expected %0d",
                            consumedCount, resultTargetData,
                            expectedTarget[consumedCount]);
-                if (resultData[0] !== expectedPrediction[consumedCount] ||
+                expectedPredictionNow = phase5_prediction(
+                    acceptedInput[consumedCount][0],
+                    acceptedInput[consumedCount][1],
+                    modelReductionWeight[0], modelReductionWeight[1],
+                    passThrough);
+                if ($signed(expectedTarget[consumedCount]) >
+                    $signed(expectedPredictionNow))
+                    expectedDirectionNow = 2'sd1;
+                else if ($signed(expectedTarget[consumedCount]) <
+                         $signed(expectedPredictionNow))
+                    expectedDirectionNow = -2'sd1;
+                else
+                    expectedDirectionNow = 2'sd0;
+
+                rawResult[0] = acceptedInput[consumedCount][0] * (2*SCALE)
+                               + acceptedInput[consumedCount][1] * (3*SCALE);
+                rawResult[1] = acceptedInput[consumedCount][0] * (-1*SCALE)
+                               + acceptedInput[consumedCount][1] * (4*SCALE);
+
+                if (resultData[0] !== expectedPredictionNow ||
                     resultData[1] !== '0)
                     $fatal(1, "prediction %0d got [%0d, %0d], expected [%0d, 0]",
                            consumedCount, resultData[0], resultData[1],
-                           expectedPrediction[consumedCount]);
-                if (learningDirection !== expectedDirection[consumedCount])
+                           expectedPredictionNow);
+                if (learningDirection !== expectedDirectionNow)
                     $fatal(1, "learning direction %0d got %0d, expected %0d",
                            consumedCount, learningDirection,
-                           expectedDirection[consumedCount]);
+                           expectedDirectionNow);
 
-                case (learningDirection)
+                for (int lane = 0; lane < N; lane++) begin
+                    if (rowDirection[lane] !==
+                        ternary_sign(acceptedInput[consumedCount][lane]))
+                        $fatal(1, "row direction %0d:%0d got %0d",
+                               consumedCount, lane, rowDirection[lane]);
+                    if (columnDirection[lane] !==
+                        ((passThrough || (rawResult[lane] > 0))
+                         ? ternary_product(
+                               expectedDirectionNow,
+                               ternary_sign(modelReductionWeight[lane]))
+                         : 2'sd0))
+                        $fatal(1, "column direction %0d:%0d got %0d",
+                               consumedCount, lane, columnDirection[lane]);
+
+                    case (ternary_product(
+                              expectedDirectionNow,
+                              ternary_sign(
+                                  (passThrough || (rawResult[lane] > 0))
+                                  ? rawResult[lane] : 0)))
+                        2'sd1: if (modelReductionWeight[lane] != {1'b0, {(WIDTH-1){1'b1}}})
+                            modelReductionWeight[lane] = modelReductionWeight[lane] + 1;
+                        -2'sd1: if (modelReductionWeight[lane] != {1'b1, {(WIDTH-1){1'b0}}})
+                            modelReductionWeight[lane] = modelReductionWeight[lane] - 1;
+                        default: modelReductionWeight[lane] = modelReductionWeight[lane];
+                    endcase
+                end
+
+                case (expectedDirectionNow)
                     2'sd1:  sawPositive = 1;
                     2'sd0:  sawZero = 1;
                     -2'sd1: sawNegative = 1;
@@ -164,6 +257,7 @@ module nnAccelerator_tb;
         reduceOutput = 1;
         passThrough = 1;
         reloadWeights = 0;
+        loadReductionWeights = 0;
         targetData = 0;
         reductionWeight[0] = HALF;
         reductionWeight[1] = HALF;
@@ -174,6 +268,10 @@ module nnAccelerator_tb;
 
         repeat (3) @(posedge clk);
         @(negedge clk) rst_n = 1;
+
+        @(negedge clk) loadReductionWeights = 1;
+        @(posedge clk);
+        @(negedge clk) loadReductionWeights = 0;
 
         // Load fixed-point [[2, -1], [3, 4]] in reverse-row order.
         send_weight_row(3*SCALE, 4*SCALE);
@@ -258,6 +356,36 @@ module nnAccelerator_tb;
         send_sample_with_bubbles(2*SCALE, 0, 2*SCALE, 2); // 1 -> +1
         send_sample_with_bubbles(2*SCALE, -1*SCALE, -3*SCALE, 3); // -2.5 -> -1
         send_sample_with_bubbles(0, -1*SCALE, -7*SCALE/2, 1);   // -3.5 -> 0
+        wait_for_consumed(6);
+
+        // Exercise both saturation endpoints without relying on arithmetic
+        // overflow. The first sample requests a decrement of a resident MIN;
+        // the second requests an increment of a freshly reloaded MAX.
+        reductionWeight[0] = {1'b0, {(WIDTH-1){1'b1}}};
+        reductionWeight[1] = {1'b1, {(WIDTH-1){1'b0}}};
+        load_reduction_vector();
+        send_sample_with_bubbles(2*SCALE, SCALE, -(1 << (TARGET_WIDTH-1)), 1);
+        wait_for_consumed(7);
+        @(negedge clk);
+        if (dut.residentReductionWeight[1] !== {1'b1, {(WIDTH-1){1'b0}}})
+            $fatal(1, "negative reduction-weight saturation failed");
+
+        load_reduction_vector();
+        send_sample_with_bubbles(0, SCALE, (1 << (TARGET_WIDTH-1))-1, 1);
+        wait_for_consumed(8);
+        @(negedge clk);
+        if (dut.residentReductionWeight[0] !== {1'b0, {(WIDTH-1){1'b1}}})
+            $fatal(1, "positive reduction-weight saturation failed");
+
+        // ReLU blocks the negative second pre-activation from the column
+        // package and from the reduction update, while row signs still report
+        // the original +/− input vector.
+        reductionWeight[0] = HALF;
+        reductionWeight[1] = HALF;
+        load_reduction_vector();
+        passThrough = 0;
+        send_sample_with_bubbles(7*SCALE, -1*SCALE,
+                                 (1 << (TARGET_WIDTH-1))-1, 1);
         wait_for_consumed(SAMPLE_COUNT);
         @(negedge clk) resultReady = 0;
 
@@ -269,7 +397,7 @@ module nnAccelerator_tb;
         if (!sawPositive || !sawZero || !sawNegative)
             $fatal(1, "did not observe all three learning-direction outcomes");
 
-        $display("PASS: target alignment, signed ternary comparison, bubbles, and backpressure.");
+        $display("PASS: aligned SSLMS packages, resident reduction updates, saturation, and backpressure.");
         $finish;
     end
 
@@ -298,6 +426,12 @@ module nnAccelerator_tb;
         while (!activationReady) @(negedge clk);
         @(posedge clk);
         @(negedge clk) activationValid = 0;
+    endtask
+
+    task load_reduction_vector();
+        @(negedge clk) loadReductionWeights = 1;
+        @(posedge clk);
+        @(negedge clk) loadReductionWeights = 0;
     endtask
 
     task wait_for_consumed(input integer expectedCount);
