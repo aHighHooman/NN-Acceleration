@@ -1,8 +1,7 @@
 param(
     [ValidateSet(
         "nn_uvm_smoke_test",
-        "nn_uvm_regression_test",
-        "nn_uvm_training_test"
+        "nn_uvm_regression_test"
     )]
     [string]$TestName = "nn_uvm_regression_test",
     [string]$Seed = ""
@@ -63,22 +62,15 @@ New-Item -ItemType Directory -Path $buildDir | Out-Null
 
 $rtlSources = @(
     (Join-Path $projectRoot "memory/signedFifo.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/reluActivation.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/activationLayer.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightedVectorReduction.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/multiplierBlockWeightStationary.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/systolicArrayWeightStationary.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/nnAccelerator.sv")
+    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary.sv")
 )
 
 $uvmSources = @(
     (Join-Path $projectRoot "uvm/nn_core_if.sv"),
-    (Join-Path $projectRoot "uvm/nn_training_if.sv"),
     (Join-Path $projectRoot "uvm/nn_uvm_pkg.sv"),
-    (Join-Path $projectRoot "uvm/nn_training_uvm_pkg.sv"),
-    (Join-Path $projectRoot "uvm/nn_uvm_tb_top.sv"),
-    (Join-Path $projectRoot "uvm/nn_training_uvm_tb_top.sv")
+    (Join-Path $projectRoot "uvm/nn_uvm_tb_top.sv")
 )
 
 Push-Location $buildDir
@@ -94,15 +86,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "RTL/UVM testbench compilation failed." }
 
     $logPath = Join-Path $buildDir "$TestName.log"
-    $topLevel = if ($TestName -eq "nn_uvm_training_test") {
-        "work.nn_training_uvm_tb_top"
-    } else {
-        "work.nn_uvm_tb_top"
-    }
     $simArgs = @(
         "-c",
         "-L", "mtiUvm",
-        $topLevel,
+        "work.nn_uvm_tb_top",
         "+UVM_TESTNAME=$TestName"
     )
     if ($Seed -ne "") {

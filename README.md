@@ -114,29 +114,40 @@ sequenceDiagram
 
 ## Verification
 
-The self-checking regression covers:
+Verification has one core UVM environment and a small set of direct,
+purpose-built accelerator testbenches:
 
-- 2x2, 3x3, and 4x4 arrays
-- signed and edge-case operands
-- worst-case positive and negative accumulation
-- fixed-point weighted vector reduction with signed operands, cancellation, full-width accumulation, and a single final arithmetic rescale
-- raw signed matrix-product results
-- composed pass-through and ReLU accelerator results
-- composed activation-to-reduction behavior, one rescaled scalar per activated vector at the architectural prediction width
+### Core behavior: existing UVM environment
+
+The core-level UVM environment in [`uvm/`](uvm/) connects directly to
+`matrixMultiplierWeightStationary`. It provides an active ready/valid driver,
+passive accepted-input reconstruction, a passive result monitor, an
+independent signed reference model/scoreboard, protocol assertions, and
+license-safe coverage counters. Its core checks cover signed and edge-case
+operands, raw matrix-product results, input/output backpressure, back-to-back
+matrices, weight reloads, and reset during weight load or activation.
+
+Run the core UVM regression with:
+
+```powershell
+pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_regression_test
+```
+
+### Accelerator/training behavior: directed testbenches
+
+Accelerator and training behavior is verified directly by
+`nnAccelerator_tb.sv`, `matrixWeightUpdateWave_tb.sv`, and
+`weightedVectorReduction_tb.sv`, run by `scripts/run_modelsim.ps1`. The
+directed coverage includes:
+
+- 2x2, 3x3, and 4x4 arrays, composed pass-through/ReLU behavior, and composed activation-to-reduction predictions
 - atomic activation/target/training-enable acceptance, including metadata-FIFO-full backpressure
-- ordered target comparison for back-to-back and bubbled samples, with vectors chosen to expose off-by-one pairing
-- four consecutive samples with `trainingEnable = 0,1,0,1`, proving that only samples 1 and 3 issue matrix and queued reduction-weight updates after the live input has changed
-- mixed training/inference traffic with input bubbles and output backpressure, checking target, input-sign, prediction, and buffered-training alignment
-- inference-only prediction traffic with before/after snapshots of every matrix PE and resident reduction weight
-- signed target comparison for all three learning directions, including negative narrow-target sign extension and stable output stalls
-- ordered overlapping reduction-update queuing, final-stage commit, shared `arrayAdvance` stalls with complete stage/queue snapshots, and signed one-LSB saturation at both endpoints
-- aligned ternary matrix-update packages, including zero input signs and a closed ReLU gate
-- positive, zero, and negative PE updates with both saturation endpoints
-- anti-diagonal update order, overlapping update packages, and shared data/update stalls
-- coherent old/new matrix and reduction-weight versions across the shared update boundary
-- input bubbles, output backpressure, and back-to-back matrices
-- weight reloads
-- asynchronous `clk`/`sclk` SPI input and output transfers
+- per-sample `trainingEnable` alignment across four consecutive `0,1,0,1` samples, mixed training/inference samples, and inference samples leaving matrix and reduction weights unchanged
+- target, input-sign, prediction, and buffered-training alignment under input bubbles and output backpressure
+- all three learning directions, narrow-target sign extension, zero input signs, and a closed ReLU gate
+- stalled update waves, overlapping matrix update packages, anti-diagonal ordering, shared data/update stalls, and coherent old/new matrix and reduction-weight versions
+- ordered reduction-update queuing and final-stage commit, fixed-point reduction behavior, and signed one-LSB saturation at both endpoints
+- worst-case accumulation, asynchronous `clk`/`sclk` SPI transfers, and stable outputs under backpressure
 
 The scripts discover the Quartus-installed Questa under
 `C:\altera_lite\25.1std\questa_fse\win64`; a different installation can be
@@ -144,13 +155,6 @@ selected with `NN_ACCEL_QUESTA_BIN`. Run the directed regression with:
 
 ```powershell
 pwsh -File scripts/run_modelsim.ps1
-```
-
-Run the core UVM regression and the focused Phase 5F accelerator UVM test with:
-
-```powershell
-pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_regression_test
-pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_training_test
 ```
 
 With Questa configured, the regression scripts treat any simulation error as
@@ -180,22 +184,6 @@ state so a reload cannot overtake a pending update wave. Applying the last
 stage produces one completion event that commits and removes the matching
 oldest reduction package. With `arrayAdvance` low, neither update wave nor
 pending FIFO moves.
-
-### UVM core verification environment
-
-A core-level UVM environment is available in [`uvm/`](uvm/). It connects
-directly to `matrixMultiplierWeightStationary`, with an active ready/valid
-driver, passive accepted-input reconstruction, passive result monitor,
-independent signed reference model/scoreboard, protocol assertions, and
-license-safe coverage counters. The scoreboard derives matrices from traffic
-accepted by the DUT rather than copying the driver's expected values.
-
-`nn_uvm_training_test` adds an accelerator-level Phase 5F scenario. It drives
-four consecutive samples with the exact `0,1,0,1` training-enable pattern,
-checks the buffered target/sign/training tuple at result handshakes, holds a
-result under backpressure, and follows with bubbled inference-only traffic.
-Observation-only connections snapshot every resident matrix and reduction
-weight before and after the inference block.
 
 The regression uses seeded `$urandom` stimulus instead of constrained
 randomization and covergroups, so it remains usable with the Questa FPGA
