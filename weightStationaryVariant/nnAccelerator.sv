@@ -14,6 +14,7 @@ module nnAccelerator #(
     output logic                              weightReady,
     input  logic signed [WIDTH-1:0]           activationData [N],
     input  logic signed [TARGET_WIDTH-1:0]    targetData,
+    input  logic                              trainingEnable,
     input  logic                              activationValid,
     output logic                              activationReady,
     input  logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight [N],
@@ -51,28 +52,35 @@ module nnAccelerator #(
     logic signed [PREDICTION_WIDTH-1:0] prediction;
     logic signed [COMPARE_WIDTH-1:0] comparePrediction, compareTarget;
     logic signed [2*N-1:0] inputSignPushData, inputSignHead;
+    logic trainingEnableHead;
     logic signed [1:0] reductionDirection[N];
     logic matrixActivationValid, matrixActivationReady;
     logic matrixResultValid, matrixResultReady, matrixResultLast;
     logic targetPush, targetPop, targetFull, targetEmpty;
     logic inputSignFull, inputSignEmpty;
+    logic trainingEnableFull, trainingEnableEmpty;
     logic samplePush, samplePop, sampleCanAccept;
 
-    // The activation vector and target are one input transaction.  Gate the
-    // matrix valid as well as the external ready so neither side can advance
-    // alone when the target queue applies backpressure.
+    // The activation vector, target, input signs, and training-enable bit are
+    // one input transaction. Gate the matrix valid as well as the external
+    // ready so no part can advance alone when any metadata queue applies
+    // backpressure.
     assign samplePop             = resultValid && resultReady;
-    assign sampleCanAccept       = (!targetFull && !inputSignFull) || samplePop;
+    assign sampleCanAccept       = (!targetFull && !inputSignFull &&
+                                    !trainingEnableFull) || samplePop;
     assign activationReady       = matrixActivationReady && sampleCanAccept;
     assign matrixActivationValid = activationValid && sampleCanAccept;
     assign samplePush            = activationValid && activationReady;
     assign targetPush            = samplePush;
     assign targetPop             = samplePop;
 
-    assign resultValid       = matrixResultValid && !targetEmpty && !inputSignEmpty;
-    assign matrixResultReady = resultReady && !targetEmpty && !inputSignEmpty;
-    assign resultLast        = matrixResultLast && !targetEmpty && !inputSignEmpty;
-    assign matrixUpdateValid = samplePop;
+    assign resultValid       = matrixResultValid && !targetEmpty &&
+                               !inputSignEmpty && !trainingEnableEmpty;
+    assign matrixResultReady = resultReady && !targetEmpty &&
+                               !inputSignEmpty && !trainingEnableEmpty;
+    assign resultLast        = matrixResultLast && !targetEmpty &&
+                               !inputSignEmpty && !trainingEnableEmpty;
+    assign matrixUpdateValid = samplePop && trainingEnableHead;
 
     // Compare the rescaled architectural prediction with the aligned FIFO
     // head. Assignment to the wider signed signals sign-extends either side.
@@ -104,9 +112,10 @@ module nnAccelerator #(
     end
 
     // Both update vectors describe the FIFO-head sample. Matrix-update valid
-    // is the result handshake, so no package is emitted while an output is
-    // stalled. The resident weights here are the values used by this sample;
-    // their sequential update takes effect only after the handshake edge.
+    // is a training-enabled result handshake, so no package is emitted for an
+    // inference sample or while an output is stalled. The resident weights
+    // here are the values used by this sample; their sequential update takes
+    // effect only after the handshake edge.
     always_comb begin
         for (int lane = 0; lane < N; lane++) begin
             rowDirection[lane] = $signed(inputSignHead[2*lane +: 2]);
@@ -132,8 +141,8 @@ module nnAccelerator #(
         end
     end
 
-    // FIFO order, rather than a cycle count, carries each scalar target to the
-    // result transaction produced by the corresponding activation vector.
+    // FIFO order, rather than a cycle count, carries each sample's metadata to
+    // the result transaction produced by the corresponding activation vector.
     signedFifo #(
         .WIDTH(TARGET_WIDTH),
         .DEPTH(INPUT_FIFO_DEPTH)
@@ -154,9 +163,20 @@ module nnAccelerator #(
         .full(inputSignFull), .empty(inputSignEmpty), .values()
     );
 
+    signedFifo #(
+        .WIDTH(1),
+        .DEPTH(INPUT_FIFO_DEPTH)
+    ) trainingEnableFifo (
+        .clk(clk), .rst_n(rst_n),
+        .push(samplePush), .pushData(trainingEnable),
+        .pop(samplePop), .popData(trainingEnableHead),
+        .full(trainingEnableFull), .empty(trainingEnableEmpty), .values()
+    );
+
     // A load establishes the resident readout state. Thereafter every
-    // completed sample applies exactly one signed stored-integer step: one LSB
-    // in the resident reduction-weight representation.
+    // training-enabled completed sample applies exactly one signed
+    // stored-integer step: one LSB in the resident reduction-weight
+    // representation.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             for (int lane = 0; lane < N; lane++)
@@ -164,7 +184,7 @@ module nnAccelerator #(
         end else if (loadReductionWeights) begin
             for (int lane = 0; lane < N; lane++)
                 residentReductionWeight[lane] <= reductionWeight[lane];
-        end else if (samplePop) begin
+        end else if (samplePop && trainingEnableHead) begin
             for (int lane = 0; lane < N; lane++) begin
                 case (reductionDirection[lane])
                     2'sd1: begin

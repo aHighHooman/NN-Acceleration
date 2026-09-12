@@ -16,6 +16,7 @@ module matrixMultiplierWeightStationarySPI_tb;
 
     logic clk, sclk, rst_n;
     logic weightReady, activationReady, passThrough, reduceOutput;
+    logic trainingEnable;
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N];
     logic loadReductionWeights;
     logic weightsLoaded, reloadWeights, reloadReady;
@@ -32,6 +33,7 @@ module matrixMultiplierWeightStationarySPI_tb;
         .clk(clk), .rst_n(rst_n),
         .weightReady(weightReady), .activationReady(activationReady),
         .passThrough(passThrough), .reduceOutput(reduceOutput),
+        .trainingEnable(trainingEnable),
         .reductionWeight(reductionWeight),
         .loadReductionWeights(loadReductionWeights), .weightsLoaded(weightsLoaded),
         .reloadWeights(reloadWeights), .reloadReady(reloadReady),
@@ -57,6 +59,7 @@ module matrixMultiplierWeightStationarySPI_tb;
         rst_n = 1'b0;
         passThrough = 1'b1;
         reduceOutput = 1'b0;
+        trainingEnable = 1'b0;
         reloadWeights = 1'b0;
         loadReductionWeights = 1'b0;
         for (int lane = 0; lane < N; lane++) begin

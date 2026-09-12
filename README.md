@@ -90,11 +90,12 @@ sequenceDiagram
 - After the full weighted sum is complete, one arithmetic right shift by `FRACTION_BITS + REDUCTION_WEIGHT_WIDTH - 1` returns the prediction to the input/target binary-point position. Only then is it narrowed to the architectural prediction width.
 - `reduceOutput = 0` returns the sign-extended activated vector. `reduceOutput = 1` returns the rescaled prediction in lane 0 and zero in lanes `1:N-1`.
 - `reductionWeight[N]` is the initialization vector for resident reduction-weight registers. Pulsing `loadReductionWeights` copies the complete vector atomically. Loading has priority over learning and can change a combinational prediction, so configuration software must use it only while the sample pipeline is quiescent.
-- Every `resultValid && resultReady` training completion applies one saturating stored-LSB update to each resident reduction weight. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively.
-- The same completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the pre-update resident reduction-weight signs and the pass-through/ReLU activation gate.
+- Every `resultValid && resultReady` completion whose buffered `trainingEnable` is high applies one saturating stored-LSB update to each resident reduction weight. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not change weights.
+- The same training-enabled completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the pre-update resident reduction-weight signs and the pass-through/ReLU activation gate.
 - A `2*N-1` stage pipeline carries each valid package across the PE anti-diagonals. Stage `d` updates every PE where `row + column == d` by the ternary outer product, with signed one-LSB saturation. The update pipeline and datapath share `arrayAdvance`, so both freeze together under backpressure and successive packages may overlap.
 - A PE multiply uses the weight present before an update edge. The matching diagonal update becomes visible to the next sample behind the update wave, keeping each sample on one coherent weight version. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
-- Original input signs and targets are pushed and popped by the same sample events. Either FIFO can therefore backpressure the complete activation/target/sign transaction, and their heads remain paired with the current prediction under result stalls.
+- Original input signs, targets, and per-sample training-enable bits are pushed and popped by the same sample events. Any metadata FIFO can therefore backpressure the complete transaction, and their heads remain paired with the current prediction under result stalls.
+- The SPI wrapper exposes `trainingEnable`; inference-only integrations must drive it low, as the SPI directed test does.
 - Assert `reloadWeights` only while `reloadReady` is high.
 - `weightReady` and `activationReady` indicate when a complete parallel SPI vector may be started.
 
@@ -121,8 +122,9 @@ The self-checking regression covers:
 - raw signed matrix-product results
 - composed pass-through and ReLU accelerator results
 - composed activation-to-reduction behavior, one rescaled scalar per activated vector at the architectural prediction width
-- atomic activation/target acceptance, including target-FIFO-full backpressure
+- atomic activation/target/training-enable acceptance, including metadata-FIFO-full backpressure
 - ordered target comparison for back-to-back and bubbled samples, with vectors chosen to expose off-by-one pairing
+- consecutive enabled/disabled/enabled samples, proving that only buffered enabled samples issue matrix and reduction-weight updates
 - signed target comparison for all three learning directions, including negative narrow-target sign extension and stable output stalls
 - resident reduction-weight loading and signed one-LSB updates at both saturation endpoints
 - aligned ternary matrix-update packages, including zero input signs and a closed ReLU gate
@@ -142,9 +144,10 @@ pwsh -File scripts/run_modelsim.ps1
 With ModelSim configured, the regression script treats any simulation error as
 a failure.
 
-At the `nnAccelerator` boundary, `targetData` is accepted atomically with the
-complete `activationData[N]` vector on `activationValid && activationReady`.
-One ordered target FIFO contributes to activation backpressure and presents its
+At the `nnAccelerator` boundary, `targetData` and `trainingEnable` are accepted
+atomically with the complete `activationData[N]` vector on
+`activationValid && activationReady`. One ordered target FIFO contributes to
+activation backpressure and presents its
 head as `resultTargetData`; that head advances only with the shared
 `resultValid && resultReady` result transaction. No fixed pipeline latency is
 used to align targets and predictions. While `resultValid` is asserted, the
@@ -152,9 +155,10 @@ signed 2-bit `learningDirection` compares that target head with the full scalar
 prediction: `+1` when the target is greater, `0` when equal, and `-1` when the
 target is less. Narrower operands are sign-extended for the comparison, and the
 target, prediction, and direction remain stable together under backpressure.
-An equally deep packed FIFO carries two-bit signs for every original input lane.
-On the result handshake, those signs and the current pre-activation values form
-one `rowDirection`/`columnDirection` package while the resident reduction
+Equally deep FIFOs carry two-bit signs for every original input lane and the
+training-enable bit. On a training-enabled result handshake, those signs and
+the current pre-activation values form one `rowDirection`/`columnDirection`
+package while the resident reduction
 weights receive their independent saturating update. Because nonblocking state
 updates occur after the edge, the package always observes the same pre-update
 reduction weights that produced its prediction.

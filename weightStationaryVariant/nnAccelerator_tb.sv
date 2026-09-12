@@ -1,9 +1,9 @@
 `timescale 1ns / 1ps
 
 // Integration-level directed verification for resident reduction updates and
-// the Phase 5C matrix-update path. The scoreboard snapshots the PE weights as
-// each accepted sample actually enters the array, so it also checks that every
-// result uses one coherent pre- or post-update weight version.
+// the Phase 5D per-sample training-enable path. The scoreboard snapshots the
+// PE weights as each accepted sample actually enters the array, so it also
+// checks that every result uses one coherent pre- or post-update weight version.
 module nnAccelerator_tb;
     localparam int WIDTH = 8;
     localparam int TARGET_WIDTH = 7;
@@ -24,6 +24,7 @@ module nnAccelerator_tb;
     logic signed [WIDTH-1:0] weightData[N], activationData[N];
     target_t targetData, resultTargetData;
     logic weightValid, weightReady, activationValid, activationReady;
+    logic trainingEnable;
     logic signed [WIDTH-1:0] reductionWeight[N];
     result_t resultData[N];
     logic signed [1:0] learningDirection;
@@ -35,6 +36,7 @@ module nnAccelerator_tb;
     integer cycleCount, acceptedCount, consumedCount;
     integer lastAcceptedCycle;
     target_t expectedTarget[0:SAMPLE_COUNT-1];
+    logic expectedTrainingEnable[0:SAMPLE_COUNT-1];
     logic signed [WIDTH-1:0] acceptedInput[0:SAMPLE_COUNT-1][N];
     logic signed [WIDTH-1:0] sampleMatrixWeight[0:SAMPLE_COUNT-1][N][N];
     logic signed [WIDTH-1:0] modelMatrixWeight[N][N];
@@ -51,6 +53,7 @@ module nnAccelerator_tb;
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
         .activationData(activationData), .targetData(targetData),
+        .trainingEnable(trainingEnable),
         .activationValid(activationValid), .activationReady(activationReady),
         .reductionWeight(reductionWeight),
         .loadReductionWeights(loadReductionWeights), .reduceOutput(reduceOutput),
@@ -146,10 +149,12 @@ module nnAccelerator_tb;
             if (dut.targetPop !== (resultValid && resultReady))
                 $fatal(1, "target pop did not equal the result handshake");
             if (dut.samplePush !== dut.targetPush ||
-                dut.inputSignFifo.values !== dut.targetFifo.values)
-                $fatal(1, "target and input-sign FIFOs lost alignment");
-            if (matrixUpdateValid !== (resultValid && resultReady))
-                $fatal(1, "matrix update valid did not equal result completion");
+                dut.inputSignFifo.values !== dut.targetFifo.values ||
+                dut.trainingEnableFifo.values !== dut.targetFifo.values)
+                $fatal(1, "sample metadata FIFOs lost alignment");
+            if (matrixUpdateValid !==
+                ((resultValid && resultReady) && dut.trainingEnableHead))
+                $fatal(1, "matrix update valid did not match buffered training enable");
             if (matrixUpdateValid && !dut.matrixEngine.arrayAdvance)
                 $fatal(1, "matrix update package was presented while the array was stalled");
             for (int lane = 0; lane < N; lane++) begin
@@ -219,6 +224,7 @@ module nnAccelerator_tb;
                 lastAcceptedCycle = cycleCount;
 
                 expectedTarget[acceptedCount] = targetData;
+                expectedTrainingEnable[acceptedCount] = trainingEnable;
                 for (int lane = 0; lane < N; lane++)
                     acceptedInput[acceptedCount][lane] = activationData[lane];
                 acceptedCount = acceptedCount + 1;
@@ -233,6 +239,16 @@ module nnAccelerator_tb;
                     $fatal(1, "target %0d got %0d, expected %0d",
                            consumedCount, resultTargetData,
                            expectedTarget[consumedCount]);
+                if (dut.trainingEnableHead !==
+                    expectedTrainingEnable[consumedCount])
+                    $fatal(1, "training enable %0d got %0b, expected %0b",
+                           consumedCount, dut.trainingEnableHead,
+                           expectedTrainingEnable[consumedCount]);
+                if (matrixUpdateValid !==
+                    expectedTrainingEnable[consumedCount])
+                    $fatal(1, "sample %0d matrix update valid got %0b, expected %0b",
+                           consumedCount, matrixUpdateValid,
+                           expectedTrainingEnable[consumedCount]);
                 expectedPredictionNow = phase5_prediction(
                     acceptedInput[consumedCount][0],
                     acceptedInput[consumedCount][1],
@@ -284,17 +300,19 @@ module nnAccelerator_tb;
                         $fatal(1, "column direction %0d:%0d got %0d",
                                consumedCount, lane, columnDirection[lane]);
 
-                    case (ternary_product(
-                              expectedDirectionNow,
-                              ternary_sign(
-                                  (passThrough || (rawResult[lane] > 0))
-                                  ? rawResult[lane] : 0)))
-                        2'sd1: if (modelReductionWeight[lane] != {1'b0, {(WIDTH-1){1'b1}}})
-                            modelReductionWeight[lane] = modelReductionWeight[lane] + 1;
-                        -2'sd1: if (modelReductionWeight[lane] != {1'b1, {(WIDTH-1){1'b0}}})
-                            modelReductionWeight[lane] = modelReductionWeight[lane] - 1;
-                        default: modelReductionWeight[lane] = modelReductionWeight[lane];
-                    endcase
+                    if (expectedTrainingEnable[consumedCount]) begin
+                        case (ternary_product(
+                                  expectedDirectionNow,
+                                  ternary_sign(
+                                      (passThrough || (rawResult[lane] > 0))
+                                      ? rawResult[lane] : 0)))
+                            2'sd1: if (modelReductionWeight[lane] != {1'b0, {(WIDTH-1){1'b1}}})
+                                modelReductionWeight[lane] = modelReductionWeight[lane] + 1;
+                            -2'sd1: if (modelReductionWeight[lane] != {1'b1, {(WIDTH-1){1'b0}}})
+                                modelReductionWeight[lane] = modelReductionWeight[lane] - 1;
+                            default: modelReductionWeight[lane] = modelReductionWeight[lane];
+                        endcase
+                    end
                 end
 
                 case (expectedDirectionNow)
@@ -313,11 +331,13 @@ module nnAccelerator_tb;
         target_t heldTarget;
         result_t heldPrediction;
         logic signed [1:0] heldDirection;
+        logic heldTrainingEnable;
 
         clk = 0;
         rst_n = 0;
         weightValid = 0;
         activationValid = 0;
+        trainingEnable = 0;
         resultReady = 0;
         reduceOutput = 1;
         passThrough = 1;
@@ -347,11 +367,15 @@ module nnAccelerator_tb;
         // 0, -2.5, and -1) with stored targets 32, -48, and -16. Correct
         // directions are +1, -1, 0. Pairing targets one
         // position late instead yields -1, +1, +1.
-        // The first two samples are accepted on consecutive cycles.
+        // The first two samples are accepted on consecutive cycles with
+        // training enabled and disabled respectively. The third returns the
+        // live input to one before the disabled sample reaches completion,
+        // exposing any accidental use of the unbuffered control.
         @(negedge clk);
         activationData[0] = 7*SCALE;
         activationData[1] = -1*SCALE;
         targetData = 2*SCALE;
+        trainingEnable = 1;
         activationValid = 1;
         if (!activationReady)
             $fatal(1, "first sample was unexpectedly backpressured");
@@ -360,6 +384,7 @@ module nnAccelerator_tb;
         activationData[0] = 2*SCALE;
         activationData[1] = -1*SCALE;
         targetData = -3*SCALE;
+        trainingEnable = 0;
         if (!activationReady)
             $fatal(1, "second back-to-back sample was unexpectedly backpressured");
         @(posedge clk);
@@ -370,12 +395,14 @@ module nnAccelerator_tb;
         activationData[0] = 5*SCALE;
         activationData[1] = -1*SCALE;
         targetData = -1*SCALE;
+        trainingEnable = 1;
         wait(dut.targetFull && dut.matrixActivationReady);
         repeat (3) begin
             #1;
             if (activationReady || dut.matrixActivationValid ||
+                !dut.trainingEnableFull ||
                 dut.targetPush || acceptedCount != 2)
-                $fatal(1, "target-full backpressure did not hold the complete sample");
+                $fatal(1, "metadata-full backpressure did not hold the complete sample");
             @(negedge clk);
         end
 
@@ -386,6 +413,7 @@ module nnAccelerator_tb;
         heldTarget = resultTargetData;
         heldPrediction = resultData[0];
         heldDirection = learningDirection;
+        heldTrainingEnable = dut.trainingEnableHead;
         if (heldTarget !== 2*SCALE || heldPrediction !== 0 || heldDirection !== 2'sd1)
             $fatal(1, "unexpected first stalled tuple: prediction=%0d target=%0d direction=%0d",
                    heldPrediction, heldTarget, heldDirection);
@@ -393,8 +421,9 @@ module nnAccelerator_tb;
             @(negedge clk);
             if (!resultValid || resultTargetData !== heldTarget ||
                 resultData[0] !== heldPrediction ||
-                learningDirection !== heldDirection || dut.targetPop)
-                $fatal(1, "prediction, target, or direction changed while output was stalled");
+                learningDirection !== heldDirection ||
+                dut.trainingEnableHead !== heldTrainingEnable || dut.targetPop)
+                $fatal(1, "prediction or buffered metadata changed while output was stalled");
         end
 
         // Permit exactly one result handshake. Full-FIFO lookahead accepts x2
@@ -410,17 +439,18 @@ module nnAccelerator_tb;
             $fatal(1, "simultaneous target pop/push accounting was not 3 accepted, 1 consumed, 2 queued");
         wait(resultValid);
         @(negedge clk);
-        if (resultTargetData !== -3*SCALE)
-            $fatal(1, "exactly-one advance failed: next target got %0d, expected %0d",
-                   resultTargetData, -3*SCALE);
+        if (resultTargetData !== -3*SCALE ||
+            dut.trainingEnableHead !== 1'b0 || trainingEnable !== 1'b1)
+            $fatal(1, "next sample did not retain target/training metadata: target=%0d bufferedTrain=%0b liveTrain=%0b",
+                   resultTargetData, dut.trainingEnableHead, trainingEnable);
 
         // Drain x1/x2, then add intentional input bubbles. These samples also
         // retain negative predictions and repeat all comparator outcomes.
         resultReady = 1;
         wait_for_consumed(3);
-        send_sample_with_bubbles(2*SCALE, 0, 2*SCALE, 2); // 1 -> +1
-        send_sample_with_bubbles(2*SCALE, -1*SCALE, -3*SCALE, 3); // -2.5 -> -1
-        send_sample_with_bubbles(0, -1*SCALE, -7*SCALE/2, 1);   // -3.5 -> 0
+        send_sample_with_bubbles(2*SCALE, 0, 2*SCALE, 1, 2); // 1 -> +1
+        send_sample_with_bubbles(2*SCALE, -1*SCALE, -3*SCALE, 1, 3); // -2.5 -> -1
+        send_sample_with_bubbles(0, -1*SCALE, -7*SCALE/2, 1, 1);   // -3.5 -> 0
         wait_for_consumed(6);
 
         // Exercise both saturation endpoints without relying on arithmetic
@@ -429,14 +459,14 @@ module nnAccelerator_tb;
         reductionWeight[0] = {1'b0, {(WIDTH-1){1'b1}}};
         reductionWeight[1] = {1'b1, {(WIDTH-1){1'b0}}};
         load_reduction_vector();
-        send_sample_with_bubbles(2*SCALE, SCALE, -(1 << (TARGET_WIDTH-1)), 1);
+        send_sample_with_bubbles(2*SCALE, SCALE, -(1 << (TARGET_WIDTH-1)), 1, 1);
         wait_for_consumed(7);
         @(negedge clk);
         if (dut.residentReductionWeight[1] !== {1'b1, {(WIDTH-1){1'b0}}})
             $fatal(1, "negative reduction-weight saturation failed");
 
         load_reduction_vector();
-        send_sample_with_bubbles(0, SCALE, (1 << (TARGET_WIDTH-1))-1, 1);
+        send_sample_with_bubbles(0, SCALE, (1 << (TARGET_WIDTH-1))-1, 1, 1);
         wait_for_consumed(8);
         @(negedge clk);
         if (dut.residentReductionWeight[0] !== {1'b0, {(WIDTH-1){1'b1}}})
@@ -450,14 +480,14 @@ module nnAccelerator_tb;
         load_reduction_vector();
         passThrough = 0;
         send_sample_with_bubbles(7*SCALE, -1*SCALE,
-                                 (1 << (TARGET_WIDTH-1))-1, 1);
+                                 (1 << (TARGET_WIDTH-1))-1, 1, 1);
         wait_for_consumed(9);
 
         // A nonzero error with an all-zero input must update neither the
         // reduction weights nor any matrix PE: row directions are all zero
         // and the activated vector is all zero.
         passThrough = 1;
-        send_sample_with_bubbles(0, 0, SCALE, 1);
+        send_sample_with_bubbles(0, 0, SCALE, 1, 1);
         wait_for_consumed(SAMPLE_COUNT);
         @(negedge clk) resultReady = 0;
         wait(!dut.matrixEngine.pipelineBusy);
@@ -485,7 +515,7 @@ module nnAccelerator_tb;
         if (!sawPositive || !sawZero || !sawNegative)
             $fatal(1, "did not observe all three learning-direction outcomes");
 
-        $display("PASS: aligned SSLMS packages, matrix versions, resident updates, saturation, and backpressure.");
+        $display("PASS: per-sample training control, aligned SSLMS packages, matrix versions, resident updates, saturation, and backpressure.");
         $finish;
     end
 
@@ -503,6 +533,7 @@ module nnAccelerator_tb;
         input integer lane0,
         input integer lane1,
         input integer target,
+        input logic train,
         input integer bubbleCycles
     );
         activationValid = 0;
@@ -510,6 +541,7 @@ module nnAccelerator_tb;
         activationData[0] = lane0;
         activationData[1] = lane1;
         targetData = target;
+        trainingEnable = train;
         activationValid = 1;
         while (!activationReady) @(negedge clk);
         @(posedge clk);

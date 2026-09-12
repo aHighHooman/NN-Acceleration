@@ -12,6 +12,7 @@ module matrixMultiplierWeightStationarySPI #(
     output logic                    activationReady,
     input  logic                    passThrough,
     input  logic                    reduceOutput,
+    input  logic                    trainingEnable,
     input  logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight [N],
     input  logic                    loadReductionWeights,
     output logic                    weightsLoaded,
@@ -160,7 +161,8 @@ module matrixMultiplierWeightStationarySPI #(
     ) accelerator (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightFifoReady),
-        .activationData(activationData), .targetData('0), .activationValid(activationValid),
+        .activationData(activationData), .targetData('0),
+        .trainingEnable(trainingEnable), .activationValid(activationValid),
         .activationReady(activationFifoReady), .resultData(resultData),
         .resultTargetData(), .learningDirection(),
         .rowDirection(), .columnDirection(), .matrixUpdateValid(),
