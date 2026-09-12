@@ -16,7 +16,7 @@ module nnAccelerator_tb;
     localparam int SCALE = 1 << FRACTION_BITS;
     localparam int HALF = 1 << (REDUCTION_FRACTION_BITS - 1);
     localparam int PREDICTION_WIDTH = 2*WIDTH + 2*$clog2(N);
-    localparam int SAMPLE_COUNT = 18;
+    localparam int SAMPLE_COUNT = 21;
     localparam int UPDATE_STAGES = 2*N - 1;
     localparam int MATRIX_VERSION_WIDTH = $clog2(4+1);
     localparam int VERSION_MODULUS = 1 << MATRIX_VERSION_WIDTH;
@@ -44,14 +44,19 @@ module nnAccelerator_tb;
     logic signed [WIDTH-1:0] acceptedInput[0:SAMPLE_COUNT-1][N];
     logic signed [WIDTH-1:0] sampleMatrixWeight[0:SAMPLE_COUNT-1][N][N];
     integer sampleMatrixVersion[0:SAMPLE_COUNT-1];
+    logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
+        sampleReductionWeight[0:SAMPLE_COUNT-1][N];
+    integer sampleReductionVersion[0:SAMPLE_COUNT-1];
     logic signed [WIDTH-1:0] modelMatrixWeight[N][N];
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] modelReductionWeight[N];
+    logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
+        architecturalReductionWeight[0:SAMPLE_COUNT][N];
     logic signed [1:0] pendingReductionDirection[0:SAMPLE_COUNT-1][N];
     integer pendingReductionSampleIndex[0:SAMPLE_COUNT-1];
     integer acceptedUpdateSampleIndex[0:SAMPLE_COUNT-1];
     integer reductionQueueHead, reductionQueueTail, reductionQueueCount;
     integer matrixEntryCount, acceptedUpdateCount, completedUpdateCount;
-    integer matrixVersion, reductionVersion, lastCommittedSample;
+    integer matrixVersion, matrixGeneration, reductionVersion, lastCommittedSample;
     integer lastReductionCommitCycle;
     bit sawBackToBack, sawBubble;
     bit sawPositive, sawZero, sawNegative;
@@ -146,6 +151,7 @@ module nnAccelerator_tb;
             acceptedUpdateCount = 0;
             completedUpdateCount = 0;
             matrixVersion = 0;
+            matrixGeneration = 0;
             reductionVersion = 0;
             lastCommittedSample = -1;
             lastReductionCommitCycle = -2;
@@ -166,8 +172,11 @@ module nnAccelerator_tb;
             reductionQueueHead = 0;
             reductionQueueTail = 0;
             reductionQueueCount = 0;
-            for (int lane = 0; lane < N; lane++)
+            for (int lane = 0; lane < N; lane++) begin
                 modelReductionWeight[lane] = 0;
+                for (int generation = 0; generation <= SAMPLE_COUNT; generation++)
+                    architecturalReductionWeight[generation][lane] = 0;
+            end
             modelMatrixWeight[0][0] = 2*SCALE;
             modelMatrixWeight[0][1] = -1*SCALE;
             modelMatrixWeight[1][0] = 3*SCALE;
@@ -219,8 +228,14 @@ module nnAccelerator_tb;
             end
 
             if (loadReductionWeights) begin
-                for (int lane = 0; lane < N; lane++)
+                for (int lane = 0; lane < N; lane++) begin
                     modelReductionWeight[lane] = reductionWeight[lane];
+                    // Loads in this directed test occur only after all pending
+                    // update waves drain. They replace the reduction half of
+                    // the current complete architectural network version.
+                    architecturalReductionWeight[acceptedUpdateCount][lane] =
+                        reductionWeight[lane];
+                end
             end
 
             // row lane 0 is the leading edge of a sample wave. All other
@@ -234,6 +249,10 @@ module nnAccelerator_tb;
                         sampleMatrixWeight[matrixEntryCount][rowIndex][columnIndex] =
                             modelMatrixWeight[rowIndex][columnIndex];
                 sampleMatrixVersion[matrixEntryCount] = matrixVersion;
+                for (int lane = 0; lane < N; lane++)
+                    sampleReductionWeight[matrixEntryCount][lane] =
+                        architecturalReductionWeight[matrixGeneration][lane];
+                sampleReductionVersion[matrixEntryCount] = matrixVersion;
                 matrixEntryCount = matrixEntryCount + 1;
             end
 
@@ -265,6 +284,7 @@ module nnAccelerator_tb;
                     end
                 end
                 matrixVersion = (matrixVersion + 1) % VERSION_MODULUS;
+                matrixGeneration = matrixGeneration + 1;
             end
 
             if (activationValid && activationReady) begin
@@ -304,10 +324,11 @@ module nnAccelerator_tb;
                     $fatal(1, "sample %0d matrix update valid got %0b, expected %0b",
                            consumedCount, matrixUpdateValid,
                            expectedTrainingEnable[consumedCount]);
-                if (sampleMatrixVersion[consumedCount] != reductionVersion)
-                    $fatal(1, "sample %0d crossed mismatched matrix/reduction versions %0d/%0d",
+                if (sampleMatrixVersion[consumedCount] !=
+                    sampleReductionVersion[consumedCount])
+                    $fatal(1, "sample %0d has mismatched snapshotted matrix/reduction versions %0d/%0d",
                            consumedCount, sampleMatrixVersion[consumedCount],
-                           reductionVersion);
+                           sampleReductionVersion[consumedCount]);
                 if (dut.matrixResultVersion !== sampleMatrixVersion[consumedCount])
                     $fatal(1, "sample %0d matrix version metadata got %0d, expected %0d",
                            consumedCount, dut.matrixResultVersion,
@@ -323,7 +344,8 @@ module nnAccelerator_tb;
                     sampleMatrixWeight[consumedCount][0][1],
                     sampleMatrixWeight[consumedCount][1][0],
                     sampleMatrixWeight[consumedCount][1][1],
-                    modelReductionWeight[0], modelReductionWeight[1],
+                    sampleReductionWeight[consumedCount][0],
+                    sampleReductionWeight[consumedCount][1],
                     passThrough);
                 if ($signed(expectedTarget[consumedCount]) >
                     $signed(expectedPredictionNow))
@@ -362,7 +384,8 @@ module nnAccelerator_tb;
                         ((passThrough || (rawResult[lane] > 0))
                          ? ternary_product(
                                expectedDirectionNow,
-                               ternary_sign(modelReductionWeight[lane]))
+                               ternary_sign(
+                                   sampleReductionWeight[consumedCount][lane]))
                          : 2'sd0))
                         $fatal(1, "column direction %0d:%0d got %0d",
                                consumedCount, lane, columnDirection[lane]);
@@ -378,8 +401,32 @@ module nnAccelerator_tb;
 
                 if (expectedTrainingEnable[consumedCount]) begin
                     acceptedUpdateSampleIndex[acceptedUpdateCount] = consumedCount;
-                    acceptedUpdateCount = acceptedUpdateCount + 1;
                     pendingReductionSampleIndex[reductionQueueTail] = consumedCount;
+                    // A training transaction defines the reduction half of
+                    // the next architectural network version immediately from
+                    // the sample snapshot and its independently predicted
+                    // learning direction. DUT reduction commit timing is not
+                    // part of this expected-value model.
+                    for (int lane = 0; lane < N; lane++) begin
+                        architecturalReductionWeight[acceptedUpdateCount+1][lane] =
+                            architecturalReductionWeight[acceptedUpdateCount][lane];
+                        case (pendingReductionDirection[reductionQueueTail][lane])
+                            2'sd1:
+                                if (architecturalReductionWeight[acceptedUpdateCount][lane] !=
+                                    {1'b0, {(REDUCTION_WEIGHT_WIDTH-1){1'b1}}})
+                                    architecturalReductionWeight[acceptedUpdateCount+1][lane] =
+                                        architecturalReductionWeight[acceptedUpdateCount][lane] + 1;
+                            -2'sd1:
+                                if (architecturalReductionWeight[acceptedUpdateCount][lane] !=
+                                    {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}})
+                                    architecturalReductionWeight[acceptedUpdateCount+1][lane] =
+                                        architecturalReductionWeight[acceptedUpdateCount][lane] - 1;
+                            default:
+                                architecturalReductionWeight[acceptedUpdateCount+1][lane] =
+                                    architecturalReductionWeight[acceptedUpdateCount][lane];
+                        endcase
+                    end
+                    acceptedUpdateCount = acceptedUpdateCount + 1;
                     reductionQueueTail = reductionQueueTail + 1;
                     reductionQueueCount = reductionQueueCount + 1;
                 end
@@ -528,12 +575,36 @@ module nnAccelerator_tb;
         if (acceptedCount != 4)
             $fatal(1, "the alternating training pattern was not accepted consecutively");
 
-        // Consume through the first training sample, then stall the following
-        // old-version result while that matrix update wave continues.
-        resultReady = 1;
-        wait_for_consumed(2);
+        // Keep replacement inputs arriving on the same three clocks that
+        // samples 0, 1, and 2 leave the full metadata FIFO. Sample 1 launches
+        // the first update; sample 4 is the last sample at its old complete-
+        // network boundary, and sample 5 is the first one behind it.
+        // This leaves old- and new-version samples resident concurrently.
+        wait(resultValid);
         @(negedge clk);
+        activationData[0] = 3*SCALE;
+        activationData[1] = SCALE;
+        targetData = 0;
+        trainingEnable = 0;
+        activationValid = 1;
+        resultReady = 1;
+        @(posedge clk);
+        @(negedge clk);
+        activationData[0] = -2*SCALE;
+        activationData[1] = SCALE;
+        targetData = SCALE;
+        @(posedge clk);
+        @(negedge clk);
+        activationData[0] = SCALE;
+        activationData[1] = SCALE;
+        targetData = -SCALE;
+        @(posedge clk);
+        @(negedge clk);
+        activationValid = 0;
         resultReady = 0;
+        if (acceptedCount != 7)
+            $fatal(1, "version-boundary replacements accepted %0d samples, expected 7",
+                   acceptedCount);
         wait(resultValid);
         heldTarget = resultTargetData;
         heldPrediction = resultData[0];
@@ -560,10 +631,23 @@ module nnAccelerator_tb;
                     $fatal(1, "reduction weight changed while valid result was stalled");
         end
 
-        // Drain the alternating sequence.  Only sample indices 1 and 3 may
+        // Drain the boundary sequence. Only sample indices 1 and 3 may
         // create matrix/reduction update packages.
         resultReady = 1;
-        wait_for_consumed(4);
+        wait_for_consumed(7);
+        if (sampleMatrixVersion[4] != 0 ||
+            sampleMatrixVersion[5] != 1 ||
+            sampleMatrixVersion[6] != 1)
+            $fatal(1, "focused boundary versions got [%0d,%0d,%0d], expected [0,1,1]",
+                   sampleMatrixVersion[4], sampleMatrixVersion[5],
+                   sampleMatrixVersion[6]);
+        if (sampleReductionWeight[4][0] != HALF ||
+            sampleReductionWeight[4][1] != HALF ||
+            sampleReductionWeight[5][0] != HALF-1 ||
+            sampleReductionWeight[5][1] != HALF+1 ||
+            sampleReductionWeight[6][0] != HALF-1 ||
+            sampleReductionWeight[6][1] != HALF+1)
+            $fatal(1, "focused boundary did not snapshot old/new reduction states");
         if (acceptedUpdateCount != 2 ||
             acceptedUpdateSampleIndex[0] != 1 ||
             acceptedUpdateSampleIndex[1] != 3)
@@ -574,7 +658,7 @@ module nnAccelerator_tb;
         // The first post-wave inference sample carries version two. Its raw
         // FIFO head must wait two clocks while the queued packages commit.
         send_sample_with_bubbles(SCALE, 0, SCALE, 0, 1);
-        wait_for_consumed(5);
+        wait_for_consumed(8);
         if (reductionVersion != 2 || reductionQueueCount != 0)
             $fatal(1, "two queued updates did not advance readout to version two");
 
@@ -598,7 +682,7 @@ module nnAccelerator_tb;
         wait(resultValid);
         repeat (3) @(negedge clk);
         resultReady = 1;
-        wait_for_consumed(7);
+        wait_for_consumed(10);
         wait(!dut.matrixEngine.pipelineBusy);
         @(negedge clk);
         if (acceptedUpdateCount != 2)
@@ -622,12 +706,12 @@ module nnAccelerator_tb;
         send_sample_with_bubbles(2*SCALE, 0, 2*SCALE, 1, 2); // 1 -> +1
         send_sample_with_bubbles(2*SCALE, -1*SCALE, -3*SCALE, 1, 0); // -2.5 -> -1
         stall_active_update_wave();
-        wait_for_consumed(9);
+        wait_for_consumed(12);
         send_sample_with_bubbles(0, -1*SCALE, -7*SCALE/2, 1, 1);   // -3.5 -> 0
-        wait_for_consumed(10);
+        wait_for_consumed(13);
         wait(!dut.matrixEngine.pipelineBusy);
         send_sample_with_bubbles(SCALE, 0, 0, 0, 0);
-        wait_for_consumed(11);
+        wait_for_consumed(14);
         wait_for_reduction_updates();
 
         // Exercise both saturation endpoints without relying on arithmetic
@@ -637,10 +721,10 @@ module nnAccelerator_tb;
         reductionWeight[1] = {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}};
         load_reduction_vector();
         send_sample_with_bubbles(2*SCALE, SCALE, -(1 << (TARGET_WIDTH-1)), 1, 1);
-        wait_for_consumed(12);
+        wait_for_consumed(15);
         wait(!dut.matrixEngine.pipelineBusy);
         send_sample_with_bubbles(SCALE, 0, 0, 0, 0);
-        wait_for_consumed(13);
+        wait_for_consumed(16);
         wait_for_reduction_updates();
         @(negedge clk);
         if (dut.residentReductionWeight[1] !==
@@ -649,10 +733,10 @@ module nnAccelerator_tb;
 
         load_reduction_vector();
         send_sample_with_bubbles(0, SCALE, (1 << (TARGET_WIDTH-1))-1, 1, 1);
-        wait_for_consumed(14);
+        wait_for_consumed(17);
         wait(!dut.matrixEngine.pipelineBusy);
         send_sample_with_bubbles(SCALE, 0, 0, 0, 0);
-        wait_for_consumed(15);
+        wait_for_consumed(18);
         wait_for_reduction_updates();
         @(negedge clk);
         if (dut.residentReductionWeight[0] !==
@@ -668,14 +752,14 @@ module nnAccelerator_tb;
         passThrough = 0;
         send_sample_with_bubbles(7*SCALE, -1*SCALE,
                                  (1 << (TARGET_WIDTH-1))-1, 1, 1);
-        wait_for_consumed(16);
+        wait_for_consumed(19);
 
         // A nonzero error with an all-zero input must update neither the
         // reduction weights nor any matrix PE: row directions are all zero
         // and the activated vector is all zero.
         passThrough = 1;
         send_sample_with_bubbles(0, 0, SCALE, 1, 1);
-        wait_for_consumed(17);
+        wait_for_consumed(20);
         wait(!dut.matrixEngine.pipelineBusy);
         send_sample_with_bubbles(SCALE, 0, 0, 0, 0);
         wait_for_consumed(SAMPLE_COUNT);
