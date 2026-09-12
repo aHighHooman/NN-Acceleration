@@ -6,6 +6,7 @@ module nn_uvm_tb_top;
     `include "uvm_macros.svh"
 
     nn_core_if #(WIDTH, N) bus();
+    logic signed [1:0] noRowDirection[N], noColumnDirection[N];
 
     matrixMultiplierWeightStationary #(
         .WIDTH(WIDTH),
@@ -21,6 +22,9 @@ module nn_uvm_tb_top;
         .activationData(bus.activationData),
         .activationValid(bus.activationValid),
         .activationReady(bus.activationReady),
+        .rowDirection(noRowDirection),
+        .columnDirection(noColumnDirection),
+        .matrixUpdateValid(1'b0),
         .resultData(bus.resultData),
         .resultValid(bus.resultValid),
         .resultReady(bus.resultReady),
@@ -44,6 +48,8 @@ module nn_uvm_tb_top;
         for (int lane = 0; lane < N; lane++) begin
             bus.weightData[lane] = '0;
             bus.activationData[lane] = '0;
+            noRowDirection[lane] = 2'sd0;
+            noColumnDirection[lane] = 2'sd0;
         end
 
         uvm_config_db #(virtual nn_core_if #(WIDTH, N))::set(

@@ -12,6 +12,9 @@ module matrixMultiplierWeightStationary #(
     input  logic signed [WIDTH-1:0]      activationData [N],
     input  logic                         activationValid,
     output logic                         activationReady,
+    input  logic signed [1:0]            rowDirection [N],
+    input  logic signed [1:0]            columnDirection [N],
+    input  logic                         matrixUpdateValid,
     output logic signed [2*WIDTH+$clog2(N)-1:0] resultData [N],
     output logic                         resultValid,
     input  logic                         resultReady,
@@ -173,6 +176,8 @@ module matrixMultiplierWeightStationary #(
 
     systolicArrayWeightStationary #(.WIDTH(WIDTH), .N(N)) systolicArr (
         .clk(clk), .rst_n(rst_n), .advance(arrayAdvance), .loadWeight(weightPop),
+        .rowDirection(rowDirection), .columnDirection(columnDirection),
+        .updateValid(matrixUpdateValid),
         .row(rowData_OrchToSyst), .rowValid(validData_OrchToSyst),
         .col(weightData_FifoToLoader), .result(resultData_SystToFifo),
         .resultValid(validData_SystToFifo),

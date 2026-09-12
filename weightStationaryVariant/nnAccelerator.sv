@@ -193,6 +193,8 @@ module nnAccelerator #(
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
         .activationData(activationData), .activationValid(matrixActivationValid),
         .activationReady(matrixActivationReady), .resultData(rawResultData),
+        .rowDirection(rowDirection), .columnDirection(columnDirection),
+        .matrixUpdateValid(matrixUpdateValid),
         .resultValid(matrixResultValid), .resultReady(matrixResultReady),
         .resultLast(matrixResultLast), .weightsLoaded(weightsLoaded),
         .reloadWeights(reloadWeights), .reloadReady(reloadReady)

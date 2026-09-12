@@ -1,8 +1,9 @@
 `timescale 1ns / 1ps
 
-// Integration-level directed verification for the Phase 5B resident reduction
-// state and aligned SSLMS package. The scoreboard uses accepted ready/valid
-// transactions only; it does not assume a pipeline latency.
+// Integration-level directed verification for resident reduction updates and
+// the Phase 5C matrix-update path. The scoreboard snapshots the PE weights as
+// each accepted sample actually enters the array, so it also checks that every
+// result uses one coherent pre- or post-update weight version.
 module nnAccelerator_tb;
     localparam int WIDTH = 8;
     localparam int TARGET_WIDTH = 7;
@@ -14,7 +15,7 @@ module nnAccelerator_tb;
     localparam int SCALE = 1 << FRACTION_BITS;
     localparam int HALF = 1 << (REDUCTION_FRACTION_BITS - 1);
     localparam int PREDICTION_WIDTH = 2*WIDTH + 2*$clog2(N);
-    localparam int SAMPLE_COUNT = 9;
+    localparam int SAMPLE_COUNT = 10;
 
     typedef logic signed [PREDICTION_WIDTH-1:0] result_t;
     typedef logic signed [TARGET_WIDTH-1:0] target_t;
@@ -35,7 +36,10 @@ module nnAccelerator_tb;
     integer lastAcceptedCycle;
     target_t expectedTarget[0:SAMPLE_COUNT-1];
     logic signed [WIDTH-1:0] acceptedInput[0:SAMPLE_COUNT-1][N];
+    logic signed [WIDTH-1:0] sampleMatrixWeight[0:SAMPLE_COUNT-1][N][N];
+    logic signed [WIDTH-1:0] modelMatrixWeight[N][N];
     logic signed [WIDTH-1:0] modelReductionWeight[N];
+    integer matrixEntryCount;
     bit sawBackToBack, sawBubble;
     bit sawPositive, sawZero, sawNegative;
 
@@ -61,13 +65,15 @@ module nnAccelerator_tb;
 
     always #5 clk = ~clk;
 
-    // Loaded W is [[2, -1], [3, 4]], passThrough is enabled, and both
-    // reduction coefficients are 0.5. The model keeps the matrix result and
-    // complete weighted sum at full precision, then performs the one required
-    // final rescale.
+    // Keep the matrix result and complete weighted sum at full precision,
+    // then perform the one required final rescale.
     function automatic result_t phase5_prediction(
         input logic signed [WIDTH-1:0] x0,
         input logic signed [WIDTH-1:0] x1,
+        input logic signed [WIDTH-1:0] weight00,
+        input logic signed [WIDTH-1:0] weight01,
+        input logic signed [WIDTH-1:0] weight10,
+        input logic signed [WIDTH-1:0] weight11,
         input logic signed [WIDTH-1:0] reduction0,
         input logic signed [WIDTH-1:0] reduction1,
         input logic applyPassThrough
@@ -75,8 +81,8 @@ module nnAccelerator_tb;
         integer xw0, xw1;
         integer fullReduction;
         begin
-            xw0 = x0 * (2*SCALE) + x1 * (3*SCALE);
-            xw1 = x0 * (-1*SCALE) + x1 * (4*SCALE);
+            xw0 = x0 * weight00 + x1 * weight10;
+            xw1 = x0 * weight01 + x1 * weight11;
             if (!applyPassThrough) begin
                 if (xw0 < 0) xw0 = 0;
                 if (xw1 < 0) xw1 = 0;
@@ -116,6 +122,7 @@ module nnAccelerator_tb;
             cycleCount        = 0;
             acceptedCount     = 0;
             consumedCount     = 0;
+            matrixEntryCount  = 0;
             lastAcceptedCycle = -2;
             sawBackToBack     = 0;
             sawBubble         = 0;
@@ -124,6 +131,10 @@ module nnAccelerator_tb;
             sawNegative       = 0;
             for (int lane = 0; lane < N; lane++)
                 modelReductionWeight[lane] = 0;
+            modelMatrixWeight[0][0] = 2*SCALE;
+            modelMatrixWeight[0][1] = -1*SCALE;
+            modelMatrixWeight[1][0] = 3*SCALE;
+            modelMatrixWeight[1][1] = 4*SCALE;
         end else begin
             cycleCount = cycleCount + 1;
 
@@ -139,6 +150,8 @@ module nnAccelerator_tb;
                 $fatal(1, "target and input-sign FIFOs lost alignment");
             if (matrixUpdateValid !== (resultValid && resultReady))
                 $fatal(1, "matrix update valid did not equal result completion");
+            if (matrixUpdateValid && !dut.matrixEngine.arrayAdvance)
+                $fatal(1, "matrix update package was presented while the array was stalled");
             for (int lane = 0; lane < N; lane++) begin
                 if (dut.residentReductionWeight[lane] !==
                     modelReductionWeight[lane])
@@ -150,6 +163,48 @@ module nnAccelerator_tb;
             if (loadReductionWeights) begin
                 for (int lane = 0; lane < N; lane++)
                     modelReductionWeight[lane] = reductionWeight[lane];
+            end
+
+            // row lane 0 is the leading edge of a sample wave. All other
+            // lanes encounter their matching PE diagonal on later advances.
+            if (dut.matrixEngine.arrayAdvance &&
+                dut.matrixEngine.validData_OrchToSyst[0]) begin
+                if (matrixEntryCount >= acceptedCount)
+                    $fatal(1, "matrix sample entered without an accepted input");
+                for (int rowIndex = 0; rowIndex < N; rowIndex++)
+                    for (int columnIndex = 0; columnIndex < N; columnIndex++)
+                        sampleMatrixWeight[matrixEntryCount][rowIndex][columnIndex] =
+                            modelMatrixWeight[rowIndex][columnIndex];
+                matrixEntryCount = matrixEntryCount + 1;
+            end
+
+            // Stage 0 crosses the leading array boundary after this edge's
+            // multiply. The next sample entering PE(0,0) therefore uses this
+            // package consistently at every later anti-diagonal.
+            if (dut.matrixEngine.arrayAdvance &&
+                dut.matrixEngine.systolicArr.updateValidPipe[0]) begin
+                for (int rowIndex = 0; rowIndex < N; rowIndex++) begin
+                    for (int columnIndex = 0; columnIndex < N; columnIndex++) begin
+                        case (ternary_product(
+                                  dut.matrixEngine.systolicArr.updateRowPipe[0][rowIndex],
+                                  dut.matrixEngine.systolicArr.updateColumnPipe[0][columnIndex]))
+                            2'sd1: begin
+                                if (modelMatrixWeight[rowIndex][columnIndex] !=
+                                    {1'b0, {(WIDTH-1){1'b1}}})
+                                    modelMatrixWeight[rowIndex][columnIndex] =
+                                        modelMatrixWeight[rowIndex][columnIndex] + 1;
+                            end
+                            -2'sd1: begin
+                                if (modelMatrixWeight[rowIndex][columnIndex] !=
+                                    {1'b1, {(WIDTH-1){1'b0}}})
+                                    modelMatrixWeight[rowIndex][columnIndex] =
+                                        modelMatrixWeight[rowIndex][columnIndex] - 1;
+                            end
+                            default: modelMatrixWeight[rowIndex][columnIndex] =
+                                         modelMatrixWeight[rowIndex][columnIndex];
+                        endcase
+                    end
+                end
             end
 
             if (activationValid && activationReady) begin
@@ -172,6 +227,8 @@ module nnAccelerator_tb;
             if (resultValid && resultReady) begin
                 if (consumedCount >= acceptedCount)
                     $fatal(1, "result was consumed without an accepted sample");
+                if (consumedCount >= matrixEntryCount)
+                    $fatal(1, "result was consumed before its matrix-weight snapshot");
                 if (resultTargetData !== expectedTarget[consumedCount])
                     $fatal(1, "target %0d got %0d, expected %0d",
                            consumedCount, resultTargetData,
@@ -179,6 +236,10 @@ module nnAccelerator_tb;
                 expectedPredictionNow = phase5_prediction(
                     acceptedInput[consumedCount][0],
                     acceptedInput[consumedCount][1],
+                    sampleMatrixWeight[consumedCount][0][0],
+                    sampleMatrixWeight[consumedCount][0][1],
+                    sampleMatrixWeight[consumedCount][1][0],
+                    sampleMatrixWeight[consumedCount][1][1],
                     modelReductionWeight[0], modelReductionWeight[1],
                     passThrough);
                 if ($signed(expectedTarget[consumedCount]) >
@@ -190,10 +251,14 @@ module nnAccelerator_tb;
                 else
                     expectedDirectionNow = 2'sd0;
 
-                rawResult[0] = acceptedInput[consumedCount][0] * (2*SCALE)
-                               + acceptedInput[consumedCount][1] * (3*SCALE);
-                rawResult[1] = acceptedInput[consumedCount][0] * (-1*SCALE)
-                               + acceptedInput[consumedCount][1] * (4*SCALE);
+                rawResult[0] = acceptedInput[consumedCount][0]
+                               * sampleMatrixWeight[consumedCount][0][0]
+                               + acceptedInput[consumedCount][1]
+                               * sampleMatrixWeight[consumedCount][1][0];
+                rawResult[1] = acceptedInput[consumedCount][0]
+                               * sampleMatrixWeight[consumedCount][0][1]
+                               + acceptedInput[consumedCount][1]
+                               * sampleMatrixWeight[consumedCount][1][1];
 
                 if (resultData[0] !== expectedPredictionNow ||
                     resultData[1] !== '0)
@@ -386,8 +451,31 @@ module nnAccelerator_tb;
         passThrough = 0;
         send_sample_with_bubbles(7*SCALE, -1*SCALE,
                                  (1 << (TARGET_WIDTH-1))-1, 1);
+        wait_for_consumed(9);
+
+        // A nonzero error with an all-zero input must update neither the
+        // reduction weights nor any matrix PE: row directions are all zero
+        // and the activated vector is all zero.
+        passThrough = 1;
+        send_sample_with_bubbles(0, 0, SCALE, 1);
         wait_for_consumed(SAMPLE_COUNT);
         @(negedge clk) resultReady = 0;
+        wait(!dut.matrixEngine.pipelineBusy);
+        @(negedge clk);
+        for (int lane = 0; lane < N; lane++) begin
+            if (dut.residentReductionWeight[lane] !==
+                modelReductionWeight[lane])
+                $fatal(1, "zero activation changed reduction weight %0d", lane);
+        end
+        if (dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg !==
+                modelMatrixWeight[0][0] ||
+            dut.matrixEngine.systolicArr.row_loop[0].col_loop[1].mb.weightReg !==
+                modelMatrixWeight[0][1] ||
+            dut.matrixEngine.systolicArr.row_loop[1].col_loop[0].mb.weightReg !==
+                modelMatrixWeight[1][0] ||
+            dut.matrixEngine.systolicArr.row_loop[1].col_loop[1].mb.weightReg !==
+                modelMatrixWeight[1][1])
+            $fatal(1, "zero input package changed a matrix PE");
 
         if (acceptedCount != SAMPLE_COUNT || consumedCount != SAMPLE_COUNT)
             $fatal(1, "got %0d accepted samples and %0d consumed pairs, expected %0d/%0d",
@@ -397,7 +485,7 @@ module nnAccelerator_tb;
         if (!sawPositive || !sawZero || !sawNegative)
             $fatal(1, "did not observe all three learning-direction outcomes");
 
-        $display("PASS: aligned SSLMS packages, resident reduction updates, saturation, and backpressure.");
+        $display("PASS: aligned SSLMS packages, matrix versions, resident updates, saturation, and backpressure.");
         $finish;
     end
 

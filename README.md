@@ -27,6 +27,7 @@ flowchart LR
         ACT["Combinational activation layer"]
         REDUCE["Resident weighted vector reduction"]
         TRAIN["Aligned SSLMS package generator"]
+        UPDATE["2N-1 stage update wave"]
     end
 
     W_RX --> W_CDC --> W_FIFO --> ARRAY
@@ -35,6 +36,7 @@ flowchart LR
     A_FIFO --> TRAIN
     ACT --> TRAIN
     REDUCE --> TRAIN
+    TRAIN --> UPDATE --> ARRAY
 ```
 
 Each processing element stores one weight and performs a signed multiply-accumulate while forwarding the activation and partial sum:
@@ -89,8 +91,9 @@ sequenceDiagram
 - `reduceOutput = 0` returns the sign-extended activated vector. `reduceOutput = 1` returns the rescaled prediction in lane 0 and zero in lanes `1:N-1`.
 - `reductionWeight[N]` is the initialization vector for resident reduction-weight registers. Pulsing `loadReductionWeights` copies the complete vector atomically. Loading has priority over learning and can change a combinational prediction, so configuration software must use it only while the sample pipeline is quiescent.
 - Every `resultValid && resultReady` training completion applies one saturating stored-LSB update to each resident reduction weight. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively.
-- The same completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the pre-update resident reduction-weight signs and the pass-through/ReLU activation gate. Phase 5B only creates this package; it does not modify matrix PE weights.
-- Phase 5C can apply each nonzero matrix direction as one stored-code step; with `FRACTION_BITS = 4`, that PE-weight step is `mu = 1/16`.
+- The same completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the pre-update resident reduction-weight signs and the pass-through/ReLU activation gate.
+- A `2*N-1` stage pipeline carries each valid package across the PE anti-diagonals. Stage `d` updates every PE where `row + column == d` by the ternary outer product, with signed one-LSB saturation. The update pipeline and datapath share `arrayAdvance`, so both freeze together under backpressure and successive packages may overlap.
+- A PE multiply uses the weight present before an update edge. The matching diagonal update becomes visible to the next sample behind the update wave, keeping each sample on one coherent weight version. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
 - Original input signs and targets are pushed and popped by the same sample events. Either FIFO can therefore backpressure the complete activation/target/sign transaction, and their heads remain paired with the current prediction under result stalls.
 - Assert `reloadWeights` only while `reloadReady` is high.
 - `weightReady` and `activationReady` indicate when a complete parallel SPI vector may be started.
@@ -123,6 +126,9 @@ The self-checking regression covers:
 - signed target comparison for all three learning directions, including negative narrow-target sign extension and stable output stalls
 - resident reduction-weight loading and signed one-LSB updates at both saturation endpoints
 - aligned ternary matrix-update packages, including zero input signs and a closed ReLU gate
+- positive, zero, and negative PE updates with both saturation endpoints
+- anti-diagonal update order, overlapping update packages, and shared data/update stalls
+- coherent old/new matrix-weight versions across the update boundary
 - input bubbles, output backpressure, and back-to-back matrices
 - weight reloads
 - asynchronous `clk`/`sclk` SPI input and output transfers
@@ -152,6 +158,10 @@ one `rowDirection`/`columnDirection` package while the resident reduction
 weights receive their independent saturating update. Because nonblocking state
 updates occur after the edge, the package always observes the same pre-update
 reduction weights that produced its prediction.
+The matrix engine captures that package only on an `arrayAdvance`. It then
+applies stages 0 through `2*N-2` to matching PE anti-diagonals. Weight loading
+has priority over learning, and matrix-update stages contribute to pipeline-busy
+state so a reload cannot overtake a pending update wave.
 
 ### UVM core verification environment
 

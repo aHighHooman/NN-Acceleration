@@ -33,6 +33,7 @@ module matrixMultiplierWeightStationary_testcase #(
     logic clk, rst_n;
     data_t weightData[N], activationData[N];
     logic weightValid, weightReady, activationValid, activationReady;
+    logic signed [1:0] noRowDirection[N], noColumnDirection[N];
     result_t resultData[N];
     logic resultValid, resultReady, resultLast;
     logic weightsLoaded, reloadWeights, reloadReady;
@@ -41,7 +42,10 @@ module matrixMultiplierWeightStationary_testcase #(
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
         .activationData(activationData), .activationValid(activationValid),
-        .activationReady(activationReady), .resultData(resultData),
+        .activationReady(activationReady),
+        .rowDirection(noRowDirection),
+        .columnDirection(noColumnDirection), .matrixUpdateValid(1'b0),
+        .resultData(resultData),
         .resultValid(resultValid), .resultReady(resultReady),
         .resultLast(resultLast),
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights), .reloadReady(reloadReady)
@@ -96,6 +100,8 @@ module matrixMultiplierWeightStationary_testcase #(
         for (int lane = 0; lane < N; lane++) begin
             weightData[lane] = '0;
             activationData[lane] = '0;
+            noRowDirection[lane] = 2'sd0;
+            noColumnDirection[lane] = 2'sd0;
         end
 
         repeat (3) @(posedge clk);
