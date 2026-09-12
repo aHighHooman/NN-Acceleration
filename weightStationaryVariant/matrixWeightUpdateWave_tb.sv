@@ -141,8 +141,9 @@ module systolicWeightUpdateWave_testcase(
     logic rowValid[N];
     logic signed [1:0] rowDirection[N], columnDirection[N];
     logic signed [RESULT_WIDTH-1:0] result[N];
-    logic resultValid[N], pipelineBusy;
+    logic resultValid[N], updateComplete, pipelineBusy;
     integer resultCount[N];
+    integer acceptedUpdateCount, completedUpdateCount;
 
     systolicArrayWeightStationary #(.WIDTH(WIDTH), .N(N)) dut (
         .clk(clk), .rst_n(rst_n), .advance(advance),
@@ -151,8 +152,25 @@ module systolicWeightUpdateWave_testcase(
         .updateValid(updateValid),
         .row(row), .rowValid(rowValid), .col(col),
         .result(result), .resultValid(resultValid),
+        .updateComplete(updateComplete),
         .pipelineBusy(pipelineBusy)
     );
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            acceptedUpdateCount = 0;
+            completedUpdateCount = 0;
+        end else begin
+            if (advance && updateValid)
+                acceptedUpdateCount = acceptedUpdateCount + 1;
+            if (updateComplete)
+                completedUpdateCount = completedUpdateCount + 1;
+            if (updateComplete && !advance)
+                $fatal(1, "update completion asserted while the array was stalled");
+            if (completedUpdateCount > acceptedUpdateCount)
+                $fatal(1, "more update completions than accepted packages");
+        end
+    end
 
     initial begin
         done = 1'b0;
@@ -214,11 +232,16 @@ module systolicWeightUpdateWave_testcase(
                       "second package completion");
         if (pipelineBusy)
             $fatal(1, "update stages remained busy after both packages drained");
+        if (completedUpdateCount != 2)
+            $fatal(1, "overlapping packages produced %0d completions, expected 2",
+                   completedUpdateCount);
 
         // A zero-row package must traverse without changing any PE.
         set_directions(0, 0, 0, 1, 1, 1);
         pulse_package();
         repeat (5) advance_package(1'b0);
+        if (completedUpdateCount != 3)
+            $fatal(1, "zero-direction package did not produce one completion");
         check_weights(2, 0, 1, 1, 1, 1, 0, 2, 1,
                       "zero update package");
 
@@ -255,6 +278,9 @@ module systolicWeightUpdateWave_testcase(
             if (resultCount[lane] != 4)
                 $fatal(1, "column %0d produced %0d versioned samples, expected 4",
                        lane, resultCount[lane]);
+        if (completedUpdateCount != acceptedUpdateCount)
+            $fatal(1, "accepted/completed update counts differ: %0d/%0d",
+                   acceptedUpdateCount, completedUpdateCount);
 
         $display("PASS: anti-diagonal ordering, overlapping packages, stalls, and coherent versions.");
         done = 1'b1;
@@ -346,7 +372,7 @@ module matrixWeightUpdateWave_tb;
 
     initial begin
         wait(peDone && arrayDone);
-        $display("PASS: Phase 5C matrix-weight update-wave tests completed.");
+        $display("PASS: Phase 5E matrix update-completion tests completed.");
         $finish;
     end
 endmodule

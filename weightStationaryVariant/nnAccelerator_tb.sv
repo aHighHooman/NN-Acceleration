@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-// Integration-level directed verification for resident reduction updates and
-// the Phase 5D per-sample training-enable path. The scoreboard snapshots the
+// Integration-level directed verification for queued resident reduction
+// updates and the Phase 5E common weight-version boundary. The scoreboard snapshots the
 // PE weights as each accepted sample actually enters the array, so it also
 // checks that every result uses one coherent pre- or post-update weight version.
 module nnAccelerator_tb;
@@ -9,7 +9,8 @@ module nnAccelerator_tb;
     localparam int TARGET_WIDTH = 7;
     localparam int N = 2;
     localparam int FRACTION_BITS = 4;
-    localparam int REDUCTION_FRACTION_BITS = WIDTH - 1;
+    localparam int REDUCTION_WEIGHT_WIDTH = 8;
+    localparam int REDUCTION_FRACTION_BITS = REDUCTION_WEIGHT_WIDTH - 1;
     localparam int RESCALE_SHIFT = FRACTION_BITS
                                    + REDUCTION_FRACTION_BITS;
     localparam int SCALE = 1 << FRACTION_BITS;
@@ -25,7 +26,7 @@ module nnAccelerator_tb;
     target_t targetData, resultTargetData;
     logic weightValid, weightReady, activationValid, activationReady;
     logic trainingEnable;
-    logic signed [WIDTH-1:0] reductionWeight[N];
+    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N];
     result_t resultData[N];
     logic signed [1:0] learningDirection;
     logic signed [1:0] rowDirection[N], columnDirection[N];
@@ -40,7 +41,9 @@ module nnAccelerator_tb;
     logic signed [WIDTH-1:0] acceptedInput[0:SAMPLE_COUNT-1][N];
     logic signed [WIDTH-1:0] sampleMatrixWeight[0:SAMPLE_COUNT-1][N][N];
     logic signed [WIDTH-1:0] modelMatrixWeight[N][N];
-    logic signed [WIDTH-1:0] modelReductionWeight[N];
+    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] modelReductionWeight[N];
+    logic signed [1:0] pendingReductionDirection[0:SAMPLE_COUNT-1][N];
+    integer reductionQueueHead, reductionQueueTail, reductionQueueCount;
     integer matrixEntryCount;
     bit sawBackToBack, sawBubble;
     bit sawPositive, sawZero, sawNegative;
@@ -48,6 +51,7 @@ module nnAccelerator_tb;
     nnAccelerator #(
         .WIDTH(WIDTH), .N(N), .TARGET_WIDTH(TARGET_WIDTH),
         .FRACTION_BITS(FRACTION_BITS),
+        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
         .INPUT_FIFO_DEPTH(2), .OUTPUT_FIFO_DEPTH(2)
     ) dut (
         .clk(clk), .rst_n(rst_n),
@@ -77,8 +81,8 @@ module nnAccelerator_tb;
         input logic signed [WIDTH-1:0] weight01,
         input logic signed [WIDTH-1:0] weight10,
         input logic signed [WIDTH-1:0] weight11,
-        input logic signed [WIDTH-1:0] reduction0,
-        input logic signed [WIDTH-1:0] reduction1,
+        input logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reduction0,
+        input logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reduction1,
         input logic applyPassThrough
     );
         integer xw0, xw1;
@@ -132,6 +136,9 @@ module nnAccelerator_tb;
             sawPositive       = 0;
             sawZero           = 0;
             sawNegative       = 0;
+            reductionQueueHead = 0;
+            reductionQueueTail = 0;
+            reductionQueueCount = 0;
             for (int lane = 0; lane < N; lane++)
                 modelReductionWeight[lane] = 0;
             modelMatrixWeight[0][0] = 2*SCALE;
@@ -157,6 +164,13 @@ module nnAccelerator_tb;
                 $fatal(1, "matrix update valid did not match buffered training enable");
             if (matrixUpdateValid && !dut.matrixEngine.arrayAdvance)
                 $fatal(1, "matrix update package was presented while the array was stalled");
+            if (dut.matrixUpdateAccepted !== matrixUpdateValid)
+                $fatal(1, "matrix update acceptance did not match the generated package");
+            if (dut.reductionUpdateFifo.values !== reductionQueueCount)
+                $fatal(1, "reduction update FIFO/model counts differ: %0d/%0d",
+                       dut.reductionUpdateFifo.values, reductionQueueCount);
+            if (dut.matrixUpdateComplete && dut.reductionUpdateEmpty)
+                $fatal(1, "matrix update completed without a pending reduction package");
             for (int lane = 0; lane < N; lane++) begin
                 if (dut.residentReductionWeight[lane] !==
                     modelReductionWeight[lane])
@@ -300,19 +314,18 @@ module nnAccelerator_tb;
                         $fatal(1, "column direction %0d:%0d got %0d",
                                consumedCount, lane, columnDirection[lane]);
 
-                    if (expectedTrainingEnable[consumedCount]) begin
-                        case (ternary_product(
-                                  expectedDirectionNow,
-                                  ternary_sign(
-                                      (passThrough || (rawResult[lane] > 0))
-                                      ? rawResult[lane] : 0)))
-                            2'sd1: if (modelReductionWeight[lane] != {1'b0, {(WIDTH-1){1'b1}}})
-                                modelReductionWeight[lane] = modelReductionWeight[lane] + 1;
-                            -2'sd1: if (modelReductionWeight[lane] != {1'b1, {(WIDTH-1){1'b0}}})
-                                modelReductionWeight[lane] = modelReductionWeight[lane] - 1;
-                            default: modelReductionWeight[lane] = modelReductionWeight[lane];
-                        endcase
-                    end
+                    if (expectedTrainingEnable[consumedCount])
+                        pendingReductionDirection[reductionQueueTail][lane] =
+                            ternary_product(
+                                expectedDirectionNow,
+                                ternary_sign(
+                                    (passThrough || (rawResult[lane] > 0))
+                                    ? rawResult[lane] : 0));
+                end
+
+                if (expectedTrainingEnable[consumedCount]) begin
+                    reductionQueueTail = reductionQueueTail + 1;
+                    reductionQueueCount = reductionQueueCount + 1;
                 end
 
                 case (expectedDirectionNow)
@@ -323,6 +336,35 @@ module nnAccelerator_tb;
                                     learningDirection);
                 endcase
                 consumedCount = consumedCount + 1;
+            end
+
+
+            // Completion is sampled on the same edge that applies the last
+            // matrix anti-diagonal. The oldest queued reduction package takes
+            // effect after that edge, matching the DUT's nonblocking update.
+            if (dut.matrixUpdateComplete) begin
+                if (reductionQueueCount == 0)
+                    $fatal(1, "reference reduction queue underflow");
+                for (int lane = 0; lane < N; lane++) begin
+                    if ($signed(dut.reductionUpdateHead[2*lane +: 2]) !==
+                        pendingReductionDirection[reductionQueueHead][lane])
+                        $fatal(1, "reduction update FIFO order mismatch at lane %0d",
+                               lane);
+                    case (pendingReductionDirection[reductionQueueHead][lane])
+                        2'sd1: if (modelReductionWeight[lane] !=
+                                      {1'b0, {(REDUCTION_WEIGHT_WIDTH-1){1'b1}}})
+                            modelReductionWeight[lane] =
+                                modelReductionWeight[lane] + 1;
+                        -2'sd1: if (modelReductionWeight[lane] !=
+                                       {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}})
+                            modelReductionWeight[lane] =
+                                modelReductionWeight[lane] - 1;
+                        default: modelReductionWeight[lane] =
+                                     modelReductionWeight[lane];
+                    endcase
+                end
+                reductionQueueHead = reductionQueueHead + 1;
+                reductionQueueCount = reductionQueueCount - 1;
             end
         end
     end
@@ -456,20 +498,24 @@ module nnAccelerator_tb;
         // Exercise both saturation endpoints without relying on arithmetic
         // overflow. The first sample requests a decrement of a resident MIN;
         // the second requests an increment of a freshly reloaded MAX.
-        reductionWeight[0] = {1'b0, {(WIDTH-1){1'b1}}};
-        reductionWeight[1] = {1'b1, {(WIDTH-1){1'b0}}};
+        reductionWeight[0] = {1'b0, {(REDUCTION_WEIGHT_WIDTH-1){1'b1}}};
+        reductionWeight[1] = {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}};
         load_reduction_vector();
         send_sample_with_bubbles(2*SCALE, SCALE, -(1 << (TARGET_WIDTH-1)), 1, 1);
         wait_for_consumed(7);
+        wait_for_reduction_updates();
         @(negedge clk);
-        if (dut.residentReductionWeight[1] !== {1'b1, {(WIDTH-1){1'b0}}})
+        if (dut.residentReductionWeight[1] !==
+            {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}})
             $fatal(1, "negative reduction-weight saturation failed");
 
         load_reduction_vector();
         send_sample_with_bubbles(0, SCALE, (1 << (TARGET_WIDTH-1))-1, 1, 1);
         wait_for_consumed(8);
+        wait_for_reduction_updates();
         @(negedge clk);
-        if (dut.residentReductionWeight[0] !== {1'b0, {(WIDTH-1){1'b1}}})
+        if (dut.residentReductionWeight[0] !==
+            {1'b0, {(REDUCTION_WEIGHT_WIDTH-1){1'b1}}})
             $fatal(1, "positive reduction-weight saturation failed");
 
         // ReLU blocks the negative second pre-activation from the column
@@ -515,7 +561,7 @@ module nnAccelerator_tb;
         if (!sawPositive || !sawZero || !sawNegative)
             $fatal(1, "did not observe all three learning-direction outcomes");
 
-        $display("PASS: per-sample training control, aligned SSLMS packages, matrix versions, resident updates, saturation, and backpressure.");
+        $display("PASS: Phase 5E ordered matrix/reduction commits, saturation, and backpressure.");
         $finish;
     end
 
@@ -549,9 +595,24 @@ module nnAccelerator_tb;
     endtask
 
     task load_reduction_vector();
+        wait_for_reduction_updates();
         @(negedge clk) loadReductionWeights = 1;
         @(posedge clk);
         @(negedge clk) loadReductionWeights = 0;
+    endtask
+
+    task wait_for_reduction_updates();
+        integer watchdog;
+        begin
+            watchdog = 0;
+            while ((!dut.reductionUpdateEmpty || dut.matrixUpdateComplete) &&
+                   (watchdog < 100)) begin
+                @(negedge clk);
+                watchdog = watchdog + 1;
+            end
+            if (!dut.reductionUpdateEmpty || reductionQueueCount != 0)
+                $fatal(1, "timed out draining pending reduction updates");
+        end
     endtask
 
     task wait_for_consumed(input integer expectedCount);

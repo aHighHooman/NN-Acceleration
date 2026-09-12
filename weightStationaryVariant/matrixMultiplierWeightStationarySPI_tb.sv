@@ -4,7 +4,7 @@ module matrixMultiplierWeightStationarySPI_tb;
     localparam int WIDTH = 8;
     localparam int N = 2;
     localparam int FRACTION_BITS = 4;
-    localparam int REDUCTION_WEIGHT_WIDTH = 16;
+    localparam int REDUCTION_WEIGHT_WIDTH = 8;
     localparam int REDUCTION_FRACTION_BITS = REDUCTION_WEIGHT_WIDTH - 1;
     localparam int RESCALE_SHIFT = FRACTION_BITS
                                    + REDUCTION_FRACTION_BITS;
@@ -122,8 +122,8 @@ module matrixMultiplierWeightStationarySPI_tb;
         // Pass-through + weighted reduction. Mixed-sign raw values and
         // mixed-sign coefficients create both positive and negative terms.
         passThrough = 1'b1;
-        reductionWeight[0] = -16384; // -0.5
-        reductionWeight[1] = 16384;  //  0.5
+        reductionWeight[0] = -64; // -0.5
+        reductionWeight[1] = 64;  //  0.5
         load_reduction_vector();
         reduceOutput = 1'b1;
 
@@ -140,8 +140,8 @@ module matrixMultiplierWeightStationarySPI_tb;
 
         // Exact cancellation is checked as a separate, deterministic workload.
         // Configuration changes occur only after both prior results are read.
-        reductionWeight[0] = -16384;
-        reductionWeight[1] = 16384;
+        reductionWeight[0] = -64;
+        reductionWeight[1] = 64;
         load_reduction_vector();
 
         activation_vector[0] = 2;
@@ -158,8 +158,8 @@ module matrixMultiplierWeightStationarySPI_tb;
         // ReLU must precede reduction. The two orderings intentionally produce
         // different fixed-point predictions after the final rescale.
         passThrough = 1'b0;
-        reductionWeight[0] = -32768; // -1.0
-        reductionWeight[1] = 24576;  //  0.75
+        reductionWeight[0] = -128; // -1.0
+        reductionWeight[1] = 96;   //  0.75
         load_reduction_vector();
 
         activation_vector[0] = -6;
@@ -183,8 +183,8 @@ module matrixMultiplierWeightStationarySPI_tb;
         wait(weightsLoaded);
 
         passThrough = 1'b1;
-        reductionWeight[0] = 32767;
-        reductionWeight[1] = 32767;
+        reductionWeight[0] = 127;
+        reductionWeight[1] = 127;
         load_reduction_vector();
 
         activation_vector[0] = -128;
@@ -194,21 +194,21 @@ module matrixMultiplierWeightStationarySPI_tb;
         send_activation_vector(activation_vector);
         send_activation_vector(activation_vector);
 
-        // Each product (32768*32767) fits in 31 signed bits, but their sum
-        // needs 32 signed bits before the one final rescale. The bridge has a
+        // Each product (32768*127) retains the complete 8-bit coefficient,
+        // and the sum is accumulated before the one final rescale. The bridge has a
         // result staging register plus the SPI shifter, so a second back-to-back
         // matrix is queued to make
         // the third prediction encounter the existing output backpressure.
-        check_stalled_prediction("reduced output backpressure", 4095);
+        check_stalled_prediction("reduced output backpressure", 4064);
         expect_configured_row("accumulation-width row 0", 32768, 32768);
         expect_configured_row("accumulation-width row 1", 32768, 32768);
         expect_configured_row("back-to-back accumulation-width row 0", 32768, 32768);
         expect_configured_row("back-to-back accumulation-width row 1", 32768, 32768);
 
-        // The most-negative 16-bit coefficient exercises the full signed
-        // product path; two -2^30 terms also reach exactly -2^31.
-        reductionWeight[0] = -32768;
-        reductionWeight[1] = -32768;
+        // The most-negative 8-bit coefficient exercises the full signed
+        // product path and the signed accumulator's negative range.
+        reductionWeight[0] = -128;
+        reductionWeight[1] = -128;
         load_reduction_vector();
 
         send_activation_vector(activation_vector);

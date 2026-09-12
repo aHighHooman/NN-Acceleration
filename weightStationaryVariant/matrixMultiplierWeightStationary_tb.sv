@@ -45,6 +45,7 @@ module matrixMultiplierWeightStationary_testcase #(
         .activationReady(activationReady),
         .rowDirection(noRowDirection),
         .columnDirection(noColumnDirection), .matrixUpdateValid(1'b0),
+        .matrixUpdateAccepted(), .matrixUpdateComplete(),
         .resultData(resultData),
         .resultValid(resultValid), .resultReady(resultReady),
         .resultLast(resultLast),

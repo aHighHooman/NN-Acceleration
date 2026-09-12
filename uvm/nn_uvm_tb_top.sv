@@ -25,6 +25,8 @@ module nn_uvm_tb_top;
         .rowDirection(noRowDirection),
         .columnDirection(noColumnDirection),
         .matrixUpdateValid(1'b0),
+        .matrixUpdateAccepted(),
+        .matrixUpdateComplete(),
         .resultData(bus.resultData),
         .resultValid(bus.resultValid),
         .resultReady(bus.resultReady),

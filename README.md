@@ -86,13 +86,14 @@ sequenceDiagram
 - Accelerator/SPI result-lane width is the architectural prediction width, `2*WIDTH + 2*$clog2(N)` bits. Unreduced activated elements are sign-extended to this width.
 - `matrixMultiplierWeightStationary` produces the raw signed `X * W` matrix product at `MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N)` without reducing precision. Its binary point has `2*FRACTION_BITS` fractional bits.
 - `nnAccelerator` applies activation first (`passThrough = 1` preserves the raw value; `passThrough = 0` applies ReLU), then feeds that one activated output vector to `weightedVectorReduction`.
-- Reduction weights are signed fractional coefficients with `REDUCTION_WEIGHT_WIDTH - 1` fractional bits and magnitude at most one. The reduction retains each complete product and accumulates at `MATRIX_RESULT_WIDTH + REDUCTION_WEIGHT_WIDTH + $clog2(N)` bits.
+- Reduction weights default to signed 8-bit Q1.7 fractional coefficients (one sign bit and seven fractional bits), so one stored LSB is `1/128`. The reduction retains each complete product and accumulates at `MATRIX_RESULT_WIDTH + REDUCTION_WEIGHT_WIDTH + $clog2(N)` bits.
 - After the full weighted sum is complete, one arithmetic right shift by `FRACTION_BITS + REDUCTION_WEIGHT_WIDTH - 1` returns the prediction to the input/target binary-point position. Only then is it narrowed to the architectural prediction width.
 - `reduceOutput = 0` returns the sign-extended activated vector. `reduceOutput = 1` returns the rescaled prediction in lane 0 and zero in lanes `1:N-1`.
 - `reductionWeight[N]` is the initialization vector for resident reduction-weight registers. Pulsing `loadReductionWeights` copies the complete vector atomically. Loading has priority over learning and can change a combinational prediction, so configuration software must use it only while the sample pipeline is quiescent.
-- Every `resultValid && resultReady` completion whose buffered `trainingEnable` is high applies one saturating stored-LSB update to each resident reduction weight. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not change weights.
+- Every `resultValid && resultReady` completion whose buffered `trainingEnable` is high queues one packed reduction-update package alongside its matrix-update package. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not queue an update.
 - The same training-enabled completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the pre-update resident reduction-weight signs and the pass-through/ReLU activation gate.
 - A `2*N-1` stage pipeline carries each valid package across the PE anti-diagonals. Stage `d` updates every PE where `row + column == d` by the ternary outer product, with signed one-LSB saturation. The update pipeline and datapath share `arrayAdvance`, so both freeze together under backpressure and successive packages may overlap.
+- `matrixUpdateComplete` asserts once for each package on the advancing edge that applies its final anti-diagonal. That event removes the oldest packed reduction-update package from a `2*N-1`-entry FIFO and applies its signed one-LSB saturated update to the resident reduction weights. Matrix and reduction weights therefore commit at one common version boundary, and overlapping packages commit in order.
 - A PE multiply uses the weight present before an update edge. The matching diagonal update becomes visible to the next sample behind the update wave, keeping each sample on one coherent weight version. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
 - Original input signs, targets, and per-sample training-enable bits are pushed and popped by the same sample events. Any metadata FIFO can therefore backpressure the complete transaction, and their heads remain paired with the current prediction under result stalls.
 - The SPI wrapper exposes `trainingEnable`; inference-only integrations must drive it low, as the SPI directed test does.
@@ -107,7 +108,7 @@ sequenceDiagram
 | `N` | `3` | Square matrix and systolic-array dimension; currently tested for 2-4 |
 | `FRACTION_BITS` | `4` | Fractional bits in activation inputs, matrix weights, predictions, and targets |
 | `TARGET_WIDTH` | `WIDTH` | Signed target width; narrower targets are sign-extended for prediction comparison |
-| `REDUCTION_WEIGHT_WIDTH` | `WIDTH` | Signed weighted-readout coefficient width; all bits except the sign bit are fractional |
+| `REDUCTION_WEIGHT_WIDTH` | `8` | Signed weighted-readout coefficient width; the default Q1.7 format has one sign bit and seven fractional bits |
 | `INPUT_FIFO_DEPTH` | `2*N` | Per-lane activation FIFO depth |
 | `OUTPUT_FIFO_DEPTH` | `2*N` | Per-lane result FIFO depth |
 
@@ -124,9 +125,9 @@ The self-checking regression covers:
 - composed activation-to-reduction behavior, one rescaled scalar per activated vector at the architectural prediction width
 - atomic activation/target/training-enable acceptance, including metadata-FIFO-full backpressure
 - ordered target comparison for back-to-back and bubbled samples, with vectors chosen to expose off-by-one pairing
-- consecutive enabled/disabled/enabled samples, proving that only buffered enabled samples issue matrix and reduction-weight updates
+- consecutive enabled/disabled/enabled samples, proving that only buffered enabled samples issue matrix and queued reduction-weight updates
 - signed target comparison for all three learning directions, including negative narrow-target sign extension and stable output stalls
-- resident reduction-weight loading and signed one-LSB updates at both saturation endpoints
+- ordered reduction-update queuing, final-stage commit, shared stalls, and signed one-LSB saturation at both endpoints
 - aligned ternary matrix-update packages, including zero input signs and a closed ReLU gate
 - positive, zero, and negative PE updates with both saturation endpoints
 - anti-diagonal update order, overlapping update packages, and shared data/update stalls
@@ -158,14 +159,16 @@ target, prediction, and direction remain stable together under backpressure.
 Equally deep FIFOs carry two-bit signs for every original input lane and the
 training-enable bit. On a training-enabled result handshake, those signs and
 the current pre-activation values form one `rowDirection`/`columnDirection`
-package while the resident reduction
-weights receive their independent saturating update. Because nonblocking state
-updates occur after the edge, the package always observes the same pre-update
-reduction weights that produced its prediction.
+package while the corresponding reduction directions are packed into an
+ordered pending-update FIFO. The package observes the same pre-update reduction
+weights that produced its prediction.
 The matrix engine captures that package only on an `arrayAdvance`. It then
 applies stages 0 through `2*N-2` to matching PE anti-diagonals. Weight loading
 has priority over learning, and matrix-update stages contribute to pipeline-busy
-state so a reload cannot overtake a pending update wave.
+state so a reload cannot overtake a pending update wave. Applying the last
+stage produces one completion event that commits and removes the matching
+oldest reduction package. With `arrayAdvance` low, neither update wave nor
+pending FIFO moves.
 
 ### UVM core verification environment
 

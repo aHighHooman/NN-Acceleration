@@ -21,7 +21,9 @@ module matrixMultiplierWeightStationary #(
     output logic                         resultLast,
     output logic                         weightsLoaded,
     input  logic                         reloadWeights,
-    output logic                         reloadReady
+    output logic                         reloadReady,
+    output logic                         matrixUpdateAccepted,
+    output logic                         matrixUpdateComplete
 );
 
     localparam int WEIGHT_COUNT_WIDTH   = $clog2(N+1);
@@ -86,6 +88,7 @@ module matrixMultiplierWeightStationary #(
     assign resultValid      = allOutputValid;
     assign resultLast       = resultValid && (transmittedResultRow == N-1);
     assign arrayAdvance     = !weightsLoaded ? weightPop : !outputBlocked;
+    assign matrixUpdateAccepted = matrixUpdateValid && arrayAdvance;
     assign activationPop    = weightsLoaded && allActivationValid && arrayAdvance;
     assign weightPop        = !weightsLoaded && allWeightValid;
     assign reloadReady      = weightsLoaded && allActivationEmpty && !skewBusy &&
@@ -181,6 +184,7 @@ module matrixMultiplierWeightStationary #(
         .row(rowData_OrchToSyst), .rowValid(validData_OrchToSyst),
         .col(weightData_FifoToLoader), .result(resultData_SystToFifo),
         .resultValid(validData_SystToFifo),
+        .updateComplete(matrixUpdateComplete),
         .pipelineBusy(pipelineBusy)
     );
 

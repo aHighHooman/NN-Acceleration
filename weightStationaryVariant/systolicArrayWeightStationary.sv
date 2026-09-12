@@ -14,7 +14,8 @@ module systolicArrayWeightStationary #(
     input  logic signed [WIDTH-1:0]     col [N],
     output logic signed [2*WIDTH+$clog2(N)-1:0] result [N],
     output logic                        resultValid [N],
-    output logic                        pipelineBusy
+    output logic                        pipelineBusy,
+    output logic                        updateComplete
 );
 
     localparam int FINAL_RESULT_WIDTH = 2*WIDTH + $clog2(N);
@@ -27,6 +28,11 @@ module systolicArrayWeightStationary #(
     logic signed [1:0]                      updateRowPipe   [UPDATE_STAGES][N];
     logic signed [1:0]                      updateColumnPipe[UPDATE_STAGES][N];
     logic                                   updateValidPipe [UPDATE_STAGES];
+
+    // The last stage's anti-diagonal is applied on this advancing edge.  The
+    // valid bit shifts out at the same edge, making this exactly one event for
+    // every accepted update package, including back-to-back packages.
+    assign updateComplete = advance && updateValidPipe[UPDATE_STAGES-1];
 
     // Update packages advance with exactly the same enable as the data array.
     // Keeping both complete vectors in every stage permits one new package on

@@ -1,6 +1,6 @@
 module weightedVectorReduction #(
     parameter int MATRIX_RESULT_WIDTH = 16,
-    parameter int REDUCTION_WEIGHT_WIDTH = 16,
+    parameter int REDUCTION_WEIGHT_WIDTH = 8,
     parameter int N = 3,
     parameter int FRACTION_BITS = 4
 )(

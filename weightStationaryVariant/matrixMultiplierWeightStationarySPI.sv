@@ -2,7 +2,7 @@ module matrixMultiplierWeightStationarySPI #(
     parameter int WIDTH = 16,
     parameter int N = 3,
     parameter int FRACTION_BITS = 4,
-    parameter int REDUCTION_WEIGHT_WIDTH = WIDTH,
+    parameter int REDUCTION_WEIGHT_WIDTH = 8,
     parameter int INPUT_FIFO_DEPTH = 2*N,
     parameter int OUTPUT_FIFO_DEPTH = 2*N
 )(

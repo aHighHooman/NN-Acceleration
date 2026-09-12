@@ -3,7 +3,7 @@ module nnAccelerator #(
     parameter int N = 3,
     parameter int FRACTION_BITS = 4,
     parameter int TARGET_WIDTH = WIDTH,
-    parameter int REDUCTION_WEIGHT_WIDTH = WIDTH,
+    parameter int REDUCTION_WEIGHT_WIDTH = 8,
     parameter int INPUT_FIFO_DEPTH = 2*N,
     parameter int OUTPUT_FIFO_DEPTH = 2*N
 )(
@@ -37,6 +37,10 @@ module nnAccelerator #(
 
     localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
+    // At most one package occupies each matrix-update stage. On a full
+    // pipeline, accepting the next package coincides with completing the
+    // oldest one, so the matching stage count is sufficient FIFO capacity.
+    localparam int REDUCTION_UPDATE_FIFO_DEPTH = 2*N - 1;
     localparam int COMPARE_WIDTH = (PREDICTION_WIDTH > TARGET_WIDTH)
                                    ? PREDICTION_WIDTH : TARGET_WIDTH;
     localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
@@ -54,6 +58,9 @@ module nnAccelerator #(
     logic signed [2*N-1:0] inputSignPushData, inputSignHead;
     logic trainingEnableHead;
     logic signed [1:0] reductionDirection[N];
+    logic signed [2*N-1:0] reductionUpdatePushData, reductionUpdateHead;
+    logic matrixUpdateAccepted, matrixUpdateComplete;
+    logic reductionUpdateFull, reductionUpdateEmpty;
     logic matrixActivationValid, matrixActivationReady;
     logic matrixResultValid, matrixResultReady, matrixResultLast;
     logic targetPush, targetPop, targetFull, targetEmpty;
@@ -141,6 +148,25 @@ module nnAccelerator #(
         end
     end
 
+    // A matrix package and its reduction package are generated together.
+    // Packing the N ternary directions into one FIFO word keeps the pending
+    // state compact and preserves package order while matrix waves overlap.
+    always_comb begin
+        reductionUpdatePushData = '0;
+        for (int lane = 0; lane < N; lane++)
+            reductionUpdatePushData[2*lane +: 2] = reductionDirection[lane];
+    end
+
+    signedFifo #(
+        .WIDTH(2*N),
+        .DEPTH(REDUCTION_UPDATE_FIFO_DEPTH)
+    ) reductionUpdateFifo (
+        .clk(clk), .rst_n(rst_n),
+        .push(matrixUpdateAccepted), .pushData(reductionUpdatePushData),
+        .pop(matrixUpdateComplete), .popData(reductionUpdateHead),
+        .full(reductionUpdateFull), .empty(reductionUpdateEmpty), .values()
+    );
+
     // FIFO order, rather than a cycle count, carries each sample's metadata to
     // the result transaction produced by the corresponding activation vector.
     signedFifo #(
@@ -173,10 +199,11 @@ module nnAccelerator #(
         .full(trainingEnableFull), .empty(trainingEnableEmpty), .values()
     );
 
-    // A load establishes the resident readout state. Thereafter every
-    // training-enabled completed sample applies exactly one signed
-    // stored-integer step: one LSB in the resident reduction-weight
-    // representation.
+    // A load establishes the resident readout state. Thereafter a queued
+    // reduction package commits only when its corresponding matrix wave
+    // applies the final anti-diagonal.  Both weight sets therefore change
+    // version on the same edge. Loading is only supported while the sample
+    // pipeline is quiescent, as documented by the interface contract.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             for (int lane = 0; lane < N; lane++)
@@ -184,9 +211,9 @@ module nnAccelerator #(
         end else if (loadReductionWeights) begin
             for (int lane = 0; lane < N; lane++)
                 residentReductionWeight[lane] <= reductionWeight[lane];
-        end else if (samplePop && trainingEnableHead) begin
+        end else if (matrixUpdateComplete) begin
             for (int lane = 0; lane < N; lane++) begin
-                case (reductionDirection[lane])
+                case ($signed(reductionUpdateHead[2*lane +: 2]))
                     2'sd1: begin
                         if (residentReductionWeight[lane] != REDUCTION_WEIGHT_MAX)
                             residentReductionWeight[lane] <=
@@ -215,6 +242,8 @@ module nnAccelerator #(
         .activationReady(matrixActivationReady), .resultData(rawResultData),
         .rowDirection(rowDirection), .columnDirection(columnDirection),
         .matrixUpdateValid(matrixUpdateValid),
+        .matrixUpdateAccepted(matrixUpdateAccepted),
+        .matrixUpdateComplete(matrixUpdateComplete),
         .resultValid(matrixResultValid), .resultReady(matrixResultReady),
         .resultLast(matrixResultLast), .weightsLoaded(weightsLoaded),
         .reloadWeights(reloadWeights), .reloadReady(reloadReady)
