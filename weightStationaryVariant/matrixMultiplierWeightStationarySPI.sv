@@ -1,6 +1,7 @@
 module matrixMultiplierWeightStationarySPI #(
     parameter int WIDTH = 16,
     parameter int N = 3,
+    parameter int FRACTION_BITS = 4,
     parameter int REDUCTION_WEIGHT_WIDTH = WIDTH,
     parameter int INPUT_FIFO_DEPTH = 2*N,
     parameter int OUTPUT_FIFO_DEPTH = 2*N
@@ -25,9 +26,8 @@ module matrixMultiplierWeightStationarySPI #(
     input  logic                    activationMosi [N]
 );
 
-    localparam int ACTIVATED_WIDTH = 2*WIDTH + $clog2(N);
-    localparam int RESULT_WIDTH = ACTIVATED_WIDTH
-                                  + REDUCTION_WEIGHT_WIDTH + $clog2(N);
+    localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
+    localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
 
     logic signed [WIDTH-1:0] weightData[N], activationData[N];
     logic weightValid, activationValid;
@@ -37,8 +37,9 @@ module matrixMultiplierWeightStationarySPI #(
     logic weightValidSync, weightValidSyncDelay, weightSent;
     logic activationValidSync, activationValidSyncDelay, activationSent;
     logic weightAccepted, weightAcceptedSync, weightAcceptedSyncDelay, weightAcceptedSeen;
-    logic activationAccepted, activationAcceptedSync, activationAcceptedSyncDelay, activationAcceptedSeen;
-    logic signed [RESULT_WIDTH-1:0] resultData[N], spiData[N];
+    logic activationAccepted, activationAcceptedSync;
+    logic activationAcceptedSyncDelay, activationAcceptedSeen;
+    logic signed [PREDICTION_WIDTH-1:0] resultData[N], spiData[N];
     logic resultValid, resultReady;
     logic spiReady[N], allSpiReady;
     logic request, requestSync, requestSyncDelay, acknowledge;
@@ -151,6 +152,7 @@ module matrixMultiplierWeightStationarySPI #(
 
     nnAccelerator #(
         .WIDTH(WIDTH), .N(N),
+        .FRACTION_BITS(FRACTION_BITS),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
         .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH),
         .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)
@@ -169,7 +171,7 @@ module matrixMultiplierWeightStationarySPI #(
     genvar spiIndex;
     generate
         for (spiIndex = 0; spiIndex < N; spiIndex = spiIndex + 1) begin : spi_outputs
-            SPI_Slave_Output_Module #(.WIDTH(RESULT_WIDTH)) spi (
+            SPI_Slave_Output_Module #(.WIDTH(PREDICTION_WIDTH)) spi (
                 .rst_n(rst_n), .data_in(spiData[spiIndex]),
                 .data_valid(requestSyncDelay != acknowledge),
                 .cs_n(cs_n[spiIndex]), .sclk(sclk),

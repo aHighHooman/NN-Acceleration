@@ -71,16 +71,18 @@ sequenceDiagram
 
 ## Data and flow-control contract
 
-- All matrix elements are signed `WIDTH`-bit two's-complement values.
+- Activation inputs and matrix weights are signed `WIDTH`-bit fixed-point values with `FRACTION_BITS` fractional bits. A stored integer represents `stored_integer / 2^FRACTION_BITS`.
 - One vector uses `N` parallel, MSB-first SPI lanes sharing `sclk`. Each lane has its own chip-select and data signal.
 - Send weight rows in reverse order: row `N-1` through row `0`.
 - Wait for `weightsLoaded` before sending activations.
 - Send activation rows in normal order: row `0` through row `N-1`.
 - Each result transfer corresponds to one activated output vector. In vector mode lane `j` carries element `j`; in reduction mode lane 0 carries that vector's scalar prediction and the remaining lanes carry zero.
-- Accelerator/SPI result-lane width is `2*WIDTH + REDUCTION_WEIGHT_WIDTH + 2*$clog2(N)` bits so a reduced prediction is never truncated. Unreduced activated elements are sign-extended to this width.
-- `matrixMultiplierWeightStationary` produces the raw signed `X * W` matrix product.
+- Accelerator/SPI result-lane width is the architectural prediction width, `2*WIDTH + 2*$clog2(N)` bits. Unreduced activated elements are sign-extended to this width.
+- `matrixMultiplierWeightStationary` produces the raw signed `X * W` matrix product at `MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N)` without reducing precision. Its binary point has `2*FRACTION_BITS` fractional bits.
 - `nnAccelerator` applies activation first (`passThrough = 1` preserves the raw value; `passThrough = 0` applies ReLU), then feeds that one activated output vector to `weightedVectorReduction`.
-- `reduceOutput = 0` returns the sign-extended activated vector. `reduceOutput = 1` returns the full-width weighted prediction in lane 0 and zero in lanes `1:N-1`.
+- Reduction weights are signed fractional coefficients with `REDUCTION_WEIGHT_WIDTH - 1` fractional bits and magnitude at most one. The reduction retains each complete product and accumulates at `MATRIX_RESULT_WIDTH + REDUCTION_WEIGHT_WIDTH + $clog2(N)` bits.
+- After the full weighted sum is complete, one arithmetic right shift by `FRACTION_BITS + REDUCTION_WEIGHT_WIDTH - 1` returns the prediction to the input/target binary-point position. Only then is it narrowed to the architectural prediction width.
+- `reduceOutput = 0` returns the sign-extended activated vector. `reduceOutput = 1` returns the rescaled prediction in lane 0 and zero in lanes `1:N-1`.
 - `reductionWeight[N]` is a direct workload-configuration input. It is not stored or updated internally and, like `passThrough` and `reduceOutput`, must remain stable while work is in flight.
 - Assert `reloadWeights` only while `reloadReady` is high.
 - `weightReady` and `activationReady` indicate when a complete parallel SPI vector may be started.
@@ -91,8 +93,9 @@ sequenceDiagram
 | --- | ---: | --- |
 | `WIDTH` | `16` | Signed input and weight width |
 | `N` | `3` | Square matrix and systolic-array dimension; currently tested for 2-4 |
+| `FRACTION_BITS` | `4` | Fractional bits in activation inputs, matrix weights, predictions, and targets |
 | `TARGET_WIDTH` | `WIDTH` | Signed target width; narrower targets are sign-extended for prediction comparison |
-| `REDUCTION_WEIGHT_WIDTH` | `WIDTH` | Signed weighted-readout coefficient width |
+| `REDUCTION_WEIGHT_WIDTH` | `WIDTH` | Signed weighted-readout coefficient width; all bits except the sign bit are fractional |
 | `INPUT_FIFO_DEPTH` | `2*N` | Per-lane activation FIFO depth |
 | `OUTPUT_FIFO_DEPTH` | `2*N` | Per-lane result FIFO depth |
 
@@ -103,10 +106,10 @@ The self-checking regression covers:
 - 2x2, 3x3, and 4x4 arrays
 - signed and edge-case operands
 - worst-case positive and negative accumulation
-- weighted vector reduction with signed operands, cancellation, and full-width accumulation
+- fixed-point weighted vector reduction with signed operands, cancellation, full-width accumulation, and a single final arithmetic rescale
 - raw signed matrix-product results
 - composed pass-through and ReLU accelerator results
-- composed activation-to-reduction behavior, one scalar per activated vector, including predictions wider than the activated element width
+- composed activation-to-reduction behavior, one rescaled scalar per activated vector at the architectural prediction width
 - atomic activation/target acceptance, including target-FIFO-full backpressure
 - ordered target comparison for back-to-back and bubbled samples, with vectors chosen to expose off-by-one pairing
 - signed target comparison for all three learning directions, including negative narrow-target sign extension and stable output stalls

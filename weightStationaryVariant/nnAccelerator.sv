@@ -1,6 +1,7 @@
 module nnAccelerator #(
     parameter int WIDTH = 16,
     parameter int N = 3,
+    parameter int FRACTION_BITS = 4,
     parameter int TARGET_WIDTH = WIDTH,
     parameter int REDUCTION_WEIGHT_WIDTH = WIDTH,
     parameter int INPUT_FIFO_DEPTH = 2*N,
@@ -17,7 +18,7 @@ module nnAccelerator #(
     output logic                              activationReady,
     input  logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight [N],
     input  logic                              reduceOutput,
-    output logic signed [2*WIDTH+REDUCTION_WEIGHT_WIDTH+2*$clog2(N)-1:0] resultData [N],
+    output logic signed [2*WIDTH+2*$clog2(N)-1:0] resultData [N],
     output logic signed [TARGET_WIDTH-1:0]    resultTargetData,
     output logic signed [1:0]                 learningDirection,
     output logic                              resultValid,
@@ -29,14 +30,13 @@ module nnAccelerator #(
     input  logic                              passThrough
 );
 
-    localparam int ACTIVATED_WIDTH = 2*WIDTH + $clog2(N);
-    localparam int PREDICTION_WIDTH = ACTIVATED_WIDTH
-                                      + REDUCTION_WEIGHT_WIDTH + $clog2(N);
+    localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
+    localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
     localparam int COMPARE_WIDTH = (PREDICTION_WIDTH > TARGET_WIDTH)
                                    ? PREDICTION_WIDTH : TARGET_WIDTH;
 
-    logic signed [ACTIVATED_WIDTH-1:0] rawResultData[N];
-    logic signed [ACTIVATED_WIDTH-1:0] activatedData[N];
+    logic signed [MATRIX_RESULT_WIDTH-1:0] rawResultData[N];
+    logic signed [MATRIX_RESULT_WIDTH-1:0] activatedData[N];
     logic signed [PREDICTION_WIDTH-1:0] prediction;
     logic signed [COMPARE_WIDTH-1:0] comparePrediction, compareTarget;
     logic matrixActivationValid, matrixActivationReady;
@@ -57,8 +57,8 @@ module nnAccelerator #(
     assign matrixResultReady = resultReady && !targetEmpty;
     assign resultLast        = matrixResultLast && !targetEmpty;
 
-    // Compare the full weighted-reduction result with the aligned FIFO head.
-    // Assignment to the wider signed signals sign-extends either narrower side.
+    // Compare the rescaled architectural prediction with the aligned FIFO
+    // head. Assignment to the wider signed signals sign-extends either side.
     assign comparePrediction = prediction;
     assign compareTarget     = resultTargetData;
 
@@ -98,14 +98,15 @@ module nnAccelerator #(
         .reloadWeights(reloadWeights), .reloadReady(reloadReady)
     );
 
-    activationLayer #(.WIDTH(ACTIVATED_WIDTH), .N(N)) resultActivation (
+    activationLayer #(.WIDTH(MATRIX_RESULT_WIDTH), .N(N)) resultActivation (
         .inputData(rawResultData), .passThrough(passThrough), .outputData(activatedData)
     );
 
     weightedVectorReduction #(
-        .INPUT_WIDTH(ACTIVATED_WIDTH),
-        .WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
-        .N(N)
+        .MATRIX_RESULT_WIDTH(MATRIX_RESULT_WIDTH),
+        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
+        .N(N),
+        .FRACTION_BITS(FRACTION_BITS)
     ) weightedReadout (
         .inputData(activatedData),
         .reductionWeight(reductionWeight),
@@ -118,8 +119,8 @@ module nnAccelerator #(
                 resultData[lane] = (lane == 0) ? prediction : '0;
             else
                 resultData[lane] =
-                    {{(PREDICTION_WIDTH-ACTIVATED_WIDTH)
-                       {activatedData[lane][ACTIVATED_WIDTH-1]}},
+                    {{(PREDICTION_WIDTH-MATRIX_RESULT_WIDTH)
+                       {activatedData[lane][MATRIX_RESULT_WIDTH-1]}},
                      activatedData[lane]};
         end
     end

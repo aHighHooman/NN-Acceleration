@@ -1,16 +1,22 @@
 `timescale 1ns / 1ps
 
-// Integration-level directed verification for the Phase 4 target alignment and
-// learning-direction path. The scoreboard uses accepted ready/valid
-// transactions only; it does not assume a pipeline latency.
+// Integration-level directed verification for the Phase 5A fixed-point result,
+// Phase 4 target alignment, and learning-direction path. The scoreboard uses
+// accepted ready/valid transactions only; it does not assume a pipeline latency.
 module nnAccelerator_tb;
     localparam int WIDTH = 8;
     localparam int TARGET_WIDTH = 7;
     localparam int N = 2;
-    localparam int RESULT_WIDTH = 3*WIDTH + 2*$clog2(N);
+    localparam int FRACTION_BITS = 4;
+    localparam int REDUCTION_FRACTION_BITS = WIDTH - 1;
+    localparam int RESCALE_SHIFT = FRACTION_BITS
+                                   + REDUCTION_FRACTION_BITS;
+    localparam int SCALE = 1 << FRACTION_BITS;
+    localparam int HALF = 1 << (REDUCTION_FRACTION_BITS - 1);
+    localparam int PREDICTION_WIDTH = 2*WIDTH + 2*$clog2(N);
     localparam int SAMPLE_COUNT = 6;
 
-    typedef logic signed [RESULT_WIDTH-1:0] result_t;
+    typedef logic signed [PREDICTION_WIDTH-1:0] result_t;
     typedef logic signed [TARGET_WIDTH-1:0] target_t;
 
     logic clk, rst_n;
@@ -33,6 +39,7 @@ module nnAccelerator_tb;
 
     nnAccelerator #(
         .WIDTH(WIDTH), .N(N), .TARGET_WIDTH(TARGET_WIDTH),
+        .FRACTION_BITS(FRACTION_BITS),
         .INPUT_FIFO_DEPTH(2), .OUTPUT_FIFO_DEPTH(2)
     ) dut (
         .clk(clk), .rst_n(rst_n),
@@ -50,17 +57,20 @@ module nnAccelerator_tb;
     always #5 clk = ~clk;
 
     // Loaded W is [[2, -1], [3, 4]], passThrough is enabled, and both
-    // reduction weights are one. This independently retains the Phase 3 path:
-    // XW -> activation -> weighted reduction -> prediction.
-    function automatic result_t phase3_prediction(
+    // reduction coefficients are 0.5. The model keeps the matrix result and
+    // complete weighted sum at full precision, then performs the one required
+    // final rescale.
+    function automatic result_t phase5_prediction(
         input logic signed [WIDTH-1:0] x0,
         input logic signed [WIDTH-1:0] x1
     );
         integer xw0, xw1;
+        integer fullReduction;
         begin
-            xw0 = x0 * 2 + x1 * 3;
-            xw1 = x0 * -1 + x1 * 4;
-            phase3_prediction = xw0 + xw1;
+            xw0 = x0 * (2*SCALE) + x1 * (3*SCALE);
+            xw1 = x0 * (-1*SCALE) + x1 * (4*SCALE);
+            fullReduction = xw0 * HALF + xw1 * HALF;
+            phase5_prediction = fullReduction >>> RESCALE_SHIFT;
         end
     endfunction
 
@@ -99,7 +109,7 @@ module nnAccelerator_tb;
                     sawBubble = 1;
                 lastAcceptedCycle = cycleCount;
 
-                acceptedPrediction = phase3_prediction(activationData[0],
+                acceptedPrediction = phase5_prediction(activationData[0],
                                                        activationData[1]);
                 expectedTarget[acceptedCount] = targetData;
                 expectedPrediction[acceptedCount] = acceptedPrediction;
@@ -155,8 +165,8 @@ module nnAccelerator_tb;
         passThrough = 1;
         reloadWeights = 0;
         targetData = 0;
-        reductionWeight[0] = 1;
-        reductionWeight[1] = 1;
+        reductionWeight[0] = HALF;
+        reductionWeight[1] = HALF;
         weightData[0] = 0;
         weightData[1] = 0;
         activationData[0] = 0;
@@ -165,27 +175,28 @@ module nnAccelerator_tb;
         repeat (3) @(posedge clk);
         @(negedge clk) rst_n = 1;
 
-        // Load [[2, -1], [3, 4]] in the engine's reverse-row order.
-        send_weight_row(3, 4);
-        send_weight_row(2, -1);
+        // Load fixed-point [[2, -1], [3, 4]] in reverse-row order.
+        send_weight_row(3*SCALE, 4*SCALE);
+        send_weight_row(2*SCALE, -1*SCALE);
         wait(weightsLoaded);
 
-        // x0/x1/x2 produce predictions 0, -5, and -2 with targets 2, -6,
-        // and -2. Correct directions are +1, -1, 0. Pairing targets one
+        // x0/x1/x2 produce stored predictions 0, -40, and -16 (real values
+        // 0, -2.5, and -1) with stored targets 32, -48, and -16. Correct
+        // directions are +1, -1, 0. Pairing targets one
         // position late instead yields -1, +1, +1.
         // The first two samples are accepted on consecutive cycles.
         @(negedge clk);
-        activationData[0] = 7;
-        activationData[1] = -1;
-        targetData = 2;
+        activationData[0] = 7*SCALE;
+        activationData[1] = -1*SCALE;
+        targetData = 2*SCALE;
         activationValid = 1;
         if (!activationReady)
             $fatal(1, "first sample was unexpectedly backpressured");
         @(posedge clk);
         @(negedge clk);
-        activationData[0] = 2;
-        activationData[1] = -1;
-        targetData = -6;
+        activationData[0] = 2*SCALE;
+        activationData[1] = -1*SCALE;
+        targetData = -3*SCALE;
         if (!activationReady)
             $fatal(1, "second back-to-back sample was unexpectedly backpressured");
         @(posedge clk);
@@ -193,9 +204,9 @@ module nnAccelerator_tb;
         // Keep x2 asserted while the two-entry target FIFO is full. Even if
         // the matrix input can accept, neither half of this sample may move.
         @(negedge clk);
-        activationData[0] = 5;
-        activationData[1] = -1;
-        targetData = -2;
+        activationData[0] = 5*SCALE;
+        activationData[1] = -1*SCALE;
+        targetData = -1*SCALE;
         wait(dut.targetFull && dut.matrixActivationReady);
         repeat (3) begin
             #1;
@@ -212,7 +223,7 @@ module nnAccelerator_tb;
         heldTarget = resultTargetData;
         heldPrediction = resultData[0];
         heldDirection = learningDirection;
-        if (heldTarget !== 2 || heldPrediction !== 0 || heldDirection !== 2'sd1)
+        if (heldTarget !== 2*SCALE || heldPrediction !== 0 || heldDirection !== 2'sd1)
             $fatal(1, "unexpected first stalled tuple: prediction=%0d target=%0d direction=%0d",
                    heldPrediction, heldTarget, heldDirection);
         repeat (4) begin
@@ -224,7 +235,7 @@ module nnAccelerator_tb;
         end
 
         // Permit exactly one result handshake. Full-FIFO lookahead accepts x2
-        // on that edge. One target pops and one pushes, leaving target1 (-6),
+        // on that edge. One target pops and one pushes, leaving target1 (-3),
         // not target2, selected next.
         resultReady = 1;
         @(posedge clk);
@@ -236,17 +247,17 @@ module nnAccelerator_tb;
             $fatal(1, "simultaneous target pop/push accounting was not 3 accepted, 1 consumed, 2 queued");
         wait(resultValid);
         @(negedge clk);
-        if (resultTargetData !== -6)
-            $fatal(1, "exactly-one advance failed: next target got %0d, expected -6",
-                   resultTargetData);
+        if (resultTargetData !== -3*SCALE)
+            $fatal(1, "exactly-one advance failed: next target got %0d, expected %0d",
+                   resultTargetData, -3*SCALE);
 
         // Drain x1/x2, then add intentional input bubbles. These samples also
         // retain negative predictions and repeat all comparator outcomes.
         resultReady = 1;
         wait_for_consumed(3);
-        send_sample_with_bubbles(2, 1, 10, 2);   // prediction  9 -> +1
-        send_sample_with_bubbles(6, -2, -9, 3);  // prediction -8 -> -1
-        send_sample_with_bubbles(0, -1, -7, 1);  // prediction -7 ->  0
+        send_sample_with_bubbles(2*SCALE, 0, 2*SCALE, 2); // 1 -> +1
+        send_sample_with_bubbles(2*SCALE, -1*SCALE, -3*SCALE, 3); // -2.5 -> -1
+        send_sample_with_bubbles(0, -1*SCALE, -7*SCALE/2, 1);   // -3.5 -> 0
         wait_for_consumed(SAMPLE_COUNT);
         @(negedge clk) resultReady = 0;
 

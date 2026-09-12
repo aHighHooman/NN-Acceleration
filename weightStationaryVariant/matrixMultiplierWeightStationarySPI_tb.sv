@@ -3,13 +3,16 @@
 module matrixMultiplierWeightStationarySPI_tb;
     localparam int WIDTH = 8;
     localparam int N = 2;
+    localparam int FRACTION_BITS = 4;
     localparam int REDUCTION_WEIGHT_WIDTH = 16;
-    localparam int ACTIVATED_WIDTH = 2*WIDTH + $clog2(N);
-    localparam int RESULT_WIDTH = ACTIVATED_WIDTH
-                                  + REDUCTION_WEIGHT_WIDTH + $clog2(N);
+    localparam int REDUCTION_FRACTION_BITS = REDUCTION_WEIGHT_WIDTH - 1;
+    localparam int RESCALE_SHIFT = FRACTION_BITS
+                                   + REDUCTION_FRACTION_BITS;
+    localparam int SCALE = 1 << FRACTION_BITS;
+    localparam int PREDICTION_WIDTH = 2*WIDTH + 2*$clog2(N);
 
     typedef logic signed [WIDTH-1:0] data_t;
-    typedef logic signed [RESULT_WIDTH-1:0] result_t;
+    typedef logic signed [PREDICTION_WIDTH-1:0] result_t;
 
     logic clk, sclk, rst_n;
     logic weightReady, activationReady, passThrough, reduceOutput;
@@ -22,6 +25,7 @@ module matrixMultiplierWeightStationarySPI_tb;
     matrixMultiplierWeightStationarySPI #(
         .WIDTH(WIDTH),
         .N(N),
+        .FRACTION_BITS(FRACTION_BITS),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH)
     ) dut (
         .clk(clk), .rst_n(rst_n),
@@ -65,13 +69,14 @@ module matrixMultiplierWeightStationarySPI_tb;
         repeat (3) @(posedge clk);
         rst_n = 1'b1;
 
-        // Identity weights make the raw XW vectors equal to the transmitted
-        // activation vectors, keeping the composed expectations explicit.
+        // Fixed-point identity weights preserve the transmitted activation
+        // values in real units; raw matrix codes retain the 2*FRACTION_BITS
+        // binary point.
         weight_vector[0] = 0;
-        weight_vector[1] = 1;
+        weight_vector[1] = SCALE;
         send_weight_vector(weight_vector);
 
-        weight_vector[0] = 1;
+        weight_vector[0] = SCALE;
         weight_vector[1] = 0;
         send_weight_vector(weight_vector);
         wait(weightsLoaded);
@@ -88,8 +93,8 @@ module matrixMultiplierWeightStationarySPI_tb;
         activation_vector[1] = 5;
         send_activation_vector(activation_vector);
 
-        expect_configured_row("reduction-disabled pass-through row 0", 2, -3);
-        expect_configured_row("reduction-disabled pass-through row 1", 4, 5);
+        expect_configured_row("reduction-disabled pass-through row 0", 2*SCALE, -3*SCALE);
+        expect_configured_row("reduction-disabled pass-through row 1", 4*SCALE, 5*SCALE);
 
         passThrough = 1'b0;
 
@@ -101,14 +106,14 @@ module matrixMultiplierWeightStationarySPI_tb;
         activation_vector[1] = -9;
         send_activation_vector(activation_vector);
 
-        expect_configured_row("reduction-disabled ReLU row 0", -6, 7);
-        expect_configured_row("reduction-disabled ReLU row 1", 8, -9);
+        expect_configured_row("reduction-disabled ReLU row 0", -6*SCALE, 7*SCALE);
+        expect_configured_row("reduction-disabled ReLU row 1", 8*SCALE, -9*SCALE);
 
         // Pass-through + weighted reduction. Mixed-sign raw values and
         // mixed-sign coefficients create both positive and negative terms.
         passThrough = 1'b1;
-        reductionWeight[0] = -3;
-        reductionWeight[1] = 2;
+        reductionWeight[0] = -16384; // -0.5
+        reductionWeight[1] = 16384;  //  0.5
         reduceOutput = 1'b1;
 
         activation_vector[0] = 10;
@@ -119,13 +124,13 @@ module matrixMultiplierWeightStationarySPI_tb;
         activation_vector[1] = -20;
         send_activation_vector(activation_vector);
 
-        expect_configured_row("signed pass-through reduction row 0", 10, 20);
-        expect_configured_row("signed pass-through reduction row 1", -10, -20);
+        expect_configured_row("signed pass-through reduction row 0", 10*SCALE, 20*SCALE);
+        expect_configured_row("signed pass-through reduction row 1", -10*SCALE, -20*SCALE);
 
         // Exact cancellation is checked as a separate, deterministic workload.
         // Configuration changes occur only after both prior results are read.
-        reductionWeight[0] = -3;
-        reductionWeight[1] = 2;
+        reductionWeight[0] = -16384;
+        reductionWeight[1] = 16384;
 
         activation_vector[0] = 2;
         activation_vector[1] = 3;
@@ -135,14 +140,14 @@ module matrixMultiplierWeightStationarySPI_tb;
         activation_vector[1] = 4;
         send_activation_vector(activation_vector);
 
-        expect_configured_row("complete cancellation", 2, 3);
-        expect_configured_row("partial cancellation", 5, 4);
+        expect_configured_row("fractional result truncates after sum", 2*SCALE, 3*SCALE);
+        expect_configured_row("negative arithmetic rescale", 5*SCALE, 4*SCALE);
 
-        // ReLU must precede reduction. For row 0 the implemented expression
-        // is 0*(-4) + 7*3 = 21, while ReLU((-6)*(-4) + 7*3) = 45.
+        // ReLU must precede reduction. The two orderings intentionally produce
+        // different fixed-point predictions after the final rescale.
         passThrough = 1'b0;
-        reductionWeight[0] = -4;
-        reductionWeight[1] = 3;
+        reductionWeight[0] = -32768; // -1.0
+        reductionWeight[1] = 24576;  //  0.75
 
         activation_vector[0] = -6;
         activation_vector[1] = 7;
@@ -152,8 +157,8 @@ module matrixMultiplierWeightStationarySPI_tb;
         activation_vector[1] = -9;
         send_activation_vector(activation_vector);
 
-        expect_relu_before_reduction("ReLU-before-reduction row 0", -6, 7);
-        expect_relu_before_reduction("ReLU-before-reduction row 1", 8, -9);
+        expect_relu_before_reduction("ReLU-before-reduction row 0", -6*SCALE, 7*SCALE);
+        expect_relu_before_reduction("ReLU-before-reduction row 1", 8*SCALE, -9*SCALE);
 
         // Reload a matrix that produces the largest reachable positive raw
         // result (32768) in both lanes: (-128*-128) + (-128*-128).
@@ -176,10 +181,11 @@ module matrixMultiplierWeightStationarySPI_tb;
         send_activation_vector(activation_vector);
 
         // Each product (32768*32767) fits in 31 signed bits, but their sum
-        // needs 32 signed bits. The bridge has a result staging register plus
-        // the SPI shifter, so a second back-to-back matrix is queued to make
+        // needs 32 signed bits before the one final rescale. The bridge has a
+        // result staging register plus the SPI shifter, so a second back-to-back
+        // matrix is queued to make
         // the third prediction encounter the existing output backpressure.
-        check_stalled_prediction("reduced output backpressure", 2147418112);
+        check_stalled_prediction("reduced output backpressure", 4095);
         expect_configured_row("accumulation-width row 0", 32768, 32768);
         expect_configured_row("accumulation-width row 1", 32768, 32768);
         expect_configured_row("back-to-back accumulation-width row 0", 32768, 32768);
@@ -254,12 +260,17 @@ module matrixMultiplierWeightStationarySPI_tb;
     );
         result_t activated0, activated1;
         result_t expected0, expected1;
+        longint signed activatedFull0, activatedFull1;
+        longint signed fullReduction;
 
-        activated0 = (!passThrough && raw0 < 0) ? 0 : raw0;
-        activated1 = (!passThrough && raw1 < 0) ? 0 : raw1;
+        activatedFull0 = (!passThrough && raw0 < 0) ? 0 : raw0;
+        activatedFull1 = (!passThrough && raw1 < 0) ? 0 : raw1;
+        activated0 = activatedFull0;
+        activated1 = activatedFull1;
         if (reduceOutput) begin
-            expected0 = activated0 * reductionWeight[0]
-                        + activated1 * reductionWeight[1];
+            fullReduction = activatedFull0 * $signed(reductionWeight[0])
+                            + activatedFull1 * $signed(reductionWeight[1]);
+            expected0 = fullReduction >>> RESCALE_SHIFT;
             expected1 = '0;
         end else begin
             expected0 = activated0;
@@ -276,10 +287,17 @@ module matrixMultiplierWeightStationarySPI_tb;
         result_t reduce_after_relu;
         result_t relu_after_reduce;
         result_t raw_sum;
+        longint signed reduceAfterReluFull;
+        longint signed rawFull;
 
-        reduce_after_relu = ((raw0 < 0) ? 0 : raw0) * reductionWeight[0]
-                            + ((raw1 < 0) ? 0 : raw1) * reductionWeight[1];
-        raw_sum = raw0 * reductionWeight[0] + raw1 * reductionWeight[1];
+        reduceAfterReluFull = ((raw0 < 0) ? 0 : raw0)
+                              * $signed(reductionWeight[0])
+                              + ((raw1 < 0) ? 0 : raw1)
+                              * $signed(reductionWeight[1]);
+        rawFull = raw0 * $signed(reductionWeight[0])
+                  + raw1 * $signed(reductionWeight[1]);
+        reduce_after_relu = reduceAfterReluFull >>> RESCALE_SHIFT;
+        raw_sum = rawFull >>> RESCALE_SHIFT;
         relu_after_reduce = (raw_sum < 0) ? 0 : raw_sum;
         if (reduce_after_relu == relu_after_reduce)
             $fatal(1, "FAIL: %s does not distinguish activation/reduction order.", label);
@@ -327,7 +345,7 @@ module matrixMultiplierWeightStationarySPI_tb;
                 for (int lane = 0; lane < N; lane++) cs_n[lane] = 1'b1;
         end
 
-        for (int bitIndex = RESULT_WIDTH-1; bitIndex >= 0; bitIndex--) begin
+        for (int bitIndex = PREDICTION_WIDTH-1; bitIndex >= 0; bitIndex--) begin
             @(posedge sclk);
             for (int lane = 0; lane < N; lane++) begin
                 assert(misoValid[lane])
