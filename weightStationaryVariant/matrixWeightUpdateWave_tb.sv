@@ -372,7 +372,7 @@ module matrixWeightUpdateWave_tb;
 
     initial begin
         wait(peDone && arrayDone);
-        $display("PASS: Phase 5F matrix update-wave overlap, stall, completion-order, and version-boundary tests completed.");
+        $display("PASS: Phase 5G unchanged matrix update-wave overlap, stall, completion-order, and version-boundary tests completed.");
         $finish;
     end
 endmodule

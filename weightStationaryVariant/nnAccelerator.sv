@@ -37,10 +37,13 @@ module nnAccelerator #(
 
     localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
-    // At most one package occupies each matrix-update stage. On a full
-    // pipeline, accepting the next package coincides with completing the
-    // oldest one, so the matching stage count is sufficient FIFO capacity.
-    localparam int REDUCTION_UPDATE_FIFO_DEPTH = 2*N - 1;
+    // At most INPUT_FIFO_DEPTH old-version samples are in flight when the
+    // first update is launched. A replacement accepted on that handshake can
+    // enter on the stage-zero update edge and is the one additional old-
+    // version sample. The following sample carries a newer version.
+    localparam int REDUCTION_UPDATE_FIFO_DEPTH = INPUT_FIFO_DEPTH + 1;
+    localparam int MATRIX_VERSION_WIDTH =
+        $clog2(REDUCTION_UPDATE_FIFO_DEPTH+1);
     localparam int COMPARE_WIDTH = (PREDICTION_WIDTH > TARGET_WIDTH)
                                    ? PREDICTION_WIDTH : TARGET_WIDTH;
     localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
@@ -61,12 +64,16 @@ module nnAccelerator #(
     logic signed [2*N-1:0] reductionUpdatePushData, reductionUpdateHead;
     logic matrixUpdateAccepted, matrixUpdateComplete;
     logic reductionUpdateFull, reductionUpdateEmpty;
+    logic reductionUpdateCommit;
+    logic [MATRIX_VERSION_WIDTH-1:0] matrixResultVersion;
+    logic [MATRIX_VERSION_WIDTH-1:0] residentReductionVersion;
     logic matrixActivationValid, matrixActivationReady;
     logic matrixResultValid, matrixResultReady, matrixResultLast;
     logic targetPush, targetPop, targetFull, targetEmpty;
     logic inputSignFull, inputSignEmpty;
     logic trainingEnableFull, trainingEnableEmpty;
     logic samplePush, samplePop, sampleCanAccept;
+    logic readoutHeadValid, readoutVersionMatch, resultCanTrain;
 
     // The activation vector, target, input signs, and training-enable bit are
     // one input transaction. Gate the matrix valid as well as the external
@@ -81,13 +88,20 @@ module nnAccelerator #(
     assign targetPush            = samplePush;
     assign targetPop             = samplePop;
 
-    assign resultValid       = matrixResultValid && !targetEmpty &&
+    assign readoutHeadValid  = matrixResultValid && !targetEmpty &&
                                !inputSignEmpty && !trainingEnableEmpty;
-    assign matrixResultReady = resultReady && !targetEmpty &&
-                               !inputSignEmpty && !trainingEnableEmpty;
-    assign resultLast        = matrixResultLast && !targetEmpty &&
-                               !inputSignEmpty && !trainingEnableEmpty;
+    assign readoutVersionMatch =
+                               matrixResultVersion == residentReductionVersion;
+    assign resultCanTrain    = !trainingEnableHead || !reductionUpdateFull;
+    assign resultValid       = readoutHeadValid && readoutVersionMatch &&
+                               resultCanTrain;
+    assign matrixResultReady = resultReady && !targetEmpty && !inputSignEmpty &&
+                               !trainingEnableEmpty && readoutVersionMatch &&
+                               resultCanTrain;
+    assign resultLast        = matrixResultLast && resultValid;
     assign matrixUpdateValid = samplePop && trainingEnableHead;
+    assign reductionUpdateCommit = readoutHeadValid && !readoutVersionMatch &&
+                                   !reductionUpdateEmpty;
 
     // Compare the rescaled architectural prediction with the aligned FIFO
     // head. Assignment to the wider signed signals sign-extends either side.
@@ -163,7 +177,7 @@ module nnAccelerator #(
     ) reductionUpdateFifo (
         .clk(clk), .rst_n(rst_n),
         .push(matrixUpdateAccepted), .pushData(reductionUpdatePushData),
-        .pop(matrixUpdateComplete), .popData(reductionUpdateHead),
+        .pop(reductionUpdateCommit), .popData(reductionUpdateHead),
         .full(reductionUpdateFull), .empty(reductionUpdateEmpty), .values()
     );
 
@@ -199,19 +213,20 @@ module nnAccelerator #(
         .full(trainingEnableFull), .empty(trainingEnableEmpty), .values()
     );
 
-    // A load establishes the resident readout state. Thereafter a queued
-    // reduction package commits only when its corresponding matrix wave
-    // applies the final anti-diagonal.  Both weight sets therefore change
-    // version on the same edge. Loading is only supported while the sample
-    // pipeline is quiescent, as documented by the interface contract.
+    // A load establishes the resident readout state. Thereafter the raw
+    // matrix-result head is held while one ordered reduction package commits
+    // per clock until its version is reached. A matched, externally-valid
+    // result can never coincide with a reduction-weight change.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
+            residentReductionVersion <= '0;
             for (int lane = 0; lane < N; lane++)
                 residentReductionWeight[lane] <= '0;
         end else if (loadReductionWeights) begin
             for (int lane = 0; lane < N; lane++)
                 residentReductionWeight[lane] <= reductionWeight[lane];
-        end else if (matrixUpdateComplete) begin
+        end else if (reductionUpdateCommit) begin
+            residentReductionVersion <= residentReductionVersion + 1'b1;
             for (int lane = 0; lane < N; lane++) begin
                 case ($signed(reductionUpdateHead[2*lane +: 2]))
                     2'sd1: begin
@@ -234,12 +249,14 @@ module nnAccelerator #(
     matrixMultiplierWeightStationary #(
         .WIDTH(WIDTH), .N(N),
         .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH),
-        .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)
+        .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH),
+        .MATRIX_VERSION_WIDTH(MATRIX_VERSION_WIDTH)
     ) matrixEngine (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
         .activationData(activationData), .activationValid(matrixActivationValid),
         .activationReady(matrixActivationReady), .resultData(rawResultData),
+        .matrixResultVersion(matrixResultVersion),
         .rowDirection(rowDirection), .columnDirection(columnDirection),
         .matrixUpdateValid(matrixUpdateValid),
         .matrixUpdateAccepted(matrixUpdateAccepted),

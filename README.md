@@ -93,8 +93,9 @@ sequenceDiagram
 - Every `resultValid && resultReady` completion whose buffered `trainingEnable` is high queues one packed reduction-update package alongside its matrix-update package. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not queue an update.
 - The same training-enabled completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the pre-update resident reduction-weight signs and the pass-through/ReLU activation gate.
 - A `2*N-1` stage pipeline carries each valid package across the PE anti-diagonals. Stage `d` updates every PE where `row + column == d` by the ternary outer product, with signed one-LSB saturation. The update pipeline and datapath share `arrayAdvance`, so both freeze together under backpressure and successive packages may overlap.
-- `matrixUpdateComplete` asserts once for each package on the advancing edge that applies its final anti-diagonal. That event removes the oldest packed reduction-update package from a `2*N-1`-entry FIFO and applies its signed one-LSB saturated update to the resident reduction weights. Matrix and reduction weights therefore commit at one common version boundary, and overlapping packages commit in order.
-- A PE multiply uses the weight present before an update edge. The matching diagonal update becomes visible to the next sample behind the update wave, keeping each sample on one coherent weight version. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
+- `matrixUpdateComplete` still asserts once for each package on the advancing edge that applies its final anti-diagonal. Reduction packages instead remain in an `INPUT_FIFO_DEPTH+1`-entry ordered FIFO until the matrix-result FIFO head requires their version. The extra entry covers the replacement sample accepted with the first update: it can share the stage-zero update edge and therefore still use the old version; the following sample is newer.
+- A PE multiply uses the weight present before an update edge. The sample sharing update stage zero is tagged with the old matrix-weight version; the next sample behind the wave is tagged with the incremented version. A scalar version pipeline and output FIFO carry that tag beside the raw matrix result through stalls. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
+- The resident reduction weights have their own version register. A raw matrix-result head whose version is newer remains held and externally invalid while one pending reduction package is applied per clock with signed one-LSB saturation. `resultValid` is possible only after the matrix-result and resident-reduction versions match, so an already-valid stalled result cannot observe a reduction-weight change.
 - Original input signs, targets, and per-sample training-enable bits are pushed and popped by the same sample events. Any metadata FIFO can therefore backpressure the complete transaction, and their heads remain paired with the current prediction under result stalls.
 - The SPI wrapper exposes `trainingEnable`; inference-only integrations must drive it low, as the SPI directed test does.
 - Assert `reloadWeights` only while `reloadReady` is high.
@@ -145,8 +146,8 @@ directed coverage includes:
 - per-sample `trainingEnable` alignment across four consecutive `0,1,0,1` samples, mixed training/inference samples, and inference samples leaving matrix and reduction weights unchanged
 - target, input-sign, prediction, and buffered-training alignment under input bubbles and output backpressure
 - all three learning directions, narrow-target sign extension, zero input signs, and a closed ReLU gate
-- stalled update waves, overlapping matrix update packages, anti-diagonal ordering, shared data/update stalls, and coherent old/new matrix and reduction-weight versions
-- ordered reduction-update queuing and final-stage commit, fixed-point reduction behavior, and signed one-LSB saturation at both endpoints
+- stalled update waves, overlapping matrix update packages, anti-diagonal ordering, shared data/update stalls, and coherent old/new matrix-result versions
+- old-version result backlog, first post-wave readout, multiple queued readout commits, ordered reduction-update queuing under backpressure, and signed one-LSB saturation at both endpoints
 - worst-case accumulation, asynchronous `clk`/`sclk` SPI transfers, and stable outputs under backpressure
 
 The scripts discover the Quartus-installed Questa under
@@ -180,10 +181,13 @@ weights that produced its prediction.
 The matrix engine captures that package only on an `arrayAdvance`. It then
 applies stages 0 through `2*N-2` to matching PE anti-diagonals. Weight loading
 has priority over learning, and matrix-update stages contribute to pipeline-busy
-state so a reload cannot overtake a pending update wave. Applying the last
-stage produces one completion event that commits and removes the matching
-oldest reduction package. With `arrayAdvance` low, neither update wave nor
-pending FIFO moves.
+state so a reload cannot overtake a pending update wave. A compact version tag
+follows the corresponding matrix result into its output FIFO. At readout, an
+older-version result remains usable with the old resident reduction weights;
+when the FIFO head first requests a newer version, the raw result is held while
+the ordered reduction FIFO advances one package and version per clock. Matrix
+data and matrix-update propagation still freeze together with `arrayAdvance`;
+readout-side commits occur only for a present, version-mismatched result head.
 
 The regression uses seeded `$urandom` stimulus instead of constrained
 randomization and covergroups, so it remains usable with the Questa FPGA
