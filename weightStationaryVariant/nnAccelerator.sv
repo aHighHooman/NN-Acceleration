@@ -41,6 +41,10 @@ module nnAccelerator #(
     // the last PE on the matrix update wave.  There are 2N-1 anti-diagonals
     // from PE(0,0) through PE(N-1,N-1).
     localparam int REDUCTION_BOUNDARY_STAGES = 2*N-1;
+    // Sample metadata remains resident until its corresponding result is
+    // consumed, so its lifetime is longer than the matrix activation FIFO's.
+    localparam int SAMPLE_CONTEXT_DEPTH =
+        (INPUT_FIFO_DEPTH > (2*N + 2)) ? INPUT_FIFO_DEPTH : (2*N + 2);
     localparam int COMPARE_WIDTH = (PREDICTION_WIDTH > TARGET_WIDTH)
                                    ? PREDICTION_WIDTH : TARGET_WIDTH;
     localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
@@ -215,7 +219,7 @@ module nnAccelerator #(
     // the result transaction produced by the corresponding activation vector.
     signedFifo #(
         .WIDTH(TARGET_WIDTH),
-        .DEPTH(INPUT_FIFO_DEPTH)
+        .DEPTH(SAMPLE_CONTEXT_DEPTH)
     ) targetFifo (
         .clk(clk), .rst_n(rst_n),
         .push(targetPush), .pushData(targetData),
@@ -225,7 +229,7 @@ module nnAccelerator #(
 
     signedFifo #(
         .WIDTH(2*N),
-        .DEPTH(INPUT_FIFO_DEPTH)
+        .DEPTH(SAMPLE_CONTEXT_DEPTH)
     ) inputSignFifo (
         .clk(clk), .rst_n(rst_n),
         .push(samplePush), .pushData(inputSignPushData),
@@ -235,7 +239,7 @@ module nnAccelerator #(
 
     signedFifo #(
         .WIDTH(1),
-        .DEPTH(INPUT_FIFO_DEPTH)
+        .DEPTH(SAMPLE_CONTEXT_DEPTH)
     ) trainingEnableFifo (
         .clk(clk), .rst_n(rst_n),
         .push(samplePush), .pushData(trainingEnable),

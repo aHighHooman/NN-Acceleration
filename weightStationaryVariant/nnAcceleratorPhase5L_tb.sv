@@ -13,6 +13,8 @@ module nnAcceleratorPhase5L_tb;
     localparam int PREDICTION_WIDTH = 2*WIDTH + 2*$clog2(N);
     localparam int UPDATE_PIPE_STAGES = 2*N-2;
     localparam int REDUCTION_BOUNDARY_STAGES = 2*N-1;
+    localparam int DEFAULT_INPUT_FIFO_DEPTH = 2*N;
+    localparam int EXPECTED_SAMPLE_CONTEXT_DEPTH = 2*N+2;
     localparam int CONTINUOUS_SAMPLES = 32;
     localparam int BUBBLE_SAMPLES = 8;
     localparam int BACKPRESSURE_SAMPLES = 12;
@@ -57,7 +59,9 @@ module nnAcceleratorPhase5L_tb;
     integer resultLastMismatches, resultHandshakeMismatches;
     integer trainingUpdateCount, reductionBoundaryApplyCount;
     integer lastUpdateCycle, lastBubbleAcceptCycle;
+    integer lastAcceptTrainingCycle;
     integer continuousResultSpan;
+    integer continuousAcceptSpan;
     bit continuousCadenceStarted;
     bit sawContinuousCadence;
     bit sawInputBubble;
@@ -68,8 +72,7 @@ module nnAcceleratorPhase5L_tb;
     nnAccelerator #(
         .WIDTH(WIDTH), .N(N), .TARGET_WIDTH(TARGET_WIDTH),
         .FRACTION_BITS(FRACTION_BITS),
-        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
-        .INPUT_FIFO_DEPTH(8), .OUTPUT_FIFO_DEPTH(4)
+        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH)
     ) inferenceDut (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid),
@@ -95,8 +98,7 @@ module nnAcceleratorPhase5L_tb;
     nnAccelerator #(
         .WIDTH(WIDTH), .N(N), .TARGET_WIDTH(TARGET_WIDTH),
         .FRACTION_BITS(FRACTION_BITS),
-        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
-        .INPUT_FIFO_DEPTH(8), .OUTPUT_FIFO_DEPTH(4)
+        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH)
     ) trainingDut (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid),
@@ -146,6 +148,8 @@ module nnAcceleratorPhase5L_tb;
             reductionBoundaryApplyCount = 0;
             lastUpdateCycle = -100;
             lastBubbleAcceptCycle = -100;
+            lastAcceptTrainingCycle = -1;
+            continuousAcceptSpan = 0;
             continuousCadenceStarted = 0;
             sawContinuousCadence = 0;
             sawInputBubble = 0;
@@ -154,6 +158,13 @@ module nnAcceleratorPhase5L_tb;
             sawBoundaryOnBubbleTraffic = 0;
         end else begin
             cycleCount = cycleCount + 1;
+
+            // Hold valid continuously through the initial fill. Any ready
+            // hole here would expose sample-context backpressure before the
+            // first result retires.
+            if ((phase == PH_CONTINUOUS) && activationValid &&
+                !activationReadyTraining)
+                $fatal(1, "default continuous acceptance stalled at cycle %0d before all samples were accepted", cycleCount);
 
             if (inferenceWeightsLoaded && trainingWeightsLoaded) begin
                 if (activationReadyInference !== activationReadyTraining)
@@ -187,6 +198,7 @@ module nnAcceleratorPhase5L_tb;
                 acceptedTraining = acceptedTraining + 1;
                 if (firstAcceptTraining < 0)
                     firstAcceptTraining = cycleCount;
+                lastAcceptTrainingCycle = cycleCount;
             end
 
             if (inferenceResultValid && resultReady) begin
@@ -299,6 +311,18 @@ module nnAcceleratorPhase5L_tb;
         while (resultsTraining < CONTINUOUS_SAMPLES) @(negedge clk);
         phase = PH_IDLE;
 
+        if (inferenceDut.INPUT_FIFO_DEPTH != DEFAULT_INPUT_FIFO_DEPTH ||
+            trainingDut.INPUT_FIFO_DEPTH != DEFAULT_INPUT_FIFO_DEPTH)
+            $fatal(1, "Phase 5M regression unexpectedly overrode INPUT_FIFO_DEPTH");
+        if (inferenceDut.SAMPLE_CONTEXT_DEPTH != EXPECTED_SAMPLE_CONTEXT_DEPTH ||
+            trainingDut.SAMPLE_CONTEXT_DEPTH != EXPECTED_SAMPLE_CONTEXT_DEPTH)
+            $fatal(1, "N=3 SAMPLE_CONTEXT_DEPTH was not %0d",
+                   EXPECTED_SAMPLE_CONTEXT_DEPTH);
+        continuousAcceptSpan = lastAcceptTrainingCycle -
+                                firstAcceptTraining + 1;
+        if (continuousAcceptSpan != CONTINUOUS_SAMPLES)
+            $fatal(1, "default continuous acceptance span was %0d cycles, expected %0d",
+                   continuousAcceptSpan, CONTINUOUS_SAMPLES);
         if (!sawContinuousCadence)
             $fatal(1, "continuous result cadence was not one result per cycle");
         if (acceptedInference != CONTINUOUS_SAMPLES ||
