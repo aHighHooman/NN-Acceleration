@@ -186,17 +186,15 @@ module nnAccelerator_tb;
             if (resultValid && !resultReady && (liveUpdateStages != 0))
                 sawValidStallWithUpdateWave = 1;
 
-            if (dut.targetPush !== (activationValid && activationReady))
-                $fatal(1, "target push did not equal the external sample handshake");
-            if (dut.targetPush !==
+            if (dut.samplePush !== (activationValid && activationReady))
+                $fatal(1, "sample-context push did not equal the external sample handshake");
+            if (dut.samplePush !==
                 (dut.matrixActivationValid && dut.matrixActivationReady))
-                $fatal(1, "activation and target were not accepted atomically");
-            if (dut.targetPop !== (resultValid && resultReady))
-                $fatal(1, "target pop did not equal the result handshake");
-            if (dut.samplePush !== dut.targetPush ||
-                dut.inputSignFifo.values !== dut.targetFifo.values ||
-                dut.trainingEnableFifo.values !== dut.targetFifo.values)
-                $fatal(1, "sample metadata FIFOs lost alignment");
+                $fatal(1, "activation and sample context were not accepted atomically");
+            if (dut.samplePop !== (resultValid && resultReady))
+                $fatal(1, "sample-context pop did not equal the result handshake");
+            if (dut.sampleContextFifo.values > dut.SAMPLE_CONTEXT_DEPTH)
+                $fatal(1, "sample-context FIFO occupancy exceeded its depth");
             if (matrixUpdateValid !==
                 ((resultValid && resultReady) && dut.trainingEnableHead))
                 $fatal(1, "matrix update valid did not match buffered training enable");
@@ -575,7 +573,7 @@ module nnAccelerator_tb;
             if (!resultValid || resultTargetData !== heldTarget ||
                 resultData[0] !== heldPrediction ||
                 learningDirection !== heldDirection ||
-                dut.trainingEnableHead !== heldTrainingEnable || dut.targetPop)
+                dut.trainingEnableHead !== heldTrainingEnable || dut.samplePop)
                 $fatal(1, "prediction or buffered metadata changed while output was stalled");
         end
 

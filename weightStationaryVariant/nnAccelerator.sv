@@ -45,6 +45,7 @@ module nnAccelerator #(
     // consumed, so its lifetime is longer than the matrix activation FIFO's.
     localparam int SAMPLE_CONTEXT_DEPTH =
         (INPUT_FIFO_DEPTH > (2*N + 2)) ? INPUT_FIFO_DEPTH : (2*N + 2);
+    localparam int SAMPLE_CONTEXT_WIDTH = TARGET_WIDTH + 2*N + 1;
     localparam int COMPARE_WIDTH = (PREDICTION_WIDTH > TARGET_WIDTH)
                                    ? PREDICTION_WIDTH : TARGET_WIDTH;
     localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
@@ -81,34 +82,29 @@ module nnAccelerator #(
     logic resultMetadataPush, resultMetadataPop;
     logic matrixActivationValid, matrixActivationReady;
     logic matrixResultValid, matrixResultReady, matrixResultLast;
-    logic targetPush, targetPop, targetFull, targetEmpty;
-    logic inputSignFull, inputSignEmpty;
-    logic trainingEnableFull, trainingEnableEmpty;
+    logic signed [SAMPLE_CONTEXT_WIDTH-1:0] sampleContextPushData;
+    logic signed [SAMPLE_CONTEXT_WIDTH-1:0] sampleContextHead;
+    logic sampleContextFull, sampleContextEmpty;
     logic samplePush, samplePop, sampleCanAccept;
     logic readoutHeadValid;
 
     // The activation vector, target, input signs, and training-enable bit are
     // one input transaction. Gate the matrix valid as well as the external
-    // ready so no part can advance alone when any metadata queue applies
+    // ready so no part can advance alone when the sample-context FIFO applies
     // backpressure.
     assign samplePop             = resultValid && resultReady;
-    assign sampleCanAccept       = (!targetFull && !inputSignFull &&
-                                    !trainingEnableFull) || samplePop;
+    assign sampleCanAccept       = !sampleContextFull || samplePop;
     assign activationReady       = matrixActivationReady && sampleCanAccept;
     assign matrixActivationValid = activationValid && sampleCanAccept;
     assign samplePush            = activationValid && activationReady;
-    assign targetPush            = samplePush;
-    assign targetPop             = samplePop;
 
     // Reduction metadata is a transaction sideband pushed and popped with
     // each ordinary matrix result.  It never participates in forward-path
     // flow control; the FIFO counts are structurally identical to the result
     // stream and are therefore not another reason for a result to wait.
-    assign readoutHeadValid  = matrixResultValid && !targetEmpty &&
-                               !inputSignEmpty && !trainingEnableEmpty;
+    assign readoutHeadValid  = matrixResultValid && !sampleContextEmpty;
     assign resultValid       = readoutHeadValid;
-    assign matrixResultReady = resultReady && !targetEmpty && !inputSignEmpty &&
-                               !trainingEnableEmpty;
+    assign matrixResultReady = resultReady && !sampleContextEmpty;
     assign matrixResultPop   = matrixResultValid && matrixResultReady;
     assign resultLast        = matrixResultLast && resultValid;
     assign matrixUpdateValid = samplePop && trainingEnableHead;
@@ -210,41 +206,29 @@ module nnAccelerator #(
         };
     end
 
+    assign sampleContextPushData = {
+        targetData, inputSignPushData, trainingEnable
+    };
+    assign resultTargetData = sampleContextHead[SAMPLE_CONTEXT_WIDTH-1 -: TARGET_WIDTH];
+    assign inputSignHead = sampleContextHead[2*N:1];
+    assign trainingEnableHead = sampleContextHead[0];
+
     assign prediction = resultMetadataHead[PREDICTION_WIDTH+2*N-1:2*N];
     assign reductionWeightSignHead = resultMetadataHead[2*N-1:0];
     assign resultMetadataPush = matrixResultEnqueue;
     assign resultMetadataPop  = matrixResultPop;
 
-    // FIFO order, rather than a cycle count, carries each sample's metadata to
-    // the result transaction produced by the corresponding activation vector.
+    // FIFO order, rather than a cycle count, carries the complete sample
+    // context to the result transaction produced by the corresponding
+    // activation vector.
     signedFifo #(
-        .WIDTH(TARGET_WIDTH),
+        .WIDTH(SAMPLE_CONTEXT_WIDTH),
         .DEPTH(SAMPLE_CONTEXT_DEPTH)
-    ) targetFifo (
+    ) sampleContextFifo (
         .clk(clk), .rst_n(rst_n),
-        .push(targetPush), .pushData(targetData),
-        .pop(targetPop), .popData(resultTargetData),
-        .full(targetFull), .empty(targetEmpty), .values()
-    );
-
-    signedFifo #(
-        .WIDTH(2*N),
-        .DEPTH(SAMPLE_CONTEXT_DEPTH)
-    ) inputSignFifo (
-        .clk(clk), .rst_n(rst_n),
-        .push(samplePush), .pushData(inputSignPushData),
-        .pop(samplePop), .popData(inputSignHead),
-        .full(inputSignFull), .empty(inputSignEmpty), .values()
-    );
-
-    signedFifo #(
-        .WIDTH(1),
-        .DEPTH(SAMPLE_CONTEXT_DEPTH)
-    ) trainingEnableFifo (
-        .clk(clk), .rst_n(rst_n),
-        .push(samplePush), .pushData(trainingEnable),
-        .pop(samplePop), .popData(trainingEnableHead),
-        .full(trainingEnableFull), .empty(trainingEnableEmpty), .values()
+        .push(samplePush), .pushData(sampleContextPushData),
+        .pop(samplePop), .popData(sampleContextHead),
+        .full(sampleContextFull), .empty(sampleContextEmpty), .values()
     );
 
     // Ordinary result metadata is pushed and popped with each matrix result.

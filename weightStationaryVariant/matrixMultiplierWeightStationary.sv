@@ -36,20 +36,28 @@ module matrixMultiplierWeightStationary #(
     localparam int ACT_ROW_WIDTH        = $clog2(N);
     localparam int RESULT_ROW_WIDTH     = $clog2(N);
     localparam int RESULT_WIDTH         = $clog2(N) + 2*WIDTH;
+    localparam int VECTOR_WIDTH         = N * WIDTH;
+    localparam int RESULT_VECTOR_WIDTH  = N * RESULT_WIDTH;
 
-    logic weightPush, weightPop, allWeightValid, allWeightReady;
-    logic activationPush, activationPop, allActivationValid, allActivationReady;
-    logic outputPop, allOutputValid, allOutputEmpty, allActivationEmpty;
+    logic weightPush, weightPop;
+    logic activationPush, activationPop;
+    logic outputPop;
     logic [WEIGHT_COUNT_WIDTH-1:0] loadedWeightRows;
     logic [ACT_ROW_WIDTH-1:0] acceptedActivationRow;
     logic [RESULT_ROW_WIDTH-1:0] transmittedResultRow;
 
+    logic signed [VECTOR_WIDTH-1:0] weightVectorPushData;
+    logic signed [VECTOR_WIDTH-1:0] weightVectorHead;
     logic signed [WIDTH-1:0] weightData_FifoToLoader [N];
-    logic weightFull[N], weightEmpty[N];
+    logic weightFull, weightEmpty;
+    logic signed [VECTOR_WIDTH-1:0] activationVectorPushData;
+    logic signed [VECTOR_WIDTH-1:0] activationVectorHead;
     logic signed [WIDTH-1:0] activationData_FifoToOrch[N];
-    logic activationFull[N], activationEmpty[N];
+    logic activationFull, activationEmpty;
+    logic signed [RESULT_VECTOR_WIDTH-1:0] outputVectorPushData;
+    logic signed [RESULT_VECTOR_WIDTH-1:0] outputVectorHead;
     logic signed [RESULT_WIDTH-1:0] resultData_FifoToOutput[N];
-    logic outputFull[N], outputEmpty[N];
+    logic outputFull, outputEmpty;
     localparam int RESULT_ALIGN_STORAGE = (N > 1) ? N-1 : 1;
     logic signed [RESULT_WIDTH-1:0]
         resultAlignData[N][RESULT_ALIGN_STORAGE];
@@ -63,6 +71,29 @@ module matrixMultiplierWeightStationary #(
     logic signed [RESULT_WIDTH-1:0] resultData_SystToFifo[N];
     logic validData_SystToFifo[N];
     logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked;
+
+    always_comb begin
+        weightVectorPushData     = '0;
+        activationVectorPushData = '0;
+        outputVectorPushData     = '0;
+        for (int lane = 0; lane < N; lane++) begin
+            weightVectorPushData[lane*WIDTH +: WIDTH] = weightData[lane];
+            activationVectorPushData[lane*WIDTH +: WIDTH] = activationData[lane];
+            outputVectorPushData[lane*RESULT_WIDTH +: RESULT_WIDTH] =
+                resultAlignedData[lane];
+        end
+    end
+
+    always_comb begin
+        for (int lane = 0; lane < N; lane++) begin
+            weightData_FifoToLoader[lane] =
+                weightVectorHead[lane*WIDTH +: WIDTH];
+            activationData_FifoToOrch[lane] =
+                activationVectorHead[lane*WIDTH +: WIDTH];
+            resultData_FifoToOutput[lane] =
+                outputVectorHead[lane*RESULT_WIDTH +: RESULT_WIDTH];
+        end
+    end
 
     // The systolic columns finish one cycle apart.  Delay the earlier columns
     // by the missing suffix of that fixed latency so the normal result FIFO
@@ -100,39 +131,25 @@ module matrixMultiplierWeightStationary #(
     end
 
     always_comb begin
-        allWeightValid      = 1;
-        allWeightReady      = 1;
-        allActivationValid  = 1;
-        allActivationReady  = 1;
-        allOutputValid      = 1;
-        allOutputEmpty      = 1;
-        allActivationEmpty  = 1;
-        skewBusy            = 0;
-        outputBlocked       = 0;
-
+        skewBusy = 0;
         for (int i = 0; i < N; i++) begin
-            allWeightValid      &= !weightEmpty[i];
-            allWeightReady      &= !weightFull[i];
-            allActivationValid  &= !activationEmpty[i];
-            allActivationReady  &= !activationFull[i];
-            allActivationEmpty  &= activationEmpty[i];
-            allOutputValid      &= !outputEmpty[i];
-            allOutputEmpty      &= outputEmpty[i];
-            outputBlocked       |= resultAlignedValid[i] && outputFull[i] && !outputPop;
-
             for (int d = 0; d < N; d++) begin
                 skewBusy |= skewValid[i][d];
             end
         end
-
     end
 
-    assign weightReady      = !weightsLoaded && allWeightReady;
+    // The aligned result vector is the only transaction that can be blocked
+    // by the output FIFO.  signedFifo permits a simultaneous pop when full,
+    // matching the old lockstep lane FIFO behavior.
+    assign outputBlocked    = resultAlignedAllValid && outputFull && !outputPop;
+
+    assign weightReady      = !weightsLoaded && !weightFull;
     assign weightPush       = weightValid && weightReady;
-    assign activationReady  = weightsLoaded && allActivationReady;
+    assign activationReady  = weightsLoaded && !activationFull;
     assign activationPush   = activationValid && activationReady;
     assign outputPop        = resultValid && resultReady;
-    assign resultValid      = allOutputValid;
+    assign resultValid      = !outputEmpty;
     assign resultLast       = resultValid && (transmittedResultRow == N-1);
     assign arrayAdvance     = !weightsLoaded ? weightPop : !outputBlocked;
     assign matrixUpdateAccepted = matrixUpdateValid && arrayAdvance;
@@ -153,35 +170,40 @@ module matrixMultiplierWeightStationary #(
     // the matrix and reduction state transitions remain aligned downstream.
     assign reductionUpdateBoundaryValid = matrixUpdateValid;
     assign reductionUpdateBoundaryData = reductionUpdateData;
-    assign activationPop    = weightsLoaded && allActivationValid && arrayAdvance;
-    assign weightPop        = !weightsLoaded && allWeightValid;
-    assign reloadReady      = weightsLoaded && allActivationEmpty && !skewBusy &&
-                              !pipelineBusy && !resultAlignBusy && allOutputEmpty &&
+    assign activationPop    = weightsLoaded && !activationEmpty && arrayAdvance;
+    assign weightPop        = !weightsLoaded && !weightEmpty;
+    assign reloadReady      = weightsLoaded && activationEmpty && !skewBusy &&
+                              !pipelineBusy && !resultAlignBusy && outputEmpty &&
                               (acceptedActivationRow == 0);
 
-    genvar fifoIndex;
+    genvar resultLane;
     generate
-        for (fifoIndex = 0; fifoIndex < N; fifoIndex = fifoIndex + 1) begin : fifo_banks
-            assign resultData[fifoIndex] = resultData_FifoToOutput[fifoIndex];
-
-            signedFifo #(.WIDTH(WIDTH), .DEPTH(N)) weightFifo (
-                .clk(clk), .rst_n(rst_n), .push(weightPush), .pushData(weightData[fifoIndex]),
-                .pop(weightPop), .popData(weightData_FifoToLoader[fifoIndex]), .full(weightFull[fifoIndex]),
-                .empty(weightEmpty[fifoIndex]), .values()
-            );
-            signedFifo #(.WIDTH(WIDTH), .DEPTH(INPUT_FIFO_DEPTH)) activationFifo (
-                .clk(clk), .rst_n(rst_n), .push(activationPush), .pushData(activationData[fifoIndex]),
-                .pop(activationPop), .popData(activationData_FifoToOrch[fifoIndex]), .full(activationFull[fifoIndex]),
-                .empty(activationEmpty[fifoIndex]), .values()
-            );
-            signedFifo #(.WIDTH(RESULT_WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)) outputFifo (
-                .clk(clk), .rst_n(rst_n),
-                .push(arrayAdvance && resultAlignedAllValid), .pushData(resultAlignedData[fifoIndex]),
-                .pop(outputPop), .popData(resultData_FifoToOutput[fifoIndex]), .full(outputFull[fifoIndex]),
-                .empty(outputEmpty[fifoIndex]), .values()
-            );
+        for (resultLane = 0; resultLane < N; resultLane = resultLane + 1) begin : output_lanes
+            assign resultData[resultLane] = resultData_FifoToOutput[resultLane];
         end
     endgenerate
+
+    signedFifo #(.WIDTH(VECTOR_WIDTH), .DEPTH(N)) weightVectorFifo (
+        .clk(clk), .rst_n(rst_n), .push(weightPush),
+        .pushData(weightVectorPushData), .pop(weightPop),
+        .popData(weightVectorHead), .full(weightFull), .empty(weightEmpty),
+        .values()
+    );
+
+    signedFifo #(.WIDTH(VECTOR_WIDTH), .DEPTH(INPUT_FIFO_DEPTH)) activationVectorFifo (
+        .clk(clk), .rst_n(rst_n), .push(activationPush),
+        .pushData(activationVectorPushData), .pop(activationPop),
+        .popData(activationVectorHead), .full(activationFull),
+        .empty(activationEmpty), .values()
+    );
+
+    signedFifo #(.WIDTH(RESULT_VECTOR_WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)) outputVectorFifo (
+        .clk(clk), .rst_n(rst_n),
+        .push(arrayAdvance && resultAlignedAllValid),
+        .pushData(outputVectorPushData), .pop(outputPop),
+        .popData(outputVectorHead), .full(outputFull), .empty(outputEmpty),
+        .values()
+    );
 
     genvar laneIndex;
     generate
