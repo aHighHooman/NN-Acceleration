@@ -57,8 +57,6 @@ module matrixMultiplierWeightStationary #(
     logic signed [RESULT_WIDTH-1:0] resultData_SystToFifo[N];
     logic validData_SystToFifo[N];
     logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked;
-    logic updateBoundaryValid;
-    logic signed [2*N-1:0] updateBoundaryData;
 
     always_comb begin
         allWeightValid      = 1;
@@ -103,26 +101,16 @@ module matrixMultiplierWeightStationary #(
     assign matrixUpdateAccepted = matrixUpdateValid && arrayAdvance;
     assign datapathAdvance = arrayAdvance;
     assign resultEnqueue = arrayAdvance && validData_SystToFifo[0];
-    assign reductionUpdateBoundaryValid = updateBoundaryValid;
-    assign reductionUpdateBoundaryData = updateBoundaryData;
+    // The learning package enters PE(0,0) directly on this advancing edge.
+    // Launch the matching reduction boundary from that same live package so
+    // the matrix and reduction state transitions remain aligned downstream.
+    assign reductionUpdateBoundaryValid = matrixUpdateValid;
+    assign reductionUpdateBoundaryData = reductionUpdateData;
     assign activationPop    = weightsLoaded && allActivationValid && arrayAdvance;
     assign weightPop        = !weightsLoaded && allWeightValid;
     assign reloadReady      = weightsLoaded && allActivationEmpty && !skewBusy &&
                               !pipelineBusy && allOutputEmpty &&
                               (acceptedActivationRow == 0);
-
-    // This register is the stage-zero matrix boundary: the sample sharing
-    // the following stage-zero update edge still reads the old PE value.
-    // The first sample after that edge is on the new side of both updates.
-    always_ff @(posedge clk) begin
-        if (!rst_n) begin
-            updateBoundaryValid <= 1'b0;
-            updateBoundaryData <= '0;
-        end else if (arrayAdvance) begin
-            updateBoundaryValid <= matrixUpdateValid;
-            updateBoundaryData <= reductionUpdateData;
-        end
-    end
 
     genvar fifoIndex;
     generate

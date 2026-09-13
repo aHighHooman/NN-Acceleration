@@ -27,7 +27,7 @@ flowchart LR
         ACT["Combinational activation layer"]
         REDUCE["Resident weighted vector reduction"]
         TRAIN["Aligned SSLMS package generator"]
-        UPDATE["2N-1 stage update wave"]
+        UPDATE["live entry + 2N-2 registered update stages"]
     end
 
     W_RX --> W_CDC --> W_FIFO --> ARRAY
@@ -92,9 +92,10 @@ sequenceDiagram
 - `reductionWeight[N]` is the initialization vector for resident reduction-weight registers. Pulsing `loadReductionWeights` copies the complete vector atomically. Loading has priority over learning, so configuration software must use it only while the sample and update pipelines are quiescent.
 - Every `resultValid && resultReady` completion whose buffered `trainingEnable` is high launches one packed reduction-update sideband alongside its matrix-update package. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not launch an update.
 - The same training-enabled completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use that sample's snapshotted reduction-weight signs and the pass-through/ReLU activation gate.
-- A `2*N-1` stage pipeline carries each valid package across the PE anti-diagonals. Stage `d` updates every PE where `row + column == d` by the ternary outer product, with signed one-LSB saturation. The update pipeline and datapath share `arrayAdvance`, so both freeze together under backpressure and successive packages may overlap.
+- Each valid package updates PE(0,0) directly on its acceptance edge, then `2*N-2` registered stages carry it across the remaining PE anti-diagonals. Diagonal `d` updates every PE where `row + column == d` by the ternary outer product, with signed one-LSB saturation. The update pipeline and datapath share `arrayAdvance`, so both freeze together under backpressure and successive packages may overlap.
 - `matrixUpdateComplete` still asserts once for each package on the advancing edge that applies its final anti-diagonal. The packed reduction sideband follows the matrix learning boundary under the same `arrayAdvance` enable and reaches readout beside the last sample that uses the old complete network state.
 - A PE multiply and the weighted reduction both use their resident weights present before an update edge. Accepting the last old-state result applies the reduction direction directly to the sole resident reduction vector with signed one-LSB saturation; the next sample then uses both the updated matrix and updated reduction weights. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
+- In continuous no-stall traffic, a sample's scalar prediction is available after `2*N-1` cycles, its learning direction is formed combinationally in that cycle, and PE(0,0) applies the update on the following edge. The sample on that edge still uses the old weight; the next sample is the first affected, so update `U_S` first affects sample `S + 2*N + 1` (distance 7 for `N=3`).
 - The result path stores an ordered stream of sample and reduction-boundary events. At a combined boundary/sample event, the sample is evaluated with resident `Rcurrent` and the accepting edge updates that vector in place. Update-only events occupy otherwise idle datapath slots, so bubbles cannot drop learning packages. Continuous traffic still accepts one boundary/sample event per cycle without reduction snapshots, next-state bypasses, version counters, or catch-up cycles.
 - Original input signs, targets, and per-sample training-enable bits are pushed and popped by the same sample events. Any metadata FIFO can therefore backpressure the complete transaction, and their heads remain paired with the current prediction under result stalls.
 - The SPI wrapper exposes `trainingEnable`; inference-only integrations must drive it low, as the SPI directed test does.
@@ -147,7 +148,8 @@ directed coverage includes:
 - target, input-sign, prediction, and buffered-training alignment under input bubbles and output backpressure
 - all three learning directions, narrow-target sign extension, zero input signs, and a closed ReLU gate
 - stalled update waves, overlapping matrix update packages, anti-diagonal ordering, and shared data/update/sideband stalls
-- old-state result backlog, no-bubble streaming across consecutive W/R boundaries, ordered readout events under stalls and bubbles, and signed one-LSB saturation at both endpoints
+- exact 3x3 relationships `S0 -> S7`, `S1 -> S8`, and `S2 -> S9` under no-stall traffic, plus preserved ordering across a shared data/update-wave freeze
+- old-state result backlog, ordered readout events under stalls and bubbles, and signed one-LSB saturation at both endpoints
 - worst-case accumulation, asynchronous `clk`/`sclk` SPI transfers, and stable outputs under backpressure
 
 The scripts discover the Quartus-installed Questa under
@@ -178,8 +180,8 @@ the current pre-activation values form one `rowDirection`/`columnDirection`
 package while the corresponding reduction directions are packed into an
 update sideband. The package observes the same snapshotted reduction weights
 that produced its prediction.
-The matrix engine captures that package only on an `arrayAdvance`. It then
-applies stages 0 through `2*N-2` to matching PE anti-diagonals. Weight loading
+On an `arrayAdvance`, the matrix engine applies the live package directly to
+anti-diagonal zero and captures it for anti-diagonals 1 through `2*N-2`. Weight loading
 has priority over learning, and matrix-update stages contribute to pipeline-busy
 state so a reload cannot overtake a pending update wave. The reduction sideband
 follows the same boundary under `arrayAdvance`. Its alignment pipeline ends one

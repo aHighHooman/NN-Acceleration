@@ -20,26 +20,37 @@ module systolicArrayWeightStationary #(
 
     localparam int FINAL_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int UPDATE_STAGES = 2*N - 1;
+    localparam int UPDATE_PIPE_STAGES = UPDATE_STAGES - 1;
+    localparam int UPDATE_PIPE_STORAGE = (UPDATE_PIPE_STAGES > 0) ?
+                                         UPDATE_PIPE_STAGES : 1;
 
     logic signed [WIDTH-1:0]                horizontalData [N][N+1];
     logic                                   horizontalValid[N][N+1];
     logic signed [FINAL_RESULT_WIDTH-1:0]   verticalData   [N+1][N];
     logic                                   verticalValid  [N+1][N];
-    logic signed [1:0]                      updateRowPipe   [UPDATE_STAGES][N];
-    logic signed [1:0]                      updateColumnPipe[UPDATE_STAGES][N];
-    logic                                   updateValidPipe [UPDATE_STAGES];
+    logic signed [1:0]                      updateRowPipe   [UPDATE_PIPE_STORAGE][N];
+    logic signed [1:0]                      updateColumnPipe[UPDATE_PIPE_STORAGE][N];
+    logic                                   updateValidPipe [UPDATE_PIPE_STORAGE];
 
-    // The last stage's anti-diagonal is applied on this advancing edge.  The
-    // valid bit shifts out at the same edge, making this exactly one event for
-    // every accepted update package, including back-to-back packages.
-    assign updateComplete = advance && updateValidPipe[UPDATE_STAGES-1];
+    // Diagonal zero consumes the live package on its acceptance edge.  The
+    // remaining 2N-2 diagonals consume the registered package on successive
+    // advancing edges.  Completion therefore coincides with the final PE
+    // update rather than an otherwise unused extra pipeline stage.
+    generate
+        if (N == 1) begin : single_pe_completion
+            assign updateComplete = advance && updateValid;
+        end else begin : wave_completion
+            assign updateComplete = advance &&
+                                    updateValidPipe[UPDATE_PIPE_STAGES-1];
+        end
+    endgenerate
 
     // Update packages advance with exactly the same enable as the data array.
     // Keeping both complete vectors in every stage permits one new package on
     // every advancing cycle while each stage addresses one anti-diagonal.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            for (int stage = 0; stage < UPDATE_STAGES; stage++) begin
+            for (int stage = 0; stage < UPDATE_PIPE_STORAGE; stage++) begin
                 updateValidPipe[stage] <= 1'b0;
                 for (int lane = 0; lane < N; lane++) begin
                     updateRowPipe[stage][lane] <= 2'sd0;
@@ -47,7 +58,7 @@ module systolicArrayWeightStationary #(
                 end
             end
         end else if (advance) begin
-            for (int stage = UPDATE_STAGES-1; stage > 0; stage--) begin
+            for (int stage = UPDATE_PIPE_STAGES-1; stage > 0; stage--) begin
                 updateValidPipe[stage] <= updateValidPipe[stage-1];
                 for (int lane = 0; lane < N; lane++) begin
                     updateRowPipe[stage][lane] <= updateRowPipe[stage-1][lane];
@@ -78,14 +89,26 @@ module systolicArrayWeightStationary #(
 
         for (i = 0; i < N; i++) begin : row_loop
             for (j = 0; j < N; j++) begin : col_loop
+                logic              localUpdateValid;
+                logic signed [1:0] localRowDirection;
+                logic signed [1:0] localColumnDirection;
                 logic signed [1:0] localUpdateDirection;
 
+                if ((i+j) == 0) begin : live_update_entry
+                    assign localUpdateValid = updateValid;
+                    assign localRowDirection = rowDirection[i];
+                    assign localColumnDirection = columnDirection[j];
+                end else begin : piped_update_wave
+                    assign localUpdateValid = updateValidPipe[i+j-1];
+                    assign localRowDirection = updateRowPipe[i+j-1][i];
+                    assign localColumnDirection = updateColumnPipe[i+j-1][j];
+                end
+
                 always_comb begin
-                    if ((updateRowPipe[i+j][i] == 2'sd0) ||
-                        (updateColumnPipe[i+j][j] == 2'sd0))
+                    if ((localRowDirection == 2'sd0) ||
+                        (localColumnDirection == 2'sd0))
                         localUpdateDirection = 2'sd0;
-                    else if (updateRowPipe[i+j][i] ==
-                             updateColumnPipe[i+j][j])
+                    else if (localRowDirection == localColumnDirection)
                         localUpdateDirection = 2'sd1;
                     else
                         localUpdateDirection = -2'sd1;
@@ -93,7 +116,7 @@ module systolicArrayWeightStationary #(
 
                 multiplierBlockWeightStationary #(.WIDTH(WIDTH), .RESULT_WIDTH(FINAL_RESULT_WIDTH)) mb (
                     .clk(clk), .rst_n(rst_n), .advance(advance), .loadWeight(loadWeight),
-                    .updateWeight(updateValidPipe[i+j]),
+                    .updateWeight(localUpdateValid),
                     .updateDirection(localUpdateDirection),
                     .leftIn(horizontalData[i][j]), .leftValid(horizontalValid[i][j]),
                     .topIn(verticalData[i][j]), .topValid(verticalValid[i][j]),
@@ -116,7 +139,7 @@ module systolicArrayWeightStationary #(
         for (int r = 0; r < N; r++)
             for (int c = 1; c <= N; c++)
                 pipelineBusy |= horizontalValid[r][c];
-        for (int stage = 0; stage < UPDATE_STAGES; stage++)
+        for (int stage = 0; stage < UPDATE_PIPE_STAGES; stage++)
             pipelineBusy |= updateValidPipe[stage];
     end
 

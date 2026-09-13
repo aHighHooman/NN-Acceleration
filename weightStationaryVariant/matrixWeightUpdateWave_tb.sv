@@ -197,7 +197,7 @@ module systolicWeightUpdateWave_testcase(
         pulse_package();
         set_directions(1, 1, 1, 1, 1, 1);
         advance_package(1'b1);
-        check_weights(1, 0, 0, 0, 0, 0, 0, 0, 0,
+        check_weights(2, -1, 0, 0, 0, 0, 0, 0, 0,
                       "overlapping packages at diagonal zero");
 
         // Freeze while both a data register and two update stages are live.
@@ -209,24 +209,21 @@ module systolicWeightUpdateWave_testcase(
         repeat (2) begin
             @(posedge clk); #1;
             if (!dut.updateValidPipe[0] || !dut.updateValidPipe[1] ||
-                dut.row_loop[0].col_loop[0].mb.weightReg !== 1 ||
+                dut.row_loop[0].col_loop[0].mb.weightReg !== 2 ||
                 dut.row_loop[0].col_loop[0].mb.rightValid !== 1'b0)
                 $fatal(1, "array stall did not freeze data and update waves");
         end
 
         rowValid[0] = 1'b0;
         advance_package(1'b0);
-        check_weights(2, -1, 0, 0, 0, 0, 0, 0, 0,
-                      "anti-diagonal one");
-        advance_package(1'b0);
         check_weights(2, 0, 0, 1, 0, 0, -1, 0, 0,
-                      "anti-diagonal two");
+                      "overlapping anti-diagonal one/two");
         advance_package(1'b0);
         check_weights(2, 0, 1, 1, 1, 0, 0, 1, 0,
-                      "anti-diagonal three");
+                      "overlapping anti-diagonal two/three");
         advance_package(1'b0);
         check_weights(2, 0, 1, 1, 1, 1, 0, 2, 0,
-                      "anti-diagonal four");
+                      "overlapping anti-diagonal three/four");
         advance_package(1'b0);
         check_weights(2, 0, 1, 1, 1, 1, 0, 2, 1,
                       "second package completion");
@@ -239,15 +236,15 @@ module systolicWeightUpdateWave_testcase(
         // A zero-row package must traverse without changing any PE.
         set_directions(0, 0, 0, 1, 1, 1);
         pulse_package();
-        repeat (5) advance_package(1'b0);
+        repeat (4) advance_package(1'b0);
         if (completedUpdateCount != 3)
             $fatal(1, "zero-direction package did not produce one completion");
         check_weights(2, 0, 1, 1, 1, 1, 0, 2, 1,
                       "zero update package");
 
         // Stream four all-one samples while an all-positive package follows
-        // the first sample wave. Samples 0 and 1 are already on the old side
-        // of the boundary; samples 2 and 3 use the incremented weights.
+        // the first sample wave. Sample 0 uses the old weights on the update
+        // edge; samples 1 through 3 use the incremented weights.
         load_uniform_weights(2);
         for (int lane = 0; lane < N; lane++) resultCount[lane] = 0;
         for (int waveCycle = 0; waveCycle < 10; waveCycle++) begin
@@ -348,7 +345,7 @@ module systolicWeightUpdateWave_testcase(
         integer expected;
         for (int lane = 0; lane < N; lane++) begin
             if (resultValid[lane]) begin
-                expected = (resultCount[lane] < 2) ? 6 : 9;
+                expected = (resultCount[lane] < 1) ? 6 : 9;
                 if (result[lane] !== expected)
                     $fatal(1, "column %0d sample %0d got %0d, expected %0d",
                            lane, resultCount[lane], result[lane], expected);
@@ -372,7 +369,7 @@ module matrixWeightUpdateWave_tb;
 
     initial begin
         wait(peDone && arrayDone);
-        $display("PASS: Phase 5G unchanged matrix update-wave overlap, stall, completion-order, and version-boundary tests completed.");
+        $display("PASS: Phase 5K live-entry matrix update-wave overlap, stall, completion-order, and version-boundary tests completed.");
         $finish;
     end
 endmodule

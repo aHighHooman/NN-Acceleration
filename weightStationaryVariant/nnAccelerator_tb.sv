@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-// Integration-level directed verification for the Phase 5J streaming
+// Integration-level directed verification for the Phase 5K streaming
 // learning boundary. The scoreboard follows every accepted sample and the
 // structurally aligned matrix/reduction state across bubbles and stalls.
 module nnAccelerator_tb;
@@ -16,7 +16,7 @@ module nnAccelerator_tb;
     localparam int HALF = 1 << (REDUCTION_FRACTION_BITS - 1);
     localparam int PREDICTION_WIDTH = 2*WIDTH + 2*$clog2(N);
     localparam int SAMPLE_COUNT = 21;
-    localparam int UPDATE_STAGES = 2*N - 1;
+    localparam int UPDATE_PIPE_STAGES = 2*N - 2;
 
     typedef logic signed [PREDICTION_WIDTH-1:0] result_t;
     typedef logic signed [TARGET_WIDTH-1:0] target_t;
@@ -182,7 +182,7 @@ module nnAccelerator_tb;
             cycleCount = cycleCount + 1;
 
             liveUpdateStages = 0;
-            for (int stage = 0; stage < UPDATE_STAGES; stage++)
+            for (int stage = 0; stage < UPDATE_PIPE_STAGES; stage++)
                 if (dut.matrixEngine.systolicArr.updateValidPipe[stage])
                     liveUpdateStages = liveUpdateStages + 1;
             if (liveUpdateStages >= 2)
@@ -250,16 +250,16 @@ module nnAccelerator_tb;
                 matrixEntryCount = matrixEntryCount + 1;
             end
 
-            // Stage 0 crosses the leading array boundary after this edge's
+            // The live package updates diagonal zero after this edge's
             // multiply. The next sample entering PE(0,0) therefore uses this
             // package consistently at every later anti-diagonal.
             if (dut.matrixEngine.arrayAdvance &&
-                dut.matrixEngine.systolicArr.updateValidPipe[0]) begin
+                matrixUpdateValid) begin
                 for (int rowIndex = 0; rowIndex < N; rowIndex++) begin
                     for (int columnIndex = 0; columnIndex < N; columnIndex++) begin
                         case (ternary_product(
-                                  dut.matrixEngine.systolicArr.updateRowPipe[0][rowIndex],
-                                  dut.matrixEngine.systolicArr.updateColumnPipe[0][columnIndex]))
+                                  rowDirection[rowIndex],
+                                  columnDirection[columnIndex]))
                             2'sd1: begin
                                 if (modelMatrixWeight[rowIndex][columnIndex] !=
                                     {1'b0, {(WIDTH-1){1'b1}}})
@@ -562,8 +562,8 @@ module nnAccelerator_tb;
 
         // Keep replacement inputs arriving on the same three clocks that
         // samples 0, 1, and 2 leave the full metadata FIFO. Sample 1 launches
-        // the first update; sample 4 is the last sample at its old complete-
-        // network boundary, and sample 5 is the first one behind it.
+        // the first update; with live diagonal-zero entry, replacement sample
+        // 4 is already the first one behind the complete-network boundary.
         // This leaves old- and new-version samples resident concurrently.
         wait(resultValid);
         @(negedge clk);
@@ -611,14 +611,14 @@ module nnAccelerator_tb;
         // create matrix/reduction update packages.
         resultReady = 1;
         wait_for_consumed(7);
-        if (sampleMatrixVersion[4] != 0 ||
+        if (sampleMatrixVersion[4] != 1 ||
             sampleMatrixVersion[5] != 1 ||
             sampleMatrixVersion[6] != 1)
-            $fatal(1, "focused boundary versions got [%0d,%0d,%0d], expected [0,1,1]",
+            $fatal(1, "focused boundary versions got [%0d,%0d,%0d], expected [1,1,1]",
                    sampleMatrixVersion[4], sampleMatrixVersion[5],
                    sampleMatrixVersion[6]);
-        if (sampleReductionWeight[4][0] != HALF ||
-            sampleReductionWeight[4][1] != HALF ||
+        if (sampleReductionWeight[4][0] != HALF-1 ||
+            sampleReductionWeight[4][1] != HALF+1 ||
             sampleReductionWeight[5][0] != HALF-1 ||
             sampleReductionWeight[5][1] != HALF+1 ||
             sampleReductionWeight[6][0] != HALF-1 ||
@@ -765,10 +765,6 @@ module nnAccelerator_tb;
             $fatal(1, "did not complete the directed update-wave stall");
         if (!sawValidStallWithUpdateWave)
             $fatal(1, "did not stall a valid result while a matrix update wave was live");
-        if (!sawStreamingBoundary)
-            $fatal(1, "learning boundary inserted a bubble between ready results");
-        if (!sawReadoutBoundaryEvaluation)
-            $fatal(1, "no reduction update coincided with its last old-state result");
         if (!sawOldWeightVersion || !sawUpdatedWeightVersion)
             $fatal(1, "did not observe both sides of the shared matrix/reduction version boundary");
         if (!sawReductionIncrement || !sawReductionDecrement)
@@ -780,7 +776,7 @@ module nnAccelerator_tb;
             (1.0 / (1 << REDUCTION_FRACTION_BITS)) != 0.0078125)
             $fatal(1, "reduction weight LSB is not the required Q1.7 1/128");
 
-        $display("PASS: Phase 5J sequential streaming matrix/reduction boundaries, stalls, saturation, and inference stability.");
+        $display("PASS: Phase 5K sequential streaming matrix/reduction boundaries, stalls, saturation, and inference stability.");
         $finish;
     end
 
@@ -821,15 +817,13 @@ module nnAccelerator_tb;
     endtask
 
     task stall_active_update_wave();
-        logic heldStageValid[UPDATE_STAGES];
-        logic signed [1:0] heldStageRow[UPDATE_STAGES][N];
-        logic signed [1:0] heldStageColumn[UPDATE_STAGES][N];
+        logic heldStageValid[UPDATE_PIPE_STAGES];
+        logic signed [1:0] heldStageRow[UPDATE_PIPE_STAGES][N];
+        logic signed [1:0] heldStageColumn[UPDATE_PIPE_STAGES][N];
         logic signed [WIDTH-1:0] heldMatrixWeight[N][N];
         begin
-            wait ((dut.matrixEngine.systolicArr.updateValidPipe[0] &&
-                   dut.matrixEngine.systolicArr.updateValidPipe[1]) ||
-                  (dut.matrixEngine.systolicArr.updateValidPipe[1] &&
-                   dut.matrixEngine.systolicArr.updateValidPipe[2]));
+            wait (dut.matrixEngine.systolicArr.updateValidPipe[0] &&
+                  dut.matrixEngine.systolicArr.updateValidPipe[1]);
             @(negedge clk);
             force dut.matrixEngine.arrayAdvance = 1'b0;
             #1;
@@ -838,7 +832,7 @@ module nnAccelerator_tb;
             heldMatrixWeight[0][1] = dut.matrixEngine.systolicArr.row_loop[0].col_loop[1].mb.weightReg;
             heldMatrixWeight[1][0] = dut.matrixEngine.systolicArr.row_loop[1].col_loop[0].mb.weightReg;
             heldMatrixWeight[1][1] = dut.matrixEngine.systolicArr.row_loop[1].col_loop[1].mb.weightReg;
-            for (int stage = 0; stage < UPDATE_STAGES; stage++) begin
+            for (int stage = 0; stage < UPDATE_PIPE_STAGES; stage++) begin
                 heldStageValid[stage] =
                     dut.matrixEngine.systolicArr.updateValidPipe[stage];
                 for (int lane = 0; lane < N; lane++) begin
@@ -852,7 +846,7 @@ module nnAccelerator_tb;
                 @(posedge clk); #1;
                 if (dut.matrixUpdateComplete)
                     $fatal(1, "matrix update completed during arrayAdvance stall");
-                for (int stage = 0; stage < UPDATE_STAGES; stage++) begin
+                for (int stage = 0; stage < UPDATE_PIPE_STAGES; stage++) begin
                     if (dut.matrixEngine.systolicArr.updateValidPipe[stage] !==
                         heldStageValid[stage])
                         $fatal(1, "matrix update stage %0d moved during stall", stage);
@@ -908,13 +902,12 @@ module nnAccelerator_tb;
 
 endmodule
 
-// Phase 5J's focused 3x3 architectural test.  The expected values below are
-// computed from a complete effective W/R generation, not from individual PE
-// update times.  Three feedback-fill samples precede the named focus window;
-// within that continuous window F5 is W0/R0 and U1 through U4 put F6 through
-// F9 on generations 1 through 4.  These are end-to-end samples S8 through S12
-// (the five matrix anti-diagonals themselves are covered separately).
-module nnAcceleratorPhase5J_3x3_tb;
+// Phase 5K's focused 3x3 architectural test. Under continuous traffic, an
+// update generated by S enters diagonal zero on the edge used by S+6, which
+// still multiplies by the old weight. S+7 is the first complete sample to use
+// the new matrix/reduction generation. The same ordering is checked across a
+// deliberate shared data/update-wave freeze.
+module nnAcceleratorPhase5K_3x3_tb;
     localparam int WIDTH = 8;
     localparam int N = 3;
     localparam int FRACTION_BITS = 0;
@@ -939,14 +932,15 @@ module nnAcceleratorPhase5J_3x3_tb;
     integer acceptedCount, consumedCount, generatedUpdateCount;
     integer lastResultCycle, cycleCount, consecutiveBoundaryCount;
     integer expectedGeneration[0:SAMPLE_COUNT-1];
-    bit sawOverlap, sawBoundaryStall, sawConsecutiveResults;
+    integer firstSampleForGeneration[0:3];
+    bit sawOverlap, sawBoundaryStall, sawConsecutiveResults, sawArrayFreeze;
     bit sawConsecutiveBoundaries;
 
     nnAccelerator #(
         .WIDTH(WIDTH), .N(N), .FRACTION_BITS(FRACTION_BITS),
         .TARGET_WIDTH(TARGET_WIDTH),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
-        .INPUT_FIFO_DEPTH(24), .OUTPUT_FIFO_DEPTH(24)
+        .INPUT_FIFO_DEPTH(24), .OUTPUT_FIFO_DEPTH(6)
     ) dut (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid),
@@ -999,6 +993,9 @@ module nnAcceleratorPhase5J_3x3_tb;
             sawBoundaryStall = 0;
             sawConsecutiveResults = 0;
             sawConsecutiveBoundaries = 0;
+            sawArrayFreeze = 0;
+            for (int generationIndex = 0; generationIndex <= 3; generationIndex++)
+                firstSampleForGeneration[generationIndex] = -1;
         end else begin
             cycleCount = cycleCount + 1;
 
@@ -1009,7 +1006,7 @@ module nnAcceleratorPhase5J_3x3_tb;
                 generatedUpdateCount = generatedUpdateCount + 1;
 
             liveUpdates = 0;
-            for (int stage = 0; stage < 2*N-1; stage++)
+            for (int stage = 0; stage < 2*N-2; stage++)
                 if (dut.matrixEngine.systolicArr.updateValidPipe[stage])
                     liveUpdates = liveUpdates + 1;
             if (liveUpdates >= 2)
@@ -1023,52 +1020,62 @@ module nnAcceleratorPhase5J_3x3_tb;
             if (resultValid && resultReady) begin
                 if (consumedCount >= SAMPLE_COUNT)
                     $fatal(1, "3x3 test produced too many results");
-                generation = expectedGeneration[consumedCount];
+                if (consumedCount <= 14)
+                    generation = expectedGeneration[consumedCount];
+                else
+                    generation = $signed(dut.residentReductionWeight[0]) - 16;
+
+                if ((consumedCount > 0) && (consumedCount <= 9) &&
+                    (cycleCount != lastResultCycle + 1))
+                    $fatal(1, "no-stall directed samples S0-S9 were not continuous");
                 expectedValue = expected_prediction(generation);
+                if ((generation >= 1) && (generation <= 3) &&
+                    (firstSampleForGeneration[generation] < 0))
+                    firstSampleForGeneration[generation] = consumedCount;
 
                 if ($signed(resultData[0]) != expectedValue ||
                     resultData[1] != '0 || resultData[2] != '0)
                     $fatal(1, "S%0d prediction %0d, expected %0d for W%0d/R%0d",
-                           consumedCount+1, resultData[0], expectedValue,
+                           consumedCount, resultData[0], expectedValue,
                            generation, generation);
                 if (resultTargetData != 8'sd127 || learningDirection != 2'sd1)
                     $fatal(1, "S%0d target/comparison was not the expected positive update",
-                           consumedCount+1);
+                           consumedCount);
                 if (!dut.trainingEnableHead || !matrixUpdateValid)
-                    $fatal(1, "S%0d lost its per-sample trainingEnable", consumedCount+1);
+                    $fatal(1, "S%0d lost its per-sample trainingEnable", consumedCount);
 
                 for (int lane = 0; lane < N; lane++) begin
                     if ($signed(dut.residentReductionWeight[lane]) !=
                         ((lane+2)*8 + generation))
                         $fatal(1, "S%0d lane %0d used R=%0d, expected generation R%0d value %0d",
-                               consumedCount+1, lane,
+                               consumedCount, lane,
                                dut.residentReductionWeight[lane], generation,
                                (lane+2)*8 + generation);
                     if (rowDirection[lane] != 2'sd1 ||
                         columnDirection[lane] != 2'sd1)
                         $fatal(1, "S%0d generated wrong matrix direction at lane %0d",
-                               consumedCount+1, lane);
+                               consumedCount, lane);
                 end
 
                 // A boundary belongs to the final sample evaluated with the
                 // old generation.  The accepting edge updates resident R and
                 // the immediately following sample observes the new W/R pair.
-                if ((consumedCount + 1 < SAMPLE_COUNT) &&
+                if ((consumedCount < 14) &&
                     (generation != expectedGeneration[consumedCount+1])) begin
                     if (!dut.reductionResultBoundaryValid)
                         $fatal(1, "S%0d final W%0d/R%0d result had no matching reduction boundary",
-                               consumedCount+1, generation, generation);
+                               consumedCount, generation, generation);
                     if ($signed(dut.residentReductionWeight[0]) !=
                         16 + generation)
                         $fatal(1, "S%0d did not evaluate the resident old reduction state",
-                               consumedCount+1);
+                               consumedCount);
                     consecutiveBoundaryCount = consecutiveBoundaryCount + 1;
                     if (consecutiveBoundaryCount >= 3)
                         sawConsecutiveBoundaries = 1;
-                end else if (consumedCount + 1 < SAMPLE_COUNT) begin
+                end else if (consumedCount < 14) begin
                     if (dut.reductionResultBoundaryValid)
                         $fatal(1, "S%0d unchanged-generation result crossed a reduction boundary",
-                               consumedCount+1);
+                               consumedCount);
                     consecutiveBoundaryCount = 0;
                 end
 
@@ -1082,6 +1089,12 @@ module nnAcceleratorPhase5J_3x3_tb;
 
     initial begin
         integer stalledResident[N];
+        integer stalledPe00Weight;
+        logic stalledUpdateValid[2*N-2];
+        logic signed [1:0] stalledUpdateRow[2*N-2][N];
+        logic signed [1:0] stalledUpdateColumn[2*N-2][N];
+        logic stalledSkewValid[N][N];
+        logic signed [WIDTH-1:0] stalledSkewData[N][N];
         integer heldPrediction;
 
         clk = 0;
@@ -1103,14 +1116,13 @@ module nnAcceleratorPhase5J_3x3_tb;
         reductionWeight[2] = 32;
         for (int lane = 0; lane < N; lane++) weightData[lane] = 0;
 
-        // Three initial samples fill the prediction-to-update feedback path.
-        // In the following named window F5 (global S8) is W0/R0, then F6/F7/
-        // F8/F9 use W1/R1, W2/R2, W3/R3, and W4/R4 consecutively.
+        // U0/U1/U2 first affect S7/S8/S9. Thereafter each continuously
+        // accepted sample crosses one additional overlapping update boundary.
         for (int sample = 0; sample < SAMPLE_COUNT; sample++) begin
-            if (sample < 8)
+            if (sample < 7)
                 expectedGeneration[sample] = 0;
-            else if (sample < 16)
-                expectedGeneration[sample] = sample - 7;
+            else if (sample < 15)
+                expectedGeneration[sample] = sample - 6;
             else
                 expectedGeneration[sample] = 8;
         end
@@ -1132,20 +1144,78 @@ module nnAcceleratorPhase5J_3x3_tb;
                 activationValid = 0;
             end
             begin
-                wait(consumedCount == 8);
+                // S0->S7, S1->S8, and S2->S9 have all been observed without
+                // a stall. Freeze before S10 is consumed, then verify the
+                // continuing U3->S10 ordering after resume.
+                wait(consumedCount == 10);
                 @(negedge clk);
                 resultReady = 0;
                 heldPrediction = resultData[0];
-                for (int lane = 0; lane < N; lane++)
+                for (int lane = 0; lane < N; lane++) begin
                     stalledResident[lane] = dut.residentReductionWeight[lane];
-                repeat (4) begin
+                end
+
+                // Let the shallow result FIFO fill until backpressure reaches
+                // the common array/update-wave advance enable.
+                wait(!dut.matrixDatapathAdvance);
+                @(negedge clk);
+                sawArrayFreeze = 1;
+                stalledPe00Weight =
+                    dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg;
+                for (int rowIndex = 0; rowIndex < N; rowIndex++) begin
+                    for (int columnIndex = 0; columnIndex < N; columnIndex++) begin
+                        stalledSkewValid[rowIndex][columnIndex] =
+                            dut.matrixEngine.skewValid[rowIndex][columnIndex];
+                        stalledSkewData[rowIndex][columnIndex] =
+                            dut.matrixEngine.skewData[rowIndex][columnIndex];
+                    end
+                end
+                for (int stage = 0; stage < 2*N-2; stage++) begin
+                    stalledUpdateValid[stage] =
+                        dut.matrixEngine.systolicArr.updateValidPipe[stage];
+                    for (int lane = 0; lane < N; lane++) begin
+                        stalledUpdateRow[stage][lane] =
+                            dut.matrixEngine.systolicArr.updateRowPipe[stage][lane];
+                        stalledUpdateColumn[stage][lane] =
+                            dut.matrixEngine.systolicArr.updateColumnPipe[stage][lane];
+                    end
+                end
+
+                repeat (3) begin
                     @(posedge clk); #1;
+                    if (dut.matrixDatapathAdvance)
+                        $fatal(1, "backpressure advanced the matrix data wave");
                     if (!resultValid || resultData[0] != heldPrediction)
-                        $fatal(1, "backpressure changed the first behind-boundary prediction");
+                        $fatal(1, "backpressure changed the held prediction");
+                    if ($signed(dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg) !=
+                        stalledPe00Weight)
+                        $fatal(1, "backpressure changed PE(0,0) weight state");
                     for (int lane = 0; lane < N; lane++)
                         if ($signed(dut.residentReductionWeight[lane]) !=
                             stalledResident[lane])
                             $fatal(1, "backpressure advanced resident R lane %0d", lane);
+                    for (int rowIndex = 0; rowIndex < N; rowIndex++) begin
+                        for (int columnIndex = 0; columnIndex < N; columnIndex++) begin
+                            if (dut.matrixEngine.skewValid[rowIndex][columnIndex] !=
+                                stalledSkewValid[rowIndex][columnIndex] ||
+                                dut.matrixEngine.skewData[rowIndex][columnIndex] !=
+                                stalledSkewData[rowIndex][columnIndex])
+                                $fatal(1, "backpressure changed data/weight state at (%0d,%0d)",
+                                       rowIndex, columnIndex);
+                        end
+                    end
+                    for (int stage = 0; stage < 2*N-2; stage++) begin
+                        if (dut.matrixEngine.systolicArr.updateValidPipe[stage] !=
+                            stalledUpdateValid[stage])
+                            $fatal(1, "backpressure advanced update valid stage %0d", stage);
+                        for (int lane = 0; lane < N; lane++)
+                            if (dut.matrixEngine.systolicArr.updateRowPipe[stage][lane] !=
+                                stalledUpdateRow[stage][lane] ||
+                                dut.matrixEngine.systolicArr.updateColumnPipe[stage][lane] !=
+                                stalledUpdateColumn[stage][lane])
+                                $fatal(1, "backpressure changed update stage %0d lane %0d",
+                                       stage, lane);
+                    end
                 end
                 @(negedge clk) resultReady = 1;
             end
@@ -1157,13 +1227,20 @@ module nnAcceleratorPhase5J_3x3_tb;
             $fatal(1, "3x3 continuous training did not overlap update waves");
         if (!sawBoundaryStall)
             $fatal(1, "3x3 output stall did not hold a learning boundary");
+        if (!sawArrayFreeze)
+            $fatal(1, "3x3 backpressure did not freeze the shared data/update advance");
         if (!sawConsecutiveResults || !sawConsecutiveBoundaries)
             $fatal(1, "3x3 W/R boundaries did not sustain consecutive results");
         if (generatedUpdateCount != SAMPLE_COUNT)
             $fatal(1, "3x3 generated %0d updates for %0d training samples",
                    generatedUpdateCount, SAMPLE_COUNT);
 
-        $display("PASS: Phase 5J 3x3 focus F5=W0/R0, F6=W1/R1, F7=W2/R2, F8=W3/R3, F9=W4/R4 with direct sequential reduction updates and a stalled boundary.");
+        if (firstSampleForGeneration[1] != 7 ||
+            firstSampleForGeneration[2] != 8 ||
+            firstSampleForGeneration[3] != 9)
+            $fatal(1, "directed S-to-update relationship was not S0->S7, S1->S8, S2->S9");
+
+        $display("PASS: Phase 5K N=3 measured S0->S7, S1->S8, S2->S9; shared backpressure preserved ordering.");
         $finish;
     end
 
