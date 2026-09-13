@@ -27,7 +27,7 @@ module matrixMultiplierWeightStationary #(
     output logic                         matrixUpdateComplete,
     output logic                         datapathAdvance,
     output logic                         resultEnqueue,
-    input  logic                         resultSidebandFull,
+    output logic signed [2*WIDTH+$clog2(N)-1:0] resultEnqueueData [N],
     output logic                         reductionUpdateBoundaryValid,
     output logic signed [2*N-1:0]        reductionUpdateBoundaryData
 );
@@ -50,6 +50,12 @@ module matrixMultiplierWeightStationary #(
     logic activationFull[N], activationEmpty[N];
     logic signed [RESULT_WIDTH-1:0] resultData_FifoToOutput[N];
     logic outputFull[N], outputEmpty[N];
+    localparam int RESULT_ALIGN_STORAGE = (N > 1) ? N-1 : 1;
+    logic signed [RESULT_WIDTH-1:0]
+        resultAlignData[N][RESULT_ALIGN_STORAGE];
+    logic resultAlignValid[N][RESULT_ALIGN_STORAGE];
+    logic signed [RESULT_WIDTH-1:0] resultAlignedData[N];
+    logic resultAlignedValid[N], resultAlignedAllValid, resultAlignBusy;
     logic signed [WIDTH-1:0] skewData[N][N];
     logic skewValid[N][N];
     logic signed [WIDTH-1:0] rowData_OrchToSyst[N];
@@ -57,6 +63,41 @@ module matrixMultiplierWeightStationary #(
     logic signed [RESULT_WIDTH-1:0] resultData_SystToFifo[N];
     logic validData_SystToFifo[N];
     logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked;
+
+    // The systolic columns finish one cycle apart.  Delay the earlier columns
+    // by the missing suffix of that fixed latency so the normal result FIFO
+    // accepts complete vectors atomically.  These registers are ordinary
+    // datapath state and use the same advance enable as the array.
+    generate
+        for (genvar alignLane = 0; alignLane < N; alignLane++) begin : result_alignment
+            if (alignLane < N-1) begin : delayed_column
+                localparam int ALIGN_DELAY = N-1-alignLane;
+                assign resultAlignedData[alignLane] =
+                    resultAlignData[alignLane][ALIGN_DELAY-1];
+                assign resultAlignedValid[alignLane] =
+                    resultAlignValid[alignLane][ALIGN_DELAY-1];
+            end else begin : last_column
+                assign resultAlignedData[alignLane] =
+                    resultData_SystToFifo[alignLane];
+                assign resultAlignedValid[alignLane] =
+                    validData_SystToFifo[alignLane];
+            end
+        end
+    endgenerate
+
+    always_comb begin
+        resultAlignedAllValid = 1'b1;
+        for (int lane = 0; lane < N; lane++)
+            resultAlignedAllValid &= resultAlignedValid[lane];
+    end
+
+    always_comb begin
+        resultAlignBusy = 1'b0;
+        for (int lane = 0; lane < N; lane++)
+            for (int stage = 0; stage < RESULT_ALIGN_STORAGE; stage++)
+                if (stage < N-1-lane)
+                    resultAlignBusy |= resultAlignValid[lane][stage];
+    end
 
     always_comb begin
         allWeightValid      = 1;
@@ -77,16 +118,12 @@ module matrixMultiplierWeightStationary #(
             allActivationEmpty  &= activationEmpty[i];
             allOutputValid      &= !outputEmpty[i];
             allOutputEmpty      &= outputEmpty[i];
-            outputBlocked       |= validData_SystToFifo[i] && outputFull[i] && !outputPop;
+            outputBlocked       |= resultAlignedValid[i] && outputFull[i] && !outputPop;
 
             for (int d = 0; d < N; d++) begin
                 skewBusy |= skewValid[i][d];
             end
         end
-
-        // The ordered readout-event FIFO also carries update-only boundary
-        // events, so a full sideband must freeze every kind of array advance.
-        outputBlocked |= resultSidebandFull && !outputPop;
 
     end
 
@@ -100,7 +137,17 @@ module matrixMultiplierWeightStationary #(
     assign arrayAdvance     = !weightsLoaded ? weightPop : !outputBlocked;
     assign matrixUpdateAccepted = matrixUpdateValid && arrayAdvance;
     assign datapathAdvance = arrayAdvance;
-    assign resultEnqueue = arrayAdvance && validData_SystToFifo[0];
+    assign resultEnqueue = arrayAdvance && resultAlignedAllValid;
+    // Expose the complete result vector at the same edge on which the normal
+    // output FIFOs accept it. The accelerator uses this only to capture the
+    // reduction metadata alongside the ordinary result; it is not a second
+    // flow-control path.
+    genvar enqueueLane;
+    generate
+        for (enqueueLane = 0; enqueueLane < N; enqueueLane = enqueueLane + 1) begin : enqueue_result_data
+            assign resultEnqueueData[enqueueLane] = resultAlignedData[enqueueLane];
+        end
+    endgenerate
     // The learning package enters PE(0,0) directly on this advancing edge.
     // Launch the matching reduction boundary from that same live package so
     // the matrix and reduction state transitions remain aligned downstream.
@@ -109,7 +156,7 @@ module matrixMultiplierWeightStationary #(
     assign activationPop    = weightsLoaded && allActivationValid && arrayAdvance;
     assign weightPop        = !weightsLoaded && allWeightValid;
     assign reloadReady      = weightsLoaded && allActivationEmpty && !skewBusy &&
-                              !pipelineBusy && allOutputEmpty &&
+                              !pipelineBusy && !resultAlignBusy && allOutputEmpty &&
                               (acceptedActivationRow == 0);
 
     genvar fifoIndex;
@@ -129,7 +176,7 @@ module matrixMultiplierWeightStationary #(
             );
             signedFifo #(.WIDTH(RESULT_WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)) outputFifo (
                 .clk(clk), .rst_n(rst_n),
-                .push(arrayAdvance && validData_SystToFifo[fifoIndex]), .pushData(resultData_SystToFifo[fifoIndex]),
+                .push(arrayAdvance && resultAlignedAllValid), .pushData(resultAlignedData[fifoIndex]),
                 .pop(outputPop), .popData(resultData_FifoToOutput[fifoIndex]), .full(outputFull[fifoIndex]),
                 .empty(outputEmpty[fifoIndex]), .values()
             );
@@ -152,6 +199,10 @@ module matrixMultiplierWeightStationary #(
             transmittedResultRow <= 0;
 
             for (int lane = 0; lane < N; lane++) begin
+                for (int stage = 0; stage < RESULT_ALIGN_STORAGE; stage++) begin
+                    resultAlignData[lane][stage]  <= 0;
+                    resultAlignValid[lane][stage] <= 0;
+                end
                 for (int d = 0; d < N; d++) begin
                     skewData[lane][d]  <= 0;
                     skewValid[lane][d] <= 0;
@@ -181,6 +232,16 @@ module matrixMultiplierWeightStationary #(
             end
 
             if (weightsLoaded && arrayAdvance) begin
+                for (int lane = 0; lane < N-1; lane++) begin
+                    resultAlignData[lane][0] <= resultData_SystToFifo[lane];
+                    resultAlignValid[lane][0] <= validData_SystToFifo[lane];
+                    for (int stage = 1; stage < N-1-lane; stage++) begin
+                        resultAlignData[lane][stage] <=
+                            resultAlignData[lane][stage-1];
+                        resultAlignValid[lane][stage] <=
+                            resultAlignValid[lane][stage-1];
+                    end
+                end
                 for (int lane = 0; lane < N; lane++) begin
                     skewData[lane][0]  <= activationData_FifoToOrch[lane];
                     skewValid[lane][0] <= activationPop;

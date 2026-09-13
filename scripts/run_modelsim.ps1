@@ -52,6 +52,7 @@ $sources = @(
     (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationarySPI_tb.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/nnAccelerator_tb.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/nnAcceleratorPhase5L_tb.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/matrixWeightUpdateWave_tb.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/weightedVectorReduction_tb.sv")
 )
@@ -84,6 +85,10 @@ try {
         -l accelerator-phase5k-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
     if ($LASTEXITCODE -ne 0) { throw "Phase 5K 3x3 learning-boundary regression failed." }
 
+    & $vsim -c work.nnAcceleratorPhase5L_tb `
+        -l accelerator-phase5l-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
+    if ($LASTEXITCODE -ne 0) { throw "Phase 5L inference/training throughput regression failed." }
+
     & $vsim -c work.matrixWeightUpdateWave_tb `
         -l matrix-update-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
     if ($LASTEXITCODE -ne 0) { throw "Matrix update-wave regression failed." }
@@ -92,4 +97,4 @@ finally {
     Pop-Location
 }
 
-Write-Output "PASS: core, SPI, reduction, Phase 5K accelerator, and matrix update-wave regressions completed."
+Write-Output "PASS: core, SPI, reduction, Phase 5K/5L accelerator, and matrix update-wave regressions completed."

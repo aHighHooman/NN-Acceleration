@@ -30,7 +30,7 @@ module nn_uvm_tb_top;
         .matrixUpdateComplete(),
         .datapathAdvance(),
         .resultEnqueue(),
-        .resultSidebandFull(1'b0),
+        .resultEnqueueData(),
         .reductionUpdateBoundaryValid(),
         .reductionUpdateBoundaryData(),
         .resultData(bus.resultData),

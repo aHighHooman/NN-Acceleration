@@ -43,16 +43,14 @@ module nnAccelerator_tb;
     integer sampleMatrixVersion[0:SAMPLE_COUNT-1];
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
         sampleReductionWeight[0:SAMPLE_COUNT-1][N];
-    integer sampleReductionVersion[0:SAMPLE_COUNT-1];
     logic signed [WIDTH-1:0] modelMatrixWeight[N][N];
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] modelReductionWeight[N];
-    logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
-        architecturalReductionWeight[0:SAMPLE_COUNT][N];
     logic signed [1:0] pendingReductionDirection[0:SAMPLE_COUNT-1][N];
     integer acceptedUpdateSampleIndex[0:SAMPLE_COUNT-1];
     integer reductionQueueHead, reductionQueueTail, reductionQueueCount;
-    integer matrixEntryCount, acceptedUpdateCount, completedUpdateCount;
-    integer matrixVersion, matrixGeneration;
+    integer matrixEntryCount, resultEnqueueCount;
+    integer acceptedUpdateCount, completedUpdateCount;
+    integer matrixVersion;
     integer lastConsumedCycle;
     bit sawBackToBack, sawBubble;
     bit sawPositive, sawZero, sawNegative;
@@ -149,7 +147,7 @@ module nnAccelerator_tb;
             acceptedUpdateCount = 0;
             completedUpdateCount = 0;
             matrixVersion = 0;
-            matrixGeneration = 0;
+            resultEnqueueCount = 0;
             lastConsumedCycle = -2;
             lastAcceptedCycle = -2;
             sawBackToBack     = 0;
@@ -171,8 +169,6 @@ module nnAccelerator_tb;
             reductionQueueCount = 0;
             for (int lane = 0; lane < N; lane++) begin
                 modelReductionWeight[lane] = 0;
-                for (int generation = 0; generation <= SAMPLE_COUNT; generation++)
-                    architecturalReductionWeight[generation][lane] = 0;
             end
             modelMatrixWeight[0][0] = 2*SCALE;
             modelMatrixWeight[0][1] = -1*SCALE;
@@ -208,11 +204,6 @@ module nnAccelerator_tb;
                 $fatal(1, "matrix update package was presented while the array was stalled");
             if (dut.matrixUpdateAccepted !== matrixUpdateValid)
                 $fatal(1, "matrix update acceptance did not match the generated package");
-            if (dut.matrixResultValid && !dut.reductionEventEmpty &&
-                !dut.reductionResultSampleValid && resultValid)
-                $fatal(1, "an update-only event exposed a matrix result early");
-            if (dut.samplePop && dut.reductionResultBoundaryValid)
-                sawReadoutBoundaryEvaluation = 1;
             for (int lane = 0; lane < N; lane++) begin
                 if (dut.residentReductionWeight[lane] !==
                     modelReductionWeight[lane])
@@ -224,11 +215,6 @@ module nnAccelerator_tb;
             if (loadReductionWeights) begin
                 for (int lane = 0; lane < N; lane++) begin
                     modelReductionWeight[lane] = reductionWeight[lane];
-                    // Loads in this directed test occur only after all pending
-                    // update waves drain. They replace the reduction half of
-                    // the current complete architectural network version.
-                    architecturalReductionWeight[acceptedUpdateCount][lane] =
-                        reductionWeight[lane];
                 end
             end
 
@@ -243,11 +229,26 @@ module nnAccelerator_tb;
                         sampleMatrixWeight[matrixEntryCount][rowIndex][columnIndex] =
                             modelMatrixWeight[rowIndex][columnIndex];
                 sampleMatrixVersion[matrixEntryCount] = matrixVersion;
-                for (int lane = 0; lane < N; lane++)
-                    sampleReductionWeight[matrixEntryCount][lane] =
-                        architecturalReductionWeight[matrixGeneration][lane];
-                sampleReductionVersion[matrixEntryCount] = matrixVersion;
                 matrixEntryCount = matrixEntryCount + 1;
+            end
+
+            // A result vector is the first point at which all systolic lanes
+            // for one sample are complete. Snapshot the resident reduction
+            // vector on that ordinary result-enqueue edge, exactly beside the
+            // prediction metadata used by the DUT.
+            if (dut.matrixResultEnqueue) begin
+                if (resultEnqueueCount >= matrixEntryCount)
+                    $fatal(1, "result vector was enqueued without a matrix sample");
+                for (int lane = 0; lane < N; lane++) begin
+                    sampleReductionWeight[resultEnqueueCount][lane] =
+                        dut.residentReductionWeight[lane];
+                    if (dut.residentReductionWeight[lane] !==
+                        modelReductionWeight[lane])
+                        $fatal(1, "reduction snapshot lane %0d got %0d, expected model %0d",
+                               lane, dut.residentReductionWeight[lane],
+                               modelReductionWeight[lane]);
+                end
+                resultEnqueueCount = resultEnqueueCount + 1;
             end
 
             // The live package updates diagonal zero after this edge's
@@ -278,7 +279,6 @@ module nnAccelerator_tb;
                     end
                 end
                 matrixVersion = matrixVersion + 1;
-                matrixGeneration = matrixGeneration + 1;
             end
 
             if (activationValid && activationReady) begin
@@ -318,18 +318,13 @@ module nnAccelerator_tb;
                     $fatal(1, "sample %0d matrix update valid got %0b, expected %0b",
                            consumedCount, matrixUpdateValid,
                            expectedTrainingEnable[consumedCount]);
-                if (sampleMatrixVersion[consumedCount] !=
-                    sampleReductionVersion[consumedCount])
-                    $fatal(1, "sample %0d has mismatched snapshotted matrix/reduction versions %0d/%0d",
-                           consumedCount, sampleMatrixVersion[consumedCount],
-                           sampleReductionVersion[consumedCount]);
                 for (int lane = 0; lane < N; lane++)
-                    if (dut.residentReductionWeight[lane] !==
-                        sampleReductionWeight[consumedCount][lane])
-                        $fatal(1, "sample %0d reduction snapshot lane %0d got %0d, expected %0d",
+                    if (dut.reductionWeightSignHead[2*lane +: 2] !==
+                        ternary_sign(sampleReductionWeight[consumedCount][lane]))
+                        $fatal(1, "sample %0d reduction sign lane %0d got %0d, expected %0d",
                                consumedCount, lane,
-                               dut.residentReductionWeight[lane],
-                               sampleReductionWeight[consumedCount][lane]);
+                               dut.reductionWeightSignHead[2*lane +: 2],
+                               ternary_sign(sampleReductionWeight[consumedCount][lane]));
                 if (sampleMatrixVersion[consumedCount] == 0)
                     sawOldWeightVersion = 1;
                 else
@@ -378,14 +373,15 @@ module nnAccelerator_tb;
                         $fatal(1, "row direction %0d:%0d got %0d",
                                consumedCount, lane, rowDirection[lane]);
                     if (columnDirection[lane] !==
-                        ((passThrough || (rawResult[lane] > 0))
-                         ? ternary_product(
-                               expectedDirectionNow,
-                               ternary_sign(
-                                   sampleReductionWeight[consumedCount][lane]))
-                         : 2'sd0))
+                         ((passThrough || (rawResult[lane] > 0))
+                          ? ternary_product(
+                                expectedDirectionNow,
+                                ternary_sign(
+                                    sampleReductionWeight[consumedCount][lane]))
+                          : 2'sd0)) begin
                         $fatal(1, "column direction %0d:%0d got %0d",
                                consumedCount, lane, columnDirection[lane]);
+                    end
 
                     if (expectedTrainingEnable[consumedCount])
                         pendingReductionDirection[reductionQueueTail][lane] =
@@ -398,30 +394,6 @@ module nnAccelerator_tb;
 
                 if (expectedTrainingEnable[consumedCount]) begin
                     acceptedUpdateSampleIndex[acceptedUpdateCount] = consumedCount;
-                    // A training transaction defines the reduction half of
-                    // the next architectural network version immediately from
-                    // the sample snapshot and its independently predicted
-                    // learning direction. DUT reduction commit timing is not
-                    // part of this expected-value model.
-                    for (int lane = 0; lane < N; lane++) begin
-                        architecturalReductionWeight[acceptedUpdateCount+1][lane] =
-                            architecturalReductionWeight[acceptedUpdateCount][lane];
-                        case (pendingReductionDirection[reductionQueueTail][lane])
-                            2'sd1:
-                                if (architecturalReductionWeight[acceptedUpdateCount][lane] !=
-                                    {1'b0, {(REDUCTION_WEIGHT_WIDTH-1){1'b1}}})
-                                    architecturalReductionWeight[acceptedUpdateCount+1][lane] =
-                                        architecturalReductionWeight[acceptedUpdateCount][lane] + 1;
-                            -2'sd1:
-                                if (architecturalReductionWeight[acceptedUpdateCount][lane] !=
-                                    {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}})
-                                    architecturalReductionWeight[acceptedUpdateCount+1][lane] =
-                                        architecturalReductionWeight[acceptedUpdateCount][lane] - 1;
-                            default:
-                                architecturalReductionWeight[acceptedUpdateCount+1][lane] =
-                                    architecturalReductionWeight[acceptedUpdateCount][lane];
-                        endcase
-                    end
                     acceptedUpdateCount = acceptedUpdateCount + 1;
                     reductionQueueTail = reductionQueueTail + 1;
                     reductionQueueCount = reductionQueueCount + 1;
@@ -444,13 +416,13 @@ module nnAccelerator_tb;
             end
 
 
-            // The sideband stored with the last old-state result updates the
-            // sole resident vector on that result's accepting edge.
-            if (dut.reductionEventPop && dut.reductionResultBoundaryValid) begin
+            // The compact boundary pipeline updates the sole resident vector
+            // on the advancing edge; this is independent of result readout.
+            if (dut.reductionBoundaryApply) begin
                 if (reductionQueueCount == 0)
                     $fatal(1, "reference reduction queue underflow");
                 for (int lane = 0; lane < N; lane++) begin
-                    if ($signed(dut.reductionResultBoundaryData[2*lane +: 2]) !==
+                    if ($signed(dut.reductionBoundaryDataPipe[2*N-2][2*lane +: 2]) !==
                         pendingReductionDirection[reductionQueueHead][lane])
                         $fatal(1, "reduction boundary package mismatch at lane %0d",
                                lane);
@@ -929,9 +901,10 @@ module nnAcceleratorPhase5K_3x3_tb;
     logic matrixUpdateValid, resultValid, resultReady, resultLast;
     logic weightsLoaded, reloadWeights, reloadReady, passThrough;
 
-    integer acceptedCount, consumedCount, generatedUpdateCount;
+    integer acceptedCount, enqueuedCount, consumedCount, generatedUpdateCount;
     integer lastResultCycle, cycleCount, consecutiveBoundaryCount;
-    integer expectedGeneration[0:SAMPLE_COUNT-1];
+    integer sampleGeneration[0:SAMPLE_COUNT-1];
+    integer sampleMatrixGeneration[0:SAMPLE_COUNT-1];
     integer firstSampleForGeneration[0:3];
     bit sawOverlap, sawBoundaryStall, sawConsecutiveResults, sawArrayFreeze;
     bit sawConsecutiveBoundaries;
@@ -984,6 +957,7 @@ module nnAcceleratorPhase5K_3x3_tb;
 
         if (!rst_n) begin
             acceptedCount = 0;
+            enqueuedCount = 0;
             consumedCount = 0;
             generatedUpdateCount = 0;
             lastResultCycle = -2;
@@ -1012,18 +986,54 @@ module nnAcceleratorPhase5K_3x3_tb;
             if (liveUpdates >= 2)
                 sawOverlap = 1;
 
-            if (!resultReady && !dut.reductionEventEmpty &&
-                dut.reductionResultSampleValid &&
-                dut.reductionResultBoundaryValid)
+            if (dut.reductionBoundaryApply) begin
+                if (!dut.matrixDatapathAdvance)
+                    $fatal(1, "reduction boundary applied while datapath was stalled");
+                consecutiveBoundaryCount = consecutiveBoundaryCount + 1;
+                if (consecutiveBoundaryCount >= 3)
+                    sawConsecutiveBoundaries = 1;
+            end else begin
+                consecutiveBoundaryCount = 0;
+            end
+
+            if (!resultReady && dut.reductionBoundaryValidPipe[2*N-2])
                 sawBoundaryStall = 1;
+
+            // Record the complete network state at ordinary vector enqueue.
+            // This is the state used to form the buffered prediction, so the
+            // result checker does not mistake later resident-R progress for a
+            // learning drain or for the sample's original state.
+            if (dut.matrixResultEnqueue) begin
+                if (enqueuedCount >= SAMPLE_COUNT)
+                    $fatal(1, "3x3 test enqueued too many result vectors");
+                sampleGeneration[enqueuedCount] =
+                    $signed(dut.residentReductionWeight[0]) - 16;
+                for (int lane = 0; lane < N; lane++) begin
+                    if ($signed(dut.residentReductionWeight[lane]) !=
+                        (lane+2)*8 + sampleGeneration[enqueuedCount])
+                        $fatal(1, "enqueue S%0d reduction lane %0d was out of generation with R=%0d",
+                               enqueuedCount, lane,
+                               dut.residentReductionWeight[lane]);
+                end
+                if ((($signed(dut.rawResultEnqueueData[0]) - 30) % 6) != 0)
+                    $fatal(1, "enqueue S%0d produced an unexpected matrix result %0d",
+                           enqueuedCount, dut.rawResultEnqueueData[0]);
+                sampleMatrixGeneration[enqueuedCount] =
+                    ($signed(dut.rawResultEnqueueData[0]) - 30) / 6;
+                if (sampleMatrixGeneration[enqueuedCount] !=
+                    sampleGeneration[enqueuedCount])
+                    $fatal(1, "enqueue S%0d matrix/reduction generations diverged: M%0d R%0d",
+                           enqueuedCount, sampleMatrixGeneration[enqueuedCount],
+                           sampleGeneration[enqueuedCount]);
+                enqueuedCount = enqueuedCount + 1;
+            end
 
             if (resultValid && resultReady) begin
                 if (consumedCount >= SAMPLE_COUNT)
                     $fatal(1, "3x3 test produced too many results");
-                if (consumedCount <= 14)
-                    generation = expectedGeneration[consumedCount];
-                else
-                    generation = $signed(dut.residentReductionWeight[0]) - 16;
+                if (consumedCount >= enqueuedCount)
+                    $fatal(1, "3x3 result was consumed before vector enqueue");
+                generation = sampleGeneration[consumedCount];
 
                 if ((consumedCount > 0) && (consumedCount <= 9) &&
                     (cycleCount != lastResultCycle + 1))
@@ -1045,38 +1055,10 @@ module nnAcceleratorPhase5K_3x3_tb;
                     $fatal(1, "S%0d lost its per-sample trainingEnable", consumedCount);
 
                 for (int lane = 0; lane < N; lane++) begin
-                    if ($signed(dut.residentReductionWeight[lane]) !=
-                        ((lane+2)*8 + generation))
-                        $fatal(1, "S%0d lane %0d used R=%0d, expected generation R%0d value %0d",
-                               consumedCount, lane,
-                               dut.residentReductionWeight[lane], generation,
-                               (lane+2)*8 + generation);
                     if (rowDirection[lane] != 2'sd1 ||
                         columnDirection[lane] != 2'sd1)
                         $fatal(1, "S%0d generated wrong matrix direction at lane %0d",
                                consumedCount, lane);
-                end
-
-                // A boundary belongs to the final sample evaluated with the
-                // old generation.  The accepting edge updates resident R and
-                // the immediately following sample observes the new W/R pair.
-                if ((consumedCount < 14) &&
-                    (generation != expectedGeneration[consumedCount+1])) begin
-                    if (!dut.reductionResultBoundaryValid)
-                        $fatal(1, "S%0d final W%0d/R%0d result had no matching reduction boundary",
-                               consumedCount, generation, generation);
-                    if ($signed(dut.residentReductionWeight[0]) !=
-                        16 + generation)
-                        $fatal(1, "S%0d did not evaluate the resident old reduction state",
-                               consumedCount);
-                    consecutiveBoundaryCount = consecutiveBoundaryCount + 1;
-                    if (consecutiveBoundaryCount >= 3)
-                        sawConsecutiveBoundaries = 1;
-                end else if (consumedCount < 14) begin
-                    if (dut.reductionResultBoundaryValid)
-                        $fatal(1, "S%0d unchanged-generation result crossed a reduction boundary",
-                               consumedCount);
-                    consecutiveBoundaryCount = 0;
                 end
 
                 if (cycleCount == lastResultCycle + 1)
@@ -1095,6 +1077,8 @@ module nnAcceleratorPhase5K_3x3_tb;
         logic signed [1:0] stalledUpdateColumn[2*N-2][N];
         logic stalledSkewValid[N][N];
         logic signed [WIDTH-1:0] stalledSkewData[N][N];
+        logic stalledReductionBoundaryValid[2*N-1];
+        logic signed [2*N-1:0] stalledReductionBoundaryData[2*N-1];
         integer heldPrediction;
 
         clk = 0;
@@ -1115,17 +1099,6 @@ module nnAcceleratorPhase5K_3x3_tb;
         reductionWeight[1] = 24;
         reductionWeight[2] = 32;
         for (int lane = 0; lane < N; lane++) weightData[lane] = 0;
-
-        // U0/U1/U2 first affect S7/S8/S9. Thereafter each continuously
-        // accepted sample crosses one additional overlapping update boundary.
-        for (int sample = 0; sample < SAMPLE_COUNT; sample++) begin
-            if (sample < 7)
-                expectedGeneration[sample] = 0;
-            else if (sample < 15)
-                expectedGeneration[sample] = sample - 6;
-            else
-                expectedGeneration[sample] = 8;
-        end
 
         repeat (3) @(posedge clk);
         @(negedge clk) begin rst_n = 1; loadReductionWeights = 1; end
@@ -1151,15 +1124,15 @@ module nnAcceleratorPhase5K_3x3_tb;
                 @(negedge clk);
                 resultReady = 0;
                 heldPrediction = resultData[0];
-                for (int lane = 0; lane < N; lane++) begin
-                    stalledResident[lane] = dut.residentReductionWeight[lane];
-                end
 
                 // Let the shallow result FIFO fill until backpressure reaches
                 // the common array/update-wave advance enable.
                 wait(!dut.matrixDatapathAdvance);
                 @(negedge clk);
                 sawArrayFreeze = 1;
+                for (int lane = 0; lane < N; lane++) begin
+                    stalledResident[lane] = dut.residentReductionWeight[lane];
+                end
                 stalledPe00Weight =
                     dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg;
                 for (int rowIndex = 0; rowIndex < N; rowIndex++) begin
@@ -1179,6 +1152,12 @@ module nnAcceleratorPhase5K_3x3_tb;
                         stalledUpdateColumn[stage][lane] =
                             dut.matrixEngine.systolicArr.updateColumnPipe[stage][lane];
                     end
+                end
+                for (int stage = 0; stage < 2*N-1; stage++) begin
+                    stalledReductionBoundaryValid[stage] =
+                        dut.reductionBoundaryValidPipe[stage];
+                    stalledReductionBoundaryData[stage] =
+                        dut.reductionBoundaryDataPipe[stage];
                 end
 
                 repeat (3) begin
@@ -1214,7 +1193,15 @@ module nnAcceleratorPhase5K_3x3_tb;
                                 dut.matrixEngine.systolicArr.updateColumnPipe[stage][lane] !=
                                 stalledUpdateColumn[stage][lane])
                                 $fatal(1, "backpressure changed update stage %0d lane %0d",
-                                       stage, lane);
+                                   stage, lane);
+                    end
+                    for (int stage = 0; stage < 2*N-1; stage++) begin
+                        if (dut.reductionBoundaryValidPipe[stage] !=
+                            stalledReductionBoundaryValid[stage] ||
+                            dut.reductionBoundaryDataPipe[stage] !=
+                            stalledReductionBoundaryData[stage])
+                            $fatal(1, "backpressure advanced reduction boundary stage %0d",
+                                   stage);
                     end
                 end
                 @(negedge clk) resultReady = 1;
@@ -1231,7 +1218,7 @@ module nnAcceleratorPhase5K_3x3_tb;
             $fatal(1, "3x3 backpressure did not freeze the shared data/update advance");
         if (!sawConsecutiveResults || !sawConsecutiveBoundaries)
             $fatal(1, "3x3 W/R boundaries did not sustain consecutive results");
-        if (generatedUpdateCount != SAMPLE_COUNT)
+        if (generatedUpdateCount != SAMPLE_COUNT || enqueuedCount != SAMPLE_COUNT)
             $fatal(1, "3x3 generated %0d updates for %0d training samples",
                    generatedUpdateCount, SAMPLE_COUNT);
 
