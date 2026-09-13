@@ -9,6 +9,10 @@ ModelSim Stuff/transcript
 ModelSim Stuff/vsim.wlf
 transcript
 
+# Python reference-model caches
+__pycache__/
+*.py[cod]
+
 # Quartus generated databases and build products
 Quartus Stuff/db/
 Quartus Stuff/incremental_db/
