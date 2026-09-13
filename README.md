@@ -93,9 +93,9 @@ sequenceDiagram
 - Every `resultValid && resultReady` completion whose buffered `trainingEnable` is high launches one packed reduction-update sideband alongside its matrix-update package. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not launch an update.
 - The same training-enabled completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use that sample's snapshotted reduction-weight signs and the pass-through/ReLU activation gate.
 - A `2*N-1` stage pipeline carries each valid package across the PE anti-diagonals. Stage `d` updates every PE where `row + column == d` by the ternary outer product, with signed one-LSB saturation. The update pipeline and datapath share `arrayAdvance`, so both freeze together under backpressure and successive packages may overlap.
-- `matrixUpdateComplete` still asserts once for each package on the advancing edge that applies its final anti-diagonal. The packed reduction sideband follows the matrix learning boundary under the same `arrayAdvance` enable and applies signed one-LSB saturation when that boundary reaches readout.
-- A PE multiply uses the weight present before an update edge. The sample sharing update stage zero therefore uses the old complete network state; the next sample behind the boundary uses both the updated matrix and updated reduction weights. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
-- The result path stores an ordered stream of sample and reduction-boundary events. At a combined boundary/sample event, the first sample behind the boundary is evaluated with the saturated next reduction state and that state becomes resident on the accepted-result edge. Update-only events occupy otherwise idle datapath slots, so bubbles cannot drop learning packages. Continuous traffic still accepts one boundary/sample event per cycle without version counters or catch-up cycles.
+- `matrixUpdateComplete` still asserts once for each package on the advancing edge that applies its final anti-diagonal. The packed reduction sideband follows the matrix learning boundary under the same `arrayAdvance` enable and reaches readout beside the last sample that uses the old complete network state.
+- A PE multiply and the weighted reduction both use their resident weights present before an update edge. Accepting the last old-state result applies the reduction direction directly to the sole resident reduction vector with signed one-LSB saturation; the next sample then uses both the updated matrix and updated reduction weights. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
+- The result path stores an ordered stream of sample and reduction-boundary events. At a combined boundary/sample event, the sample is evaluated with resident `Rcurrent` and the accepting edge updates that vector in place. Update-only events occupy otherwise idle datapath slots, so bubbles cannot drop learning packages. Continuous traffic still accepts one boundary/sample event per cycle without reduction snapshots, next-state bypasses, version counters, or catch-up cycles.
 - Original input signs, targets, and per-sample training-enable bits are pushed and popped by the same sample events. Any metadata FIFO can therefore backpressure the complete transaction, and their heads remain paired with the current prediction under result stalls.
 - The SPI wrapper exposes `trainingEnable`; inference-only integrations must drive it low, as the SPI directed test does.
 - Assert `reloadWeights` only while `reloadReady` is high.
@@ -182,13 +182,15 @@ The matrix engine captures that package only on an `arrayAdvance`. It then
 applies stages 0 through `2*N-2` to matching PE anti-diagonals. Weight loading
 has priority over learning, and matrix-update stages contribute to pipeline-busy
 state so a reload cannot overtake a pending update wave. The reduction sideband
-follows the same boundary under `arrayAdvance`. The remaining result path
-records sample-only, update-only, and combined events in order. At readout, a
-combined event evaluates its sample with `Rnext` while `Rcurrent` is still
-resident, then commits `Rnext` on the result handshake. An update-only event
-commits in its original idle slot. Backpressure holds the head event, preserving
-older results and boundary order without per-sample reduction snapshots,
-version comparison, or continuous-stream catch-up cycles.
+follows the same boundary under `arrayAdvance`. Its alignment pipeline ends one
+advancing slot before the first new-state result, so the remaining result path
+records the package beside the final old-state sample. At readout, weighted
+reduction reads the sole resident vector directly; accepting a combined event
+applies its packed ternary directions to that vector on the edge. An update-only
+event applies in its original idle slot. Backpressure holds the head sample and
+boundary together, preserving ordering without per-sample reduction snapshots,
+combinational next-state selection, version comparison, or continuous-stream
+catch-up cycles.
 
 The regression uses seeded `$urandom` stimulus instead of constrained
 randomization and covergroups, so it remains usable with the Questa FPGA

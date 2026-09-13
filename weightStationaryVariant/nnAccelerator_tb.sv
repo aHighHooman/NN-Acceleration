@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-// Integration-level directed verification for the Phase 5I streaming
+// Integration-level directed verification for the Phase 5J streaming
 // learning boundary. The scoreboard follows every accepted sample and the
 // structurally aligned matrix/reduction state across bubbles and stalls.
 module nnAccelerator_tb;
@@ -324,11 +324,11 @@ module nnAccelerator_tb;
                            consumedCount, sampleMatrixVersion[consumedCount],
                            sampleReductionVersion[consumedCount]);
                 for (int lane = 0; lane < N; lane++)
-                    if (dut.sampleReductionWeight[lane] !==
+                    if (dut.residentReductionWeight[lane] !==
                         sampleReductionWeight[consumedCount][lane])
                         $fatal(1, "sample %0d reduction snapshot lane %0d got %0d, expected %0d",
                                consumedCount, lane,
-                               dut.sampleReductionWeight[lane],
+                               dut.residentReductionWeight[lane],
                                sampleReductionWeight[consumedCount][lane]);
                 if (sampleMatrixVersion[consumedCount] == 0)
                     sawOldWeightVersion = 1;
@@ -444,8 +444,8 @@ module nnAccelerator_tb;
             end
 
 
-            // The sideband stored with the first behind-boundary result makes
-            // Rnext resident when that result is accepted at readout.
+            // The sideband stored with the last old-state result updates the
+            // sole resident vector on that result's accepting edge.
             if (dut.reductionEventPop && dut.reductionResultBoundaryValid) begin
                 if (reductionQueueCount == 0)
                     $fatal(1, "reference reduction queue underflow");
@@ -768,7 +768,7 @@ module nnAccelerator_tb;
         if (!sawStreamingBoundary)
             $fatal(1, "learning boundary inserted a bubble between ready results");
         if (!sawReadoutBoundaryEvaluation)
-            $fatal(1, "no reduction update coincided with its first behind-boundary result");
+            $fatal(1, "no reduction update coincided with its last old-state result");
         if (!sawOldWeightVersion || !sawUpdatedWeightVersion)
             $fatal(1, "did not observe both sides of the shared matrix/reduction version boundary");
         if (!sawReductionIncrement || !sawReductionDecrement)
@@ -780,7 +780,7 @@ module nnAccelerator_tb;
             (1.0 / (1 << REDUCTION_FRACTION_BITS)) != 0.0078125)
             $fatal(1, "reduction weight LSB is not the required Q1.7 1/128");
 
-        $display("PASS: Phase 5I structurally aligned streaming matrix/reduction boundaries, stalls, saturation, and inference stability.");
+        $display("PASS: Phase 5J sequential streaming matrix/reduction boundaries, stalls, saturation, and inference stability.");
         $finish;
     end
 
@@ -908,13 +908,13 @@ module nnAccelerator_tb;
 
 endmodule
 
-// Phase 5I's focused 3x3 architectural test.  The expected values below are
+// Phase 5J's focused 3x3 architectural test.  The expected values below are
 // computed from a complete effective W/R generation, not from individual PE
 // update times.  Three feedback-fill samples precede the named focus window;
 // within that continuous window F5 is W0/R0 and U1 through U4 put F6 through
 // F9 on generations 1 through 4.  These are end-to-end samples S8 through S12
 // (the five matrix anti-diagonals themselves are covered separately).
-module nnAcceleratorPhase5I_3x3_tb;
+module nnAcceleratorPhase5J_3x3_tb;
     localparam int WIDTH = 8;
     localparam int N = 3;
     localparam int FRACTION_BITS = 0;
@@ -1038,11 +1038,11 @@ module nnAcceleratorPhase5I_3x3_tb;
                     $fatal(1, "S%0d lost its per-sample trainingEnable", consumedCount+1);
 
                 for (int lane = 0; lane < N; lane++) begin
-                    if ($signed(dut.sampleReductionWeight[lane]) !=
+                    if ($signed(dut.residentReductionWeight[lane]) !=
                         ((lane+2)*8 + generation))
                         $fatal(1, "S%0d lane %0d used R=%0d, expected generation R%0d value %0d",
                                consumedCount+1, lane,
-                               dut.sampleReductionWeight[lane], generation,
+                               dut.residentReductionWeight[lane], generation,
                                (lane+2)*8 + generation);
                     if (rowDirection[lane] != 2'sd1 ||
                         columnDirection[lane] != 2'sd1)
@@ -1050,19 +1050,22 @@ module nnAcceleratorPhase5I_3x3_tb;
                                consumedCount+1, lane);
                 end
 
-                if ((consumedCount > 0) &&
-                    (generation != expectedGeneration[consumedCount-1])) begin
+                // A boundary belongs to the final sample evaluated with the
+                // old generation.  The accepting edge updates resident R and
+                // the immediately following sample observes the new W/R pair.
+                if ((consumedCount + 1 < SAMPLE_COUNT) &&
+                    (generation != expectedGeneration[consumedCount+1])) begin
                     if (!dut.reductionResultBoundaryValid)
-                        $fatal(1, "S%0d W%0d result had no matching reduction boundary",
-                               consumedCount+1, generation);
+                        $fatal(1, "S%0d final W%0d/R%0d result had no matching reduction boundary",
+                               consumedCount+1, generation, generation);
                     if ($signed(dut.residentReductionWeight[0]) !=
-                        16 + generation - 1)
-                        $fatal(1, "S%0d did not evaluate Rnext while Rcurrent remained resident",
+                        16 + generation)
+                        $fatal(1, "S%0d did not evaluate the resident old reduction state",
                                consumedCount+1);
                     consecutiveBoundaryCount = consecutiveBoundaryCount + 1;
                     if (consecutiveBoundaryCount >= 3)
                         sawConsecutiveBoundaries = 1;
-                end else begin
+                end else if (consumedCount + 1 < SAMPLE_COUNT) begin
                     if (dut.reductionResultBoundaryValid)
                         $fatal(1, "S%0d unchanged-generation result crossed a reduction boundary",
                                consumedCount+1);
@@ -1160,7 +1163,7 @@ module nnAcceleratorPhase5I_3x3_tb;
             $fatal(1, "3x3 generated %0d updates for %0d training samples",
                    generatedUpdateCount, SAMPLE_COUNT);
 
-        $display("PASS: Phase 5I 3x3 focus F5=W0/R0, F6=W1/R1, F7=W2/R2, F8=W3/R3, F9=W4/R4 with full predictions and a stalled boundary.");
+        $display("PASS: Phase 5J 3x3 focus F5=W0/R0, F6=W1/R1, F7=W2/R2, F8=W3/R3, F9=W4/R4 with direct sequential reduction updates and a stalled boundary.");
         $finish;
     end
 

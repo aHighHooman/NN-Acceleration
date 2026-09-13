@@ -55,12 +55,10 @@ module nnAccelerator #(
     logic trainingEnableHead;
     logic signed [1:0] reductionDirection[N];
     logic signed [2*N-1:0] reductionUpdateData;
-    logic reductionBoundaryValidPipe[N+1];
-    logic signed [2*N-1:0] reductionBoundaryDataPipe[N+1];
+    logic reductionBoundaryValidPipe[N];
+    logic signed [2*N-1:0] reductionBoundaryDataPipe[N];
     logic signed [2*N+1:0] reductionEventPushData;
     logic signed [2*N+1:0] reductionEventHead;
-    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] sampleReductionWeight[N];
-    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] updatedReductionWeight[N];
     logic matrixUpdateAccepted, matrixUpdateComplete;
     logic matrixDatapathAdvance, matrixResultEnqueue, matrixResultPop;
     logic matrixReloadReady, reductionBoundaryBusy;
@@ -111,7 +109,7 @@ module nnAccelerator #(
     always_comb begin
         reductionBoundaryBusy = reductionUpdateBoundaryValid ||
                                 !reductionEventEmpty;
-        for (int stage = 0; stage <= N; stage++)
+        for (int stage = 0; stage < N; stage++)
             reductionBoundaryBusy |= reductionBoundaryValidPipe[stage];
     end
     assign reloadReady = matrixReloadReady && !reductionBoundaryBusy;
@@ -166,8 +164,8 @@ module nnAccelerator #(
             if ((passThrough ||
                  (!rawResultData[lane][MATRIX_RESULT_WIDTH-1] &&
                   (rawResultData[lane] != '0))) &&
-                (sampleReductionWeight[lane] != '0)) begin
-                if (sampleReductionWeight[lane][REDUCTION_WEIGHT_WIDTH-1])
+                (residentReductionWeight[lane] != '0)) begin
+                if (residentReductionWeight[lane][REDUCTION_WEIGHT_WIDTH-1])
                     columnDirection[lane] = -learningDirection;
                 else
                     columnDirection[lane] = learningDirection;
@@ -216,15 +214,15 @@ module nnAccelerator #(
         .full(trainingEnableFull), .empty(trainingEnableEmpty), .values()
     );
 
-    // Carry the learning boundary over the remaining col-0 result latency.
-    // The pipeline shifts only when the matrix datapath shifts.  Its final
-    // entry is stored beside the first result behind that boundary, so output
-    // backpressure cannot change their order.
+    // Carry the learning boundary to the reduction stage.  The pipeline shifts
+    // only when the matrix datapath shifts.  Its final entry is stored beside
+    // the last result on the old side of that boundary, so output backpressure
+    // cannot separate the sample from the edge that advances its state.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             for (int lane = 0; lane < N; lane++)
                 residentReductionWeight[lane] <= '0;
-            for (int stage = 0; stage <= N; stage++) begin
+            for (int stage = 0; stage < N; stage++) begin
                 reductionBoundaryValidPipe[stage] <= 1'b0;
                 reductionBoundaryDataPipe[stage] <= '0;
             end
@@ -233,7 +231,7 @@ module nnAccelerator #(
                 residentReductionWeight[lane] <= reductionWeight[lane];
         end else begin
             if (matrixDatapathAdvance) begin
-                for (int stage = N; stage > 0; stage--) begin
+                for (int stage = N-1; stage > 0; stage--) begin
                     reductionBoundaryValidPipe[stage] <=
                         reductionBoundaryValidPipe[stage-1];
                     reductionBoundaryDataPipe[stage] <=
@@ -245,13 +243,28 @@ module nnAccelerator #(
                     reductionUpdateBoundaryData;
             end
 
-            // The boundary is immediately ahead of the FIFO-head sample.
-            // That sample is evaluated combinationally with Rnext, and the
-            // handshake edge makes Rnext resident for all following samples.
-            if (reductionEventPop && reductionResultBoundaryValid)
-                for (int lane = 0; lane < N; lane++)
-                    residentReductionWeight[lane] <=
-                        updatedReductionWeight[lane];
+            // This event is the last sample on the old side of the learning
+            // boundary.  Its combinational reduction reads the resident old
+            // vector; the accepting edge applies the packed direction so the
+            // next sample naturally reads the new resident vector.
+            if (reductionEventPop && reductionResultBoundaryValid) begin
+                for (int lane = 0; lane < N; lane++) begin
+                    case ($signed(reductionResultBoundaryData[2*lane +: 2]))
+                        2'sd1: begin
+                            if (residentReductionWeight[lane] != REDUCTION_WEIGHT_MAX)
+                                residentReductionWeight[lane] <=
+                                    residentReductionWeight[lane] + REDUCTION_WEIGHT_ONE;
+                        end
+                        -2'sd1: begin
+                            if (residentReductionWeight[lane] != REDUCTION_WEIGHT_MIN)
+                                residentReductionWeight[lane] <=
+                                    residentReductionWeight[lane] - REDUCTION_WEIGHT_ONE;
+                        end
+                        default: residentReductionWeight[lane] <=
+                                     residentReductionWeight[lane];
+                    endcase
+                end
+            end
         end
     end
 
@@ -260,41 +273,11 @@ module nnAccelerator #(
     assign reductionResultBoundaryData = reductionEventHead[2*N-1:0];
     assign reductionEventPush = matrixDatapathAdvance &&
                                 (matrixResultEnqueue ||
-                                 reductionBoundaryValidPipe[N]);
+                                 reductionBoundaryValidPipe[N-1]);
     assign reductionEventPushData = {
-        matrixResultEnqueue, reductionBoundaryValidPipe[N],
-        reductionBoundaryDataPipe[N]
+        matrixResultEnqueue, reductionBoundaryValidPipe[N-1],
+        reductionBoundaryDataPipe[N-1]
     };
-
-    always_comb begin
-        for (int lane = 0; lane < N; lane++) begin
-            updatedReductionWeight[lane] = residentReductionWeight[lane];
-            if (reductionResultBoundaryValid) begin
-                case ($signed(reductionResultBoundaryData[2*lane +: 2]))
-                    2'sd1:
-                        if (residentReductionWeight[lane] != REDUCTION_WEIGHT_MAX)
-                            updatedReductionWeight[lane] =
-                                residentReductionWeight[lane] + REDUCTION_WEIGHT_ONE;
-                    -2'sd1:
-                        if (residentReductionWeight[lane] != REDUCTION_WEIGHT_MIN)
-                            updatedReductionWeight[lane] =
-                                residentReductionWeight[lane] - REDUCTION_WEIGHT_ONE;
-                    default: updatedReductionWeight[lane] =
-                                 residentReductionWeight[lane];
-                endcase
-            end
-        end
-    end
-
-    // The sample ahead of a boundary sees the resident old state.  The FIFO
-    // head immediately behind it sees the saturated next state before that
-    // state is committed on the result handshake.
-    for (genvar reductionLane = 0; reductionLane < N; reductionLane++) begin : reduction_weight_lanes
-        assign sampleReductionWeight[reductionLane] =
-            reductionResultBoundaryValid
-                ? updatedReductionWeight[reductionLane]
-                : residentReductionWeight[reductionLane];
-    end
 
     signedFifo #(
         .WIDTH(2*N+2), .DEPTH(2*OUTPUT_FIFO_DEPTH+2)
@@ -341,7 +324,7 @@ module nnAccelerator #(
         .FRACTION_BITS(FRACTION_BITS)
     ) weightedReadout (
         .inputData(activatedData),
-        .reductionWeight(sampleReductionWeight),
+        .reductionWeight(residentReductionWeight),
         .prediction(prediction)
     );
 

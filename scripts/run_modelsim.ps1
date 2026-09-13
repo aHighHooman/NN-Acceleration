@@ -80,9 +80,9 @@ try {
         -l accelerator-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
     if ($LASTEXITCODE -ne 0) { throw "Accelerator target/comparator regression failed." }
 
-    & $vsim -c work.nnAcceleratorPhase5I_3x3_tb `
-        -l accelerator-phase5i-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
-    if ($LASTEXITCODE -ne 0) { throw "Phase 5I 3x3 learning-boundary regression failed." }
+    & $vsim -c work.nnAcceleratorPhase5J_3x3_tb `
+        -l accelerator-phase5j-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
+    if ($LASTEXITCODE -ne 0) { throw "Phase 5J 3x3 learning-boundary regression failed." }
 
     & $vsim -c work.matrixWeightUpdateWave_tb `
         -l matrix-update-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
@@ -92,4 +92,4 @@ finally {
     Pop-Location
 }
 
-Write-Output "PASS: core, SPI, reduction, Phase 5I accelerator, and matrix update-wave regressions completed."
+Write-Output "PASS: core, SPI, reduction, Phase 5J accelerator, and matrix update-wave regressions completed."
