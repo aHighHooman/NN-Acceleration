@@ -95,7 +95,7 @@ sequenceDiagram
 - A `2*N-1` stage pipeline carries each valid package across the PE anti-diagonals. Stage `d` updates every PE where `row + column == d` by the ternary outer product, with signed one-LSB saturation. The update pipeline and datapath share `arrayAdvance`, so both freeze together under backpressure and successive packages may overlap.
 - `matrixUpdateComplete` still asserts once for each package on the advancing edge that applies its final anti-diagonal. The packed reduction sideband follows the matrix learning boundary under the same `arrayAdvance` enable and applies signed one-LSB saturation when that boundary reaches readout.
 - A PE multiply uses the weight present before an update edge. The sample sharing update stage zero therefore uses the old complete network state; the next sample behind the boundary uses both the updated matrix and updated reduction weights. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
-- On the readout edge, the resident reduction update and the snapshot for the first matrix result behind that boundary use the same saturated next value. The snapshot is queued one-for-one beside the raw matrix result, so boundaries add no ready-stream bubble and an older stalled result remains stable even if later boundaries advance internally. No matrix/reduction version counters or readout catch-up state are required.
+- The result path stores an ordered stream of sample and reduction-boundary events. At a combined boundary/sample event, the first sample behind the boundary is evaluated with the saturated next reduction state and that state becomes resident on the accepted-result edge. Update-only events occupy otherwise idle datapath slots, so bubbles cannot drop learning packages. Continuous traffic still accepts one boundary/sample event per cycle without version counters or catch-up cycles.
 - Original input signs, targets, and per-sample training-enable bits are pushed and popped by the same sample events. Any metadata FIFO can therefore backpressure the complete transaction, and their heads remain paired with the current prediction under result stalls.
 - The SPI wrapper exposes `trainingEnable`; inference-only integrations must drive it low, as the SPI directed test does.
 - Assert `reloadWeights` only while `reloadReady` is high.
@@ -147,7 +147,7 @@ directed coverage includes:
 - target, input-sign, prediction, and buffered-training alignment under input bubbles and output backpressure
 - all three learning directions, narrow-target sign extension, zero input signs, and a closed ReLU gate
 - stalled update waves, overlapping matrix update packages, anti-diagonal ordering, and shared data/update/sideband stalls
-- old-state result backlog, no-bubble streaming across the old/new network boundary, aligned per-result reduction snapshots, and signed one-LSB saturation at both endpoints
+- old-state result backlog, no-bubble streaming across consecutive W/R boundaries, ordered readout events under stalls and bubbles, and signed one-LSB saturation at both endpoints
 - worst-case accumulation, asynchronous `clk`/`sclk` SPI transfers, and stable outputs under backpressure
 
 The scripts discover the Quartus-installed Questa under
@@ -182,11 +182,13 @@ The matrix engine captures that package only on an `arrayAdvance`. It then
 applies stages 0 through `2*N-2` to matching PE anti-diagonals. Weight loading
 has priority over learning, and matrix-update stages contribute to pipeline-busy
 state so a reload cannot overtake a pending update wave. The reduction sideband
-follows the same boundary under `arrayAdvance`. When it reaches readout, its
-saturated update is committed and captured for the first result behind the
-boundary on that edge. A per-result reduction snapshot FIFO advances with the
-matrix-result FIFO, preserving older results under backpressure without version
-comparison or catch-up cycles.
+follows the same boundary under `arrayAdvance`. The remaining result path
+records sample-only, update-only, and combined events in order. At readout, a
+combined event evaluates its sample with `Rnext` while `Rcurrent` is still
+resident, then commits `Rnext` on the result handshake. An update-only event
+commits in its original idle slot. Backpressure holds the head event, preserving
+older results and boundary order without per-sample reduction snapshots,
+version comparison, or continuous-stream catch-up cycles.
 
 The regression uses seeded `$urandom` stimulus instead of constrained
 randomization and covergroups, so it remains usable with the Questa FPGA

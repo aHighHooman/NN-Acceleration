@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-// Integration-level directed verification for the Phase 5H streaming
+// Integration-level directed verification for the Phase 5I streaming
 // learning boundary. The scoreboard follows every accepted sample and the
 // structurally aligned matrix/reduction state across bubbles and stalls.
 module nnAccelerator_tb;
@@ -208,12 +208,10 @@ module nnAccelerator_tb;
                 $fatal(1, "matrix update package was presented while the array was stalled");
             if (dut.matrixUpdateAccepted !== matrixUpdateValid)
                 $fatal(1, "matrix update acceptance did not match the generated package");
-            if (dut.reductionSnapshotFifo.values !==
-                dut.matrixEngine.fifo_banks[0].outputFifo.values)
-                $fatal(1, "matrix-result and reduction-snapshot FIFOs lost alignment");
-            if (dut.matrixDatapathAdvance &&
-                dut.reductionBoundaryValidPipe[N] &&
-                dut.matrixResultEnqueue)
+            if (dut.matrixResultValid && !dut.reductionEventEmpty &&
+                !dut.reductionResultSampleValid && resultValid)
+                $fatal(1, "an update-only event exposed a matrix result early");
+            if (dut.samplePop && dut.reductionResultBoundaryValid)
                 sawReadoutBoundaryEvaluation = 1;
             for (int lane = 0; lane < N; lane++) begin
                 if (dut.residentReductionWeight[lane] !==
@@ -446,14 +444,13 @@ module nnAccelerator_tb;
             end
 
 
-            // The sideband package advances from PE stage zero to readout and
-            // commits on the same edge as the first result behind it.
-            if (dut.matrixDatapathAdvance &&
-                dut.reductionBoundaryValidPipe[N]) begin
+            // The sideband stored with the first behind-boundary result makes
+            // Rnext resident when that result is accepted at readout.
+            if (dut.reductionEventPop && dut.reductionResultBoundaryValid) begin
                 if (reductionQueueCount == 0)
                     $fatal(1, "reference reduction queue underflow");
                 for (int lane = 0; lane < N; lane++) begin
-                    if ($signed(dut.reductionBoundaryDataPipe[N][2*lane +: 2]) !==
+                    if ($signed(dut.reductionResultBoundaryData[2*lane +: 2]) !==
                         pendingReductionDirection[reductionQueueHead][lane])
                         $fatal(1, "reduction boundary package mismatch at lane %0d",
                                lane);
@@ -783,7 +780,7 @@ module nnAccelerator_tb;
             (1.0 / (1 << REDUCTION_FRACTION_BITS)) != 0.0078125)
             $fatal(1, "reduction weight LSB is not the required Q1.7 1/128");
 
-        $display("PASS: Phase 5H structurally aligned streaming matrix/reduction boundaries, stalls, saturation, and inference stability.");
+        $display("PASS: Phase 5I structurally aligned streaming matrix/reduction boundaries, stalls, saturation, and inference stability.");
         $finish;
     end
 
@@ -909,4 +906,272 @@ module nnAccelerator_tb;
         end
     endtask
 
+endmodule
+
+// Phase 5I's focused 3x3 architectural test.  The expected values below are
+// computed from a complete effective W/R generation, not from individual PE
+// update times.  Three feedback-fill samples precede the named focus window;
+// within that continuous window F5 is W0/R0 and U1 through U4 put F6 through
+// F9 on generations 1 through 4.  These are end-to-end samples S8 through S12
+// (the five matrix anti-diagonals themselves are covered separately).
+module nnAcceleratorPhase5I_3x3_tb;
+    localparam int WIDTH = 8;
+    localparam int N = 3;
+    localparam int FRACTION_BITS = 0;
+    localparam int TARGET_WIDTH = 8;
+    localparam int REDUCTION_WEIGHT_WIDTH = 8;
+    localparam int PREDICTION_WIDTH = 2*WIDTH + 2*$clog2(N);
+    localparam int SAMPLE_COUNT = 20;
+
+    logic clk, rst_n;
+    logic signed [WIDTH-1:0] weightData[N], activationData[N];
+    logic signed [TARGET_WIDTH-1:0] targetData, resultTargetData;
+    logic weightValid, weightReady, activationValid, activationReady;
+    logic trainingEnable;
+    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N];
+    logic loadReductionWeights, reduceOutput;
+    logic signed [PREDICTION_WIDTH-1:0] resultData[N];
+    logic signed [1:0] learningDirection;
+    logic signed [1:0] rowDirection[N], columnDirection[N];
+    logic matrixUpdateValid, resultValid, resultReady, resultLast;
+    logic weightsLoaded, reloadWeights, reloadReady, passThrough;
+
+    integer acceptedCount, consumedCount, generatedUpdateCount;
+    integer lastResultCycle, cycleCount, consecutiveBoundaryCount;
+    integer expectedGeneration[0:SAMPLE_COUNT-1];
+    bit sawOverlap, sawBoundaryStall, sawConsecutiveResults;
+    bit sawConsecutiveBoundaries;
+
+    nnAccelerator #(
+        .WIDTH(WIDTH), .N(N), .FRACTION_BITS(FRACTION_BITS),
+        .TARGET_WIDTH(TARGET_WIDTH),
+        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
+        .INPUT_FIFO_DEPTH(24), .OUTPUT_FIFO_DEPTH(24)
+    ) dut (
+        .clk(clk), .rst_n(rst_n),
+        .weightData(weightData), .weightValid(weightValid),
+        .weightReady(weightReady),
+        .activationData(activationData), .targetData(targetData),
+        .trainingEnable(trainingEnable),
+        .activationValid(activationValid), .activationReady(activationReady),
+        .reductionWeight(reductionWeight),
+        .loadReductionWeights(loadReductionWeights),
+        .reduceOutput(reduceOutput), .resultData(resultData),
+        .resultTargetData(resultTargetData),
+        .learningDirection(learningDirection),
+        .rowDirection(rowDirection), .columnDirection(columnDirection),
+        .matrixUpdateValid(matrixUpdateValid),
+        .resultValid(resultValid), .resultReady(resultReady),
+        .resultLast(resultLast), .weightsLoaded(weightsLoaded),
+        .reloadWeights(reloadWeights), .reloadReady(reloadReady),
+        .passThrough(passThrough)
+    );
+
+    always #5 clk = ~clk;
+
+    function automatic integer expected_prediction(input integer generation);
+        integer raw0, raw1, raw2, weightedSum;
+        begin
+            // [1,2,3] * (W0 + generation), activation is pass-through.
+            raw0 = 30 + 6*generation;
+            raw1 = 36 + 6*generation;
+            raw2 = 42 + 6*generation;
+            weightedSum = raw0*(16+generation) +
+                          raw1*(24+generation) +
+                          raw2*(32+generation);
+            expected_prediction = weightedSum >>> 7;
+        end
+    endfunction
+
+    always @(posedge clk) begin
+        integer liveUpdates;
+        integer generation;
+        integer expectedValue;
+
+        if (!rst_n) begin
+            acceptedCount = 0;
+            consumedCount = 0;
+            generatedUpdateCount = 0;
+            lastResultCycle = -2;
+            cycleCount = 0;
+            consecutiveBoundaryCount = 0;
+            sawOverlap = 0;
+            sawBoundaryStall = 0;
+            sawConsecutiveResults = 0;
+            sawConsecutiveBoundaries = 0;
+        end else begin
+            cycleCount = cycleCount + 1;
+
+            if (activationValid && activationReady)
+                acceptedCount = acceptedCount + 1;
+
+            if (matrixUpdateValid)
+                generatedUpdateCount = generatedUpdateCount + 1;
+
+            liveUpdates = 0;
+            for (int stage = 0; stage < 2*N-1; stage++)
+                if (dut.matrixEngine.systolicArr.updateValidPipe[stage])
+                    liveUpdates = liveUpdates + 1;
+            if (liveUpdates >= 2)
+                sawOverlap = 1;
+
+            if (!resultReady && !dut.reductionEventEmpty &&
+                dut.reductionResultSampleValid &&
+                dut.reductionResultBoundaryValid)
+                sawBoundaryStall = 1;
+
+            if (resultValid && resultReady) begin
+                if (consumedCount >= SAMPLE_COUNT)
+                    $fatal(1, "3x3 test produced too many results");
+                generation = expectedGeneration[consumedCount];
+                expectedValue = expected_prediction(generation);
+
+                if ($signed(resultData[0]) != expectedValue ||
+                    resultData[1] != '0 || resultData[2] != '0)
+                    $fatal(1, "S%0d prediction %0d, expected %0d for W%0d/R%0d",
+                           consumedCount+1, resultData[0], expectedValue,
+                           generation, generation);
+                if (resultTargetData != 8'sd127 || learningDirection != 2'sd1)
+                    $fatal(1, "S%0d target/comparison was not the expected positive update",
+                           consumedCount+1);
+                if (!dut.trainingEnableHead || !matrixUpdateValid)
+                    $fatal(1, "S%0d lost its per-sample trainingEnable", consumedCount+1);
+
+                for (int lane = 0; lane < N; lane++) begin
+                    if ($signed(dut.sampleReductionWeight[lane]) !=
+                        ((lane+2)*8 + generation))
+                        $fatal(1, "S%0d lane %0d used R=%0d, expected generation R%0d value %0d",
+                               consumedCount+1, lane,
+                               dut.sampleReductionWeight[lane], generation,
+                               (lane+2)*8 + generation);
+                    if (rowDirection[lane] != 2'sd1 ||
+                        columnDirection[lane] != 2'sd1)
+                        $fatal(1, "S%0d generated wrong matrix direction at lane %0d",
+                               consumedCount+1, lane);
+                end
+
+                if ((consumedCount > 0) &&
+                    (generation != expectedGeneration[consumedCount-1])) begin
+                    if (!dut.reductionResultBoundaryValid)
+                        $fatal(1, "S%0d W%0d result had no matching reduction boundary",
+                               consumedCount+1, generation);
+                    if ($signed(dut.residentReductionWeight[0]) !=
+                        16 + generation - 1)
+                        $fatal(1, "S%0d did not evaluate Rnext while Rcurrent remained resident",
+                               consumedCount+1);
+                    consecutiveBoundaryCount = consecutiveBoundaryCount + 1;
+                    if (consecutiveBoundaryCount >= 3)
+                        sawConsecutiveBoundaries = 1;
+                end else begin
+                    if (dut.reductionResultBoundaryValid)
+                        $fatal(1, "S%0d unchanged-generation result crossed a reduction boundary",
+                               consumedCount+1);
+                    consecutiveBoundaryCount = 0;
+                end
+
+                if (cycleCount == lastResultCycle + 1)
+                    sawConsecutiveResults = 1;
+                lastResultCycle = cycleCount;
+                consumedCount = consumedCount + 1;
+            end
+        end
+    end
+
+    initial begin
+        integer stalledResident[N];
+        integer heldPrediction;
+
+        clk = 0;
+        rst_n = 0;
+        weightValid = 0;
+        activationValid = 0;
+        trainingEnable = 1;
+        resultReady = 1;
+        loadReductionWeights = 0;
+        reduceOutput = 1;
+        reloadWeights = 0;
+        passThrough = 1;
+        targetData = 8'sd127;
+        activationData[0] = 1;
+        activationData[1] = 2;
+        activationData[2] = 3;
+        reductionWeight[0] = 16;
+        reductionWeight[1] = 24;
+        reductionWeight[2] = 32;
+        for (int lane = 0; lane < N; lane++) weightData[lane] = 0;
+
+        // Three initial samples fill the prediction-to-update feedback path.
+        // In the following named window F5 (global S8) is W0/R0, then F6/F7/
+        // F8/F9 use W1/R1, W2/R2, W3/R3, and W4/R4 consecutively.
+        for (int sample = 0; sample < SAMPLE_COUNT; sample++) begin
+            if (sample < 8)
+                expectedGeneration[sample] = 0;
+            else if (sample < 16)
+                expectedGeneration[sample] = sample - 7;
+            else
+                expectedGeneration[sample] = 8;
+        end
+
+        repeat (3) @(posedge clk);
+        @(negedge clk) begin rst_n = 1; loadReductionWeights = 1; end
+        @(posedge clk);
+        @(negedge clk) loadReductionWeights = 0;
+
+        send_weight_row(7, 8, 9);
+        send_weight_row(4, 5, 6);
+        send_weight_row(1, 2, 3);
+        wait(weightsLoaded);
+
+        fork
+            begin
+                @(negedge clk) activationValid = 1;
+                while (acceptedCount < SAMPLE_COUNT) @(negedge clk);
+                activationValid = 0;
+            end
+            begin
+                wait(consumedCount == 8);
+                @(negedge clk);
+                resultReady = 0;
+                heldPrediction = resultData[0];
+                for (int lane = 0; lane < N; lane++)
+                    stalledResident[lane] = dut.residentReductionWeight[lane];
+                repeat (4) begin
+                    @(posedge clk); #1;
+                    if (!resultValid || resultData[0] != heldPrediction)
+                        $fatal(1, "backpressure changed the first behind-boundary prediction");
+                    for (int lane = 0; lane < N; lane++)
+                        if ($signed(dut.residentReductionWeight[lane]) !=
+                            stalledResident[lane])
+                            $fatal(1, "backpressure advanced resident R lane %0d", lane);
+                end
+                @(negedge clk) resultReady = 1;
+            end
+        join
+
+        wait(consumedCount == SAMPLE_COUNT);
+        @(negedge clk);
+        if (!sawOverlap)
+            $fatal(1, "3x3 continuous training did not overlap update waves");
+        if (!sawBoundaryStall)
+            $fatal(1, "3x3 output stall did not hold a learning boundary");
+        if (!sawConsecutiveResults || !sawConsecutiveBoundaries)
+            $fatal(1, "3x3 W/R boundaries did not sustain consecutive results");
+        if (generatedUpdateCount != SAMPLE_COUNT)
+            $fatal(1, "3x3 generated %0d updates for %0d training samples",
+                   generatedUpdateCount, SAMPLE_COUNT);
+
+        $display("PASS: Phase 5I 3x3 focus F5=W0/R0, F6=W1/R1, F7=W2/R2, F8=W3/R3, F9=W4/R4 with full predictions and a stalled boundary.");
+        $finish;
+    end
+
+    task send_weight_row(input integer w0, input integer w1, input integer w2);
+        @(negedge clk);
+        while (!weightReady) @(negedge clk);
+        weightData[0] = w0;
+        weightData[1] = w1;
+        weightData[2] = w2;
+        weightValid = 1;
+        @(posedge clk);
+        @(negedge clk) weightValid = 0;
+    endtask
 endmodule

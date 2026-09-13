@@ -86,8 +86,9 @@ module matrixMultiplierWeightStationary #(
             end
         end
 
-        outputBlocked |= validData_SystToFifo[0] && resultSidebandFull &&
-                         !outputPop;
+        // The ordered readout-event FIFO also carries update-only boundary
+        // events, so a full sideband must freeze every kind of array advance.
+        outputBlocked |= resultSidebandFull && !outputPop;
 
     end
 
@@ -110,10 +111,9 @@ module matrixMultiplierWeightStationary #(
                               !pipelineBusy && allOutputEmpty &&
                               (acceptedActivationRow == 0);
 
-    // The reduction package follows the same first-stage boundary as its
-    // matrix update. A sample entering on the edge that applies update stage
-    // zero still multiplies by the old PE value; the next sample sees both
-    // learned states after this boundary. The sideband stalls with the array.
+    // This register is the stage-zero matrix boundary: the sample sharing
+    // the following stage-zero update edge still reads the old PE value.
+    // The first sample after that edge is on the new side of both updates.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             updateBoundaryValid <= 1'b0;
