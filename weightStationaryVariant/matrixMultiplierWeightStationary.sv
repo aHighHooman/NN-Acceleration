@@ -2,8 +2,7 @@ module matrixMultiplierWeightStationary #(
     parameter int WIDTH = 16,
     parameter int N = 3,
     parameter int INPUT_FIFO_DEPTH = 2*N,
-    parameter int OUTPUT_FIFO_DEPTH = 2*N,
-    parameter int MATRIX_VERSION_WIDTH = $clog2(INPUT_FIFO_DEPTH+2)
+    parameter int OUTPUT_FIFO_DEPTH = 2*N
 )(
     input  logic                         clk,
     input  logic                         rst_n,
@@ -16,8 +15,8 @@ module matrixMultiplierWeightStationary #(
     input  logic signed [1:0]            rowDirection [N],
     input  logic signed [1:0]            columnDirection [N],
     input  logic                         matrixUpdateValid,
+    input  logic signed [2*N-1:0]        reductionUpdateData,
     output logic signed [2*WIDTH+$clog2(N)-1:0] resultData [N],
-    output logic [MATRIX_VERSION_WIDTH-1:0] matrixResultVersion,
     output logic                         resultValid,
     input  logic                         resultReady,
     output logic                         resultLast,
@@ -25,7 +24,12 @@ module matrixMultiplierWeightStationary #(
     input  logic                         reloadWeights,
     output logic                         reloadReady,
     output logic                         matrixUpdateAccepted,
-    output logic                         matrixUpdateComplete
+    output logic                         matrixUpdateComplete,
+    output logic                         datapathAdvance,
+    output logic                         resultEnqueue,
+    input  logic                         resultSidebandFull,
+    output logic                         reductionUpdateBoundaryValid,
+    output logic signed [2*N-1:0]        reductionUpdateBoundaryData
 );
 
     localparam int WEIGHT_COUNT_WIDTH   = $clog2(N+1);
@@ -46,9 +50,6 @@ module matrixMultiplierWeightStationary #(
     logic activationFull[N], activationEmpty[N];
     logic signed [RESULT_WIDTH-1:0] resultData_FifoToOutput[N];
     logic outputFull[N], outputEmpty[N];
-    logic signed [MATRIX_VERSION_WIDTH-1:0] versionFifoHead;
-    logic versionFifoFull, versionFifoEmpty;
-
     logic signed [WIDTH-1:0] skewData[N][N];
     logic skewValid[N][N];
     logic signed [WIDTH-1:0] rowData_OrchToSyst[N];
@@ -56,9 +57,8 @@ module matrixMultiplierWeightStationary #(
     logic signed [RESULT_WIDTH-1:0] resultData_SystToFifo[N];
     logic validData_SystToFifo[N];
     logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked;
-    logic [MATRIX_VERSION_WIDTH-1:0] matrixWeightVersion;
-    logic [MATRIX_VERSION_WIDTH-1:0] resultVersionPipe[N];
     logic updateBoundaryValid;
+    logic signed [2*N-1:0] updateBoundaryData;
 
     always_comb begin
         allWeightValid      = 1;
@@ -86,8 +86,9 @@ module matrixMultiplierWeightStationary #(
             end
         end
 
-        outputBlocked |= validData_SystToFifo[0] && versionFifoFull &&
+        outputBlocked |= validData_SystToFifo[0] && resultSidebandFull &&
                          !outputPop;
+
     end
 
     assign weightReady      = !weightsLoaded && allWeightReady;
@@ -95,46 +96,33 @@ module matrixMultiplierWeightStationary #(
     assign activationReady  = weightsLoaded && allActivationReady;
     assign activationPush   = activationValid && activationReady;
     assign outputPop        = resultValid && resultReady;
-    assign resultValid      = allOutputValid && !versionFifoEmpty;
-    assign matrixResultVersion = versionFifoHead;
+    assign resultValid      = allOutputValid;
     assign resultLast       = resultValid && (transmittedResultRow == N-1);
     assign arrayAdvance     = !weightsLoaded ? weightPop : !outputBlocked;
     assign matrixUpdateAccepted = matrixUpdateValid && arrayAdvance;
+    assign datapathAdvance = arrayAdvance;
+    assign resultEnqueue = arrayAdvance && validData_SystToFifo[0];
+    assign reductionUpdateBoundaryValid = updateBoundaryValid;
+    assign reductionUpdateBoundaryData = updateBoundaryData;
     assign activationPop    = weightsLoaded && allActivationValid && arrayAdvance;
     assign weightPop        = !weightsLoaded && allWeightValid;
     assign reloadReady      = weightsLoaded && allActivationEmpty && !skewBusy &&
                               !pipelineBusy && allOutputEmpty &&
                               (acceptedActivationRow == 0);
 
-    // A sample entering on the edge that applies update stage zero still
-    // multiplies by the old PE value.  Increment after that edge, so the next
-    // sample behind the wave is the first one tagged with the new version.
-    // The scalar tag advances under the same enable as the systolic data.
+    // The reduction package follows the same first-stage boundary as its
+    // matrix update. A sample entering on the edge that applies update stage
+    // zero still multiplies by the old PE value; the next sample sees both
+    // learned states after this boundary. The sideband stalls with the array.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            matrixWeightVersion <= '0;
             updateBoundaryValid <= 1'b0;
-            for (int stage = 0; stage < N; stage++)
-                resultVersionPipe[stage] <= '0;
+            updateBoundaryData <= '0;
         end else if (arrayAdvance) begin
-            for (int stage = N-1; stage > 0; stage--)
-                resultVersionPipe[stage] <= resultVersionPipe[stage-1];
-            resultVersionPipe[0] <= matrixWeightVersion;
-            if (updateBoundaryValid)
-                matrixWeightVersion <= matrixWeightVersion + 1'b1;
             updateBoundaryValid <= matrixUpdateValid;
+            updateBoundaryData <= reductionUpdateData;
         end
     end
-
-    signedFifo #(
-        .WIDTH(MATRIX_VERSION_WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)
-    ) outputVersionFifo (
-        .clk(clk), .rst_n(rst_n),
-        .push(arrayAdvance && validData_SystToFifo[0]),
-        .pushData($signed(resultVersionPipe[N-1])),
-        .pop(outputPop), .popData(versionFifoHead),
-        .full(versionFifoFull), .empty(versionFifoEmpty), .values()
-    );
 
     genvar fifoIndex;
     generate

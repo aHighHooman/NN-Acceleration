@@ -1,9 +1,8 @@
 `timescale 1ns / 1ps
 
-// Integration-level directed verification for the Phase 5G training
-// semantics.  The scoreboard follows every accepted sample and every ordered
-// matrix/reduction update package across bubbles, backpressure, and explicit
-// update-wave stalls.
+// Integration-level directed verification for the Phase 5H streaming
+// learning boundary. The scoreboard follows every accepted sample and the
+// structurally aligned matrix/reduction state across bubbles and stalls.
 module nnAccelerator_tb;
     localparam int WIDTH = 8;
     localparam int TARGET_WIDTH = 7;
@@ -18,8 +17,6 @@ module nnAccelerator_tb;
     localparam int PREDICTION_WIDTH = 2*WIDTH + 2*$clog2(N);
     localparam int SAMPLE_COUNT = 21;
     localparam int UPDATE_STAGES = 2*N - 1;
-    localparam int MATRIX_VERSION_WIDTH = $clog2(4+1);
-    localparam int VERSION_MODULUS = 1 << MATRIX_VERSION_WIDTH;
 
     typedef logic signed [PREDICTION_WIDTH-1:0] result_t;
     typedef logic signed [TARGET_WIDTH-1:0] target_t;
@@ -52,18 +49,19 @@ module nnAccelerator_tb;
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
         architecturalReductionWeight[0:SAMPLE_COUNT][N];
     logic signed [1:0] pendingReductionDirection[0:SAMPLE_COUNT-1][N];
-    integer pendingReductionSampleIndex[0:SAMPLE_COUNT-1];
     integer acceptedUpdateSampleIndex[0:SAMPLE_COUNT-1];
     integer reductionQueueHead, reductionQueueTail, reductionQueueCount;
     integer matrixEntryCount, acceptedUpdateCount, completedUpdateCount;
-    integer matrixVersion, matrixGeneration, reductionVersion, lastCommittedSample;
-    integer lastReductionCommitCycle;
+    integer matrixVersion, matrixGeneration;
+    integer lastConsumedCycle;
     bit sawBackToBack, sawBubble;
     bit sawPositive, sawZero, sawNegative;
     bit sawOverlappingUpdates, sawUpdateWaveStall;
     bit sawOldWeightVersion, sawUpdatedWeightVersion;
     bit sawReductionIncrement, sawReductionDecrement;
-    bit sawValidStallWithUpdateWave, sawConsecutiveReductionCommits;
+    bit sawValidStallWithUpdateWave;
+    bit sawStreamingBoundary;
+    bit sawReadoutBoundaryEvaluation;
 
     nnAccelerator #(
         .WIDTH(WIDTH), .N(N), .TARGET_WIDTH(TARGET_WIDTH),
@@ -152,9 +150,7 @@ module nnAccelerator_tb;
             completedUpdateCount = 0;
             matrixVersion = 0;
             matrixGeneration = 0;
-            reductionVersion = 0;
-            lastCommittedSample = -1;
-            lastReductionCommitCycle = -2;
+            lastConsumedCycle = -2;
             lastAcceptedCycle = -2;
             sawBackToBack     = 0;
             sawBubble         = 0;
@@ -168,7 +164,8 @@ module nnAccelerator_tb;
             sawReductionIncrement = 0;
             sawReductionDecrement = 0;
             sawValidStallWithUpdateWave = 0;
-            sawConsecutiveReductionCommits = 0;
+            sawStreamingBoundary = 0;
+            sawReadoutBoundaryEvaluation = 0;
             reductionQueueHead = 0;
             reductionQueueTail = 0;
             reductionQueueCount = 0;
@@ -211,14 +208,13 @@ module nnAccelerator_tb;
                 $fatal(1, "matrix update package was presented while the array was stalled");
             if (dut.matrixUpdateAccepted !== matrixUpdateValid)
                 $fatal(1, "matrix update acceptance did not match the generated package");
-            if (dut.reductionUpdateFifo.values !== reductionQueueCount)
-                $fatal(1, "reduction update FIFO/model counts differ: %0d/%0d",
-                       dut.reductionUpdateFifo.values, reductionQueueCount);
-            if (dut.reductionUpdateCommit && dut.reductionUpdateEmpty)
-                $fatal(1, "readout requested a missing reduction package");
-            if (resultValid &&
-                (dut.matrixResultVersion !== dut.residentReductionVersion))
-                $fatal(1, "externally valid result has mismatched versions");
+            if (dut.reductionSnapshotFifo.values !==
+                dut.matrixEngine.fifo_banks[0].outputFifo.values)
+                $fatal(1, "matrix-result and reduction-snapshot FIFOs lost alignment");
+            if (dut.matrixDatapathAdvance &&
+                dut.reductionBoundaryValidPipe[N] &&
+                dut.matrixResultEnqueue)
+                sawReadoutBoundaryEvaluation = 1;
             for (int lane = 0; lane < N; lane++) begin
                 if (dut.residentReductionWeight[lane] !==
                     modelReductionWeight[lane])
@@ -283,7 +279,7 @@ module nnAccelerator_tb;
                         endcase
                     end
                 end
-                matrixVersion = (matrixVersion + 1) % VERSION_MODULUS;
+                matrixVersion = matrixVersion + 1;
                 matrixGeneration = matrixGeneration + 1;
             end
 
@@ -329,10 +325,13 @@ module nnAccelerator_tb;
                     $fatal(1, "sample %0d has mismatched snapshotted matrix/reduction versions %0d/%0d",
                            consumedCount, sampleMatrixVersion[consumedCount],
                            sampleReductionVersion[consumedCount]);
-                if (dut.matrixResultVersion !== sampleMatrixVersion[consumedCount])
-                    $fatal(1, "sample %0d matrix version metadata got %0d, expected %0d",
-                           consumedCount, dut.matrixResultVersion,
-                           sampleMatrixVersion[consumedCount]);
+                for (int lane = 0; lane < N; lane++)
+                    if (dut.sampleReductionWeight[lane] !==
+                        sampleReductionWeight[consumedCount][lane])
+                        $fatal(1, "sample %0d reduction snapshot lane %0d got %0d, expected %0d",
+                               consumedCount, lane,
+                               dut.sampleReductionWeight[lane],
+                               sampleReductionWeight[consumedCount][lane]);
                 if (sampleMatrixVersion[consumedCount] == 0)
                     sawOldWeightVersion = 1;
                 else
@@ -401,7 +400,6 @@ module nnAccelerator_tb;
 
                 if (expectedTrainingEnable[consumedCount]) begin
                     acceptedUpdateSampleIndex[acceptedUpdateCount] = consumedCount;
-                    pendingReductionSampleIndex[reductionQueueTail] = consumedCount;
                     // A training transaction defines the reduction half of
                     // the next architectural network version immediately from
                     // the sample snapshot and its independently predicted
@@ -438,30 +436,26 @@ module nnAccelerator_tb;
                     default: $fatal(1, "non-ternary learning direction %0d",
                                     learningDirection);
                 endcase
+                if ((consumedCount > 0) &&
+                    (sampleMatrixVersion[consumedCount] !=
+                     sampleMatrixVersion[consumedCount-1]) &&
+                    (cycleCount == lastConsumedCycle + 1))
+                    sawStreamingBoundary = 1;
+                lastConsumedCycle = cycleCount;
                 consumedCount = consumedCount + 1;
             end
 
 
-            // A mismatched raw-result head consumes one ordered reduction
-            // package per edge. The result stays hidden until this model and
-            // the resident readout version reach its matrix version.
-            if (dut.reductionUpdateCommit) begin
-                if (cycleCount == lastReductionCommitCycle + 1)
-                    sawConsecutiveReductionCommits = 1;
-                lastReductionCommitCycle = cycleCount;
+            // The sideband package advances from PE stage zero to readout and
+            // commits on the same edge as the first result behind it.
+            if (dut.matrixDatapathAdvance &&
+                dut.reductionBoundaryValidPipe[N]) begin
                 if (reductionQueueCount == 0)
                     $fatal(1, "reference reduction queue underflow");
-                if (pendingReductionSampleIndex[reductionQueueHead] <=
-                    lastCommittedSample)
-                    $fatal(1, "reduction packages committed out of sample order: %0d after %0d",
-                           pendingReductionSampleIndex[reductionQueueHead],
-                           lastCommittedSample);
-                lastCommittedSample =
-                    pendingReductionSampleIndex[reductionQueueHead];
                 for (int lane = 0; lane < N; lane++) begin
-                    if ($signed(dut.reductionUpdateHead[2*lane +: 2]) !==
+                    if ($signed(dut.reductionBoundaryDataPipe[N][2*lane +: 2]) !==
                         pendingReductionDirection[reductionQueueHead][lane])
-                        $fatal(1, "reduction update FIFO order mismatch at lane %0d",
+                        $fatal(1, "reduction boundary package mismatch at lane %0d",
                                lane);
                     case (pendingReductionDirection[reductionQueueHead][lane])
                         2'sd1: if (modelReductionWeight[lane] !=
@@ -483,7 +477,6 @@ module nnAccelerator_tb;
                 reductionQueueHead = reductionQueueHead + 1;
                 reductionQueueCount = reductionQueueCount - 1;
                 completedUpdateCount = completedUpdateCount + 1;
-                reductionVersion = (reductionVersion + 1) % VERSION_MODULUS;
             end
         end
     end
@@ -493,11 +486,6 @@ module nnAccelerator_tb;
         result_t heldPrediction;
         logic signed [1:0] heldDirection;
         logic heldTrainingEnable;
-        logic [MATRIX_VERSION_WIDTH-1:0] heldMatrixVersion;
-        logic [MATRIX_VERSION_WIDTH-1:0] heldReductionVersion;
-        logic [MATRIX_VERSION_WIDTH-1:0] inferenceMatrixVersion;
-        logic [MATRIX_VERSION_WIDTH-1:0] inferenceReductionVersion;
-        logic signed [REDUCTION_WEIGHT_WIDTH-1:0] heldReductionWeight[N];
         logic signed [WIDTH-1:0] inferenceMatrixWeight[N][N];
         logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
             inferenceReductionWeight[N];
@@ -610,10 +598,6 @@ module nnAccelerator_tb;
         heldPrediction = resultData[0];
         heldDirection = learningDirection;
         heldTrainingEnable = dut.trainingEnableHead;
-        heldMatrixVersion = dut.matrixResultVersion;
-        heldReductionVersion = dut.residentReductionVersion;
-        for (int lane = 0; lane < N; lane++)
-            heldReductionWeight[lane] = dut.residentReductionWeight[lane];
         if (heldTarget !== 2*SCALE)
             $fatal(1, "unexpected stalled tuple: prediction=%0d target=%0d direction=%0d",
                    heldPrediction, heldTarget, heldDirection);
@@ -622,13 +606,8 @@ module nnAccelerator_tb;
             if (!resultValid || resultTargetData !== heldTarget ||
                 resultData[0] !== heldPrediction ||
                 learningDirection !== heldDirection ||
-                dut.trainingEnableHead !== heldTrainingEnable || dut.targetPop ||
-                dut.matrixResultVersion !== heldMatrixVersion ||
-                dut.residentReductionVersion !== heldReductionVersion)
+                dut.trainingEnableHead !== heldTrainingEnable || dut.targetPop)
                 $fatal(1, "prediction or buffered metadata changed while output was stalled");
-            for (int lane = 0; lane < N; lane++)
-                if (dut.residentReductionWeight[lane] !== heldReductionWeight[lane])
-                    $fatal(1, "reduction weight changed while valid result was stalled");
         end
 
         // Drain the boundary sequence. Only sample indices 1 and 3 may
@@ -655,12 +634,12 @@ module nnAccelerator_tb;
                    acceptedUpdateSampleIndex[0], acceptedUpdateSampleIndex[1]);
         wait(!dut.matrixEngine.pipelineBusy);
 
-        // The first post-wave inference sample carries version two. Its raw
-        // FIFO head must wait two clocks while the queued packages commit.
+        // The first post-wave inference sample carries the twice-updated
+        // matrix and reduction state without a readout catch-up bubble.
         send_sample_with_bubbles(SCALE, 0, SCALE, 0, 1);
         wait_for_consumed(8);
-        if (reductionVersion != 2 || reductionQueueCount != 0)
-            $fatal(1, "two queued updates did not advance readout to version two");
+        if (completedUpdateCount != 2 || reductionQueueCount != 0)
+            $fatal(1, "two sideband updates did not cross the learning boundary");
 
         // Inference-only traffic continues to predict through bubbles and
         // output backpressure without changing either resident weight set.
@@ -674,8 +653,6 @@ module nnAccelerator_tb;
             dut.matrixEngine.systolicArr.row_loop[1].col_loop[1].mb.weightReg;
         for (int lane = 0; lane < N; lane++)
             inferenceReductionWeight[lane] = dut.residentReductionWeight[lane];
-        inferenceMatrixVersion = dut.matrixEngine.matrixWeightVersion;
-        inferenceReductionVersion = dut.residentReductionVersion;
         resultReady = 0;
         send_sample_with_bubbles(-SCALE, SCALE, 0, 0, 2);
         send_sample_with_bubbles(0, -SCALE, -SCALE, 0, 1);
@@ -696,13 +673,10 @@ module nnAccelerator_tb;
             if (dut.residentReductionWeight[lane] !==
                 inferenceReductionWeight[lane])
                 $fatal(1, "inference changed reduction weight %0d", lane);
-        if (dut.matrixEngine.matrixWeightVersion !== inferenceMatrixVersion ||
-            dut.residentReductionVersion !== inferenceReductionVersion)
-            $fatal(1, "inference changed a learned-weight version");
 
         // Back-to-back training results place packages in successive update
         // stages.  Freeze arrayAdvance while both are live and prove that the
-        // matrix wave and ordered reduction queue resume at the same boundary.
+        // matrix wave and reduction sideband resume at the same boundary.
         send_sample_with_bubbles(2*SCALE, 0, 2*SCALE, 1, 2); // 1 -> +1
         send_sample_with_bubbles(2*SCALE, -1*SCALE, -3*SCALE, 1, 0); // -2.5 -> -1
         stall_active_update_wave();
@@ -794,8 +768,10 @@ module nnAccelerator_tb;
             $fatal(1, "did not complete the directed update-wave stall");
         if (!sawValidStallWithUpdateWave)
             $fatal(1, "did not stall a valid result while a matrix update wave was live");
-        if (!sawConsecutiveReductionCommits)
-            $fatal(1, "did not apply multiple queued reduction updates on consecutive clocks");
+        if (!sawStreamingBoundary)
+            $fatal(1, "learning boundary inserted a bubble between ready results");
+        if (!sawReadoutBoundaryEvaluation)
+            $fatal(1, "no reduction update coincided with its first behind-boundary result");
         if (!sawOldWeightVersion || !sawUpdatedWeightVersion)
             $fatal(1, "did not observe both sides of the shared matrix/reduction version boundary");
         if (!sawReductionIncrement || !sawReductionDecrement)
@@ -807,7 +783,7 @@ module nnAccelerator_tb;
             (1.0 / (1 << REDUCTION_FRACTION_BITS)) != 0.0078125)
             $fatal(1, "reduction weight LSB is not the required Q1.7 1/128");
 
-        $display("PASS: Phase 5G buffered matrix/reduction version boundaries, ordered readout commits, stalls, and inference stability.");
+        $display("PASS: Phase 5H structurally aligned streaming matrix/reduction boundaries, stalls, saturation, and inference stability.");
         $finish;
     end
 
@@ -910,13 +886,12 @@ module nnAccelerator_tb;
         integer watchdog;
         begin
             watchdog = 0;
-            while ((!dut.reductionUpdateEmpty || dut.matrixUpdateComplete) &&
-                   (watchdog < 100)) begin
+            while ((reductionQueueCount != 0) && (watchdog < 100)) begin
                 @(negedge clk);
                 watchdog = watchdog + 1;
             end
-            if (!dut.reductionUpdateEmpty || reductionQueueCount != 0)
-                $fatal(1, "timed out draining pending reduction updates");
+            if (reductionQueueCount != 0)
+                $fatal(1, "timed out advancing pending reduction boundaries");
         end
     endtask
 
