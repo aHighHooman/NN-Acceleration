@@ -40,9 +40,10 @@ module nnAcceleratorStateTrace_tb;
     integer retired, retired_last, retired_prediction, retired_direction, retired_target;
     integer retired_raw[0:N-1], retired_activated[0:N-1], retired_result[0:N-1];
     string stimulus_path, trace_path;
-    // Verification-only contract state.  reloadReady is the DUT's existing
-    // indication that accepted samples, buffered results, and update waves
-    // have drained; neither mode bit is added to synthesizable RTL state.
+    // Verification-only contract state. Stream quiescence describes only
+    // accepted samples, buffered results, and learning updates. In particular,
+    // the resultLast frame position is not outstanding work.
+    logic streamQuiescent;
     logic configurationActive;
     logic configuredPassThrough, configuredReduceOutput;
 
@@ -64,13 +65,23 @@ module nnAcceleratorStateTrace_tb;
         .reloadReady(reloadReady), .passThrough(passThrough)
     );
 
+    assign streamQuiescent =
+        dut.matrixEngine.activationEmpty &&
+        !dut.matrixEngine.skewBusy &&
+        !dut.matrixEngine.pipelineBusy &&
+        !dut.matrixEngine.resultAlignBusy &&
+        dut.matrixEngine.outputEmpty &&
+        dut.sampleContextEmpty &&
+        dut.resultMetadataFifo.empty &&
+        !dut.reductionBoundaryBusy;
+
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             configurationActive <= 1'b0;
             configuredPassThrough <= passThrough;
             configuredReduceOutput <= reduceOutput;
         end else begin
-            if (configurationActive && !reloadReady) begin
+            if (configurationActive && !streamQuiescent) begin
                 if (passThrough !== configuredPassThrough)
                     $fatal(1, "passThrough changed while accelerator work was outstanding");
                 if (reduceOutput !== configuredReduceOutput)
@@ -78,12 +89,12 @@ module nnAcceleratorStateTrace_tb;
             end
 
             if (activationValid && activationReady) begin
-                if (!configurationActive || reloadReady) begin
+                if (!configurationActive || streamQuiescent) begin
                     configuredPassThrough <= passThrough;
                     configuredReduceOutput <= reduceOutput;
                 end
                 configurationActive <= 1'b1;
-            end else if (configurationActive && reloadReady) begin
+            end else if (configurationActive && streamQuiescent) begin
                 configurationActive <= 1'b0;
             end
         end

@@ -100,6 +100,17 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertFalse(model.config.pass_through)
         self.assertTrue(model.config.reduce_output)
 
+    def test_single_sample_can_reconfigure_without_frame_counter_wrap(self) -> None:
+        model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
+        model.step(self.drive(training=False))
+        model.flush()
+
+        self.assertEqual(model._accepted_activation_row, 1)
+        self.assertTrue(model.stream_quiescent)
+        model.reconfigure(pass_through=False, reduce_output=True)
+        self.assertFalse(model.config.pass_through)
+        self.assertTrue(model.config.reduce_output)
+
     def test_absolute_n3_latency_is_e0_e7_e8(self) -> None:
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
         samples = [(1, 2, 3), (2, 0, -1), (-1, 1, 2)]

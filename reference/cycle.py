@@ -312,6 +312,28 @@ class CycleReference:
             or any(wave is not None for wave in self._reduction_pipe)
         )
 
+    @property
+    def stream_quiescent(self) -> bool:
+        """Whether accepted sample/result/update work has completely drained.
+
+        This is the verification configuration boundary.  It deliberately
+        excludes weight-loading state and ``acceptedActivationRow``: neither
+        represents outstanding work whose interpretation depends on the
+        stream mode.
+        """
+
+        return not bool(
+            self._activation_fifo
+            or self._data_tokens
+            or self._completed_tokens
+            or self._matrix_waves
+            or self._alignment
+            or self._output_fifo
+            or self._sample_context_fifo
+            or self._result_metadata_fifo
+            or any(wave is not None for wave in self._reduction_pipe)
+        )
+
     def reset(self) -> None:
         """Return to the constructor's initial state."""
 
@@ -404,7 +426,7 @@ class CycleReference:
         if (
             next_pass_through != self.config.pass_through
             or next_reduce_output != self.config.reduce_output
-        ) and self.in_flight:
+        ) and not self.stream_quiescent:
             raise RuntimeError(
                 "passThrough/reduceOutput may change only when the accelerator is quiescent"
             )

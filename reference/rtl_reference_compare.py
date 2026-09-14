@@ -37,6 +37,7 @@ class FunctionalComparison:
     samples: tuple[Sample, ...]
     pass_through: bool
     reduce_output: bool
+    result_row_offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -217,8 +218,10 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
 
     # 7: run and drain pass-through/reduced mode, change both configuration
     # pins while quiescent, then run and drain ReLU/vector mode without reset.
-    pass_samples = tuple(Sample(x, t, False) for x, t in (
-        ((-2, 1, 3), 0), ((1, -4, 2), 5), ((3, 0, -1), -2)))
+    # Deliberately drain just one N=3 sample before changing modes. The DUT's
+    # acceptedActivationRow is therefore 1 rather than 0 at the configuration
+    # boundary; frame position must not keep stream configuration live.
+    pass_samples = (Sample((-2, 1, 3), 0, False),)
     relu_samples = tuple(Sample(x, t, False) for x, t in (
         ((-3, 1, 0), 2), ((2, -4, 1), -3), ((1, 1, -2), 4), ((-2, -1, 3), 1),
         ((4, 0, -1), 8), ((-1, 2, 2), -5)))
@@ -256,7 +259,7 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
         FunctionalComparison(
             "quiescent_relu_vector", relu_start, len(cycles) - 1,
             RELOADED_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS,
-            relu_samples, False, False,
+            relu_samples, False, False, result_row_offset=len(pass_samples) % N,
         ),
     ))
 
@@ -435,7 +438,9 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
             functional_comparisons += 1
             if expected_output != rtl["result"]:
                 _fail(cycle, f"{comparison.name} sample {index} external result", expected_output, rtl["result"])
-            expected_last = int(index % N == N - 1)
+            expected_last = int(
+                (comparison.result_row_offset + index) % N == N - 1
+            )
             if expected_last != rtl["last"]:
                 _fail(cycle, f"{comparison.name} sample {index} resultLast", expected_last, rtl["last"])
         final = actual[comparison.end_cycle]
