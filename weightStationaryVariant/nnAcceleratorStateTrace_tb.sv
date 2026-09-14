@@ -48,6 +48,10 @@ module nnAcceleratorStateTrace_tb;
     logic streamQuiescent;
     logic configurationActive;
     logic configuredPassThrough, configuredReduceOutput;
+    logic trace_datapath_advance, trace_output_blocked;
+    logic trace_reduction_update_busy, trace_pipeline_busy, trace_result_align_busy;
+    integer trace_matrix_wave_mask, trace_reduction_pipe_mask;
+    integer trace_skew_valid_mask, trace_align_valid_mask;
 
     always #5ns clk = ~clk;
 
@@ -207,6 +211,33 @@ module nnAcceleratorStateTrace_tb;
             reloadWeights = scanned_reload_weights;
             passThrough = scanned_pass_through;
             reduceOutput = scanned_reduce_output;
+            // Sample the combinational contract after the stimulus is applied
+            // but before this cycle's rising edge.  The post-edge snapshot
+            // alone describes the next edge after FIFO state may have moved.
+            #1ps;
+            trace_datapath_advance = dut.matrixEngine.datapathAdvance;
+            trace_output_blocked = dut.matrixEngine.outputBlocked;
+            trace_reduction_update_busy = dut.reductionUpdateBusy;
+            trace_pipeline_busy = dut.matrixEngine.pipelineBusy;
+            trace_result_align_busy = dut.matrixEngine.resultAlignBusy;
+            trace_matrix_wave_mask = 0;
+            for (entry = 0; entry < 2*N-2; entry++)
+                if (dut.matrixEngine.systolicArr.updateValidPipe[entry])
+                    trace_matrix_wave_mask |= (1 << entry);
+            trace_reduction_pipe_mask = 0;
+            for (entry = 0; entry < 2*N-1; entry++)
+                if (dut.reductionUpdateValidPipe[entry])
+                    trace_reduction_pipe_mask |= (1 << entry);
+            trace_skew_valid_mask = 0;
+            for (lane = 0; lane < N; lane++)
+                for (index = 0; index < N; index++)
+                    if (dut.matrixEngine.skewValid[lane][index])
+                        trace_skew_valid_mask |= (1 << (lane*N + index));
+            trace_align_valid_mask = 0;
+            for (lane = 0; lane < N; lane++)
+                for (index = 0; index < N-1; index++)
+                    if (dut.matrixEngine.resultAlignValid[lane][index])
+                        trace_align_valid_mask |= (1 << (lane*(N-1) + index));
             @(posedge clk);
             retired = resultValid && resultReady;
             retired_last = resultLast; retired_prediction = $signed(dut.prediction);
@@ -218,6 +249,14 @@ module nnAcceleratorStateTrace_tb;
             end
             #1ps;
             dump_snapshot(c);
+            // Verification-only hierarchical evidence.  These are internal
+            // combinational states, not synthesizable accelerator ports.
+            $fwrite(trace_fd, "P %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\n", c,
+                trace_datapath_advance, trace_output_blocked,
+                trace_reduction_update_busy, trace_pipeline_busy,
+                trace_result_align_busy, trace_matrix_wave_mask,
+                trace_reduction_pipe_mask, trace_skew_valid_mask,
+                trace_align_valid_mask);
             if (retired) $fwrite(trace_fd,
                 "RT %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
                 c, retired_raw[0], retired_raw[1], retired_raw[2],
