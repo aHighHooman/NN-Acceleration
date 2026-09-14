@@ -1,0 +1,186 @@
+`timescale 1ns/1ps
+
+// Drive one external input bundle per clock and write semantic RTL state.
+// All expected mathematics and timing live in Python.
+module nnAcceleratorStateTrace_tb;
+    localparam int N = 3;
+    localparam int WIDTH = 8;
+    localparam int TARGET_WIDTH = 8;
+    localparam int REDUCTION_WEIGHT_WIDTH = 8;
+    localparam int FRACTION_BITS = 0;
+    localparam int INPUT_FIFO_DEPTH = 2*N;
+    localparam int OUTPUT_FIFO_DEPTH = 2*N;
+    localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
+    localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
+    localparam int SAMPLE_CONTEXT_WIDTH = TARGET_WIDTH + 2*N + 1;
+    localparam int SAMPLE_CONTEXT_DEPTH = (INPUT_FIFO_DEPTH > 2*N+2) ? INPUT_FIFO_DEPTH : 2*N+2;
+
+    logic clk = 0;
+    logic rst_n, weightValid, activationValid, trainingEnable, resultReady;
+    logic loadReductionWeights, reloadWeights, passThrough, reduceOutput;
+    logic signed [WIDTH-1:0] weightData[N], activationData[N];
+    logic signed [TARGET_WIDTH-1:0] targetData;
+    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N];
+    logic weightReady, activationReady, resultValid, resultLast, weightsLoaded, reloadReady;
+    logic signed [PREDICTION_WIDTH-1:0] resultData[N];
+    logic signed [TARGET_WIDTH-1:0] resultTargetData;
+    logic signed [1:0] learningDirection, rowDirection[N], columnDirection[N];
+    logic matrixUpdateValid;
+
+    integer stimulus_fd, trace_fd, status, cycle_count, input_cycle;
+    integer scanned_reset_n, scanned_weight_valid;
+    integer scanned_weight_lane0, scanned_weight_lane1, scanned_weight_lane2;
+    integer scanned_activation_valid;
+    integer scanned_activation_lane0, scanned_activation_lane1, scanned_activation_lane2;
+    integer scanned_target, scanned_training_enable, scanned_result_ready;
+    integer scanned_reduction_lane0, scanned_reduction_lane1, scanned_reduction_lane2;
+    integer scanned_load_reduction_weights, scanned_reload_weights;
+    integer scanned_pass_through, scanned_reduce_output;
+    integer entry, lane, index;
+    integer retired, retired_last, retired_prediction, retired_direction, retired_target;
+    integer retired_raw[0:N-1], retired_activated[0:N-1], retired_result[0:N-1];
+    string stimulus_path, trace_path;
+
+    always #5ns clk = ~clk;
+
+    nnAccelerator #(.WIDTH(WIDTH), .N(N), .FRACTION_BITS(FRACTION_BITS),
+        .TARGET_WIDTH(TARGET_WIDTH), .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
+        .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH), .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)) dut (
+        .clk(clk), .rst_n(rst_n), .weightData(weightData), .weightValid(weightValid),
+        .weightReady(weightReady), .activationData(activationData), .targetData(targetData),
+        .trainingEnable(trainingEnable), .activationValid(activationValid),
+        .activationReady(activationReady), .reductionWeight(reductionWeight),
+        .loadReductionWeights(loadReductionWeights), .reduceOutput(reduceOutput),
+        .resultData(resultData), .resultTargetData(resultTargetData),
+        .learningDirection(learningDirection), .rowDirection(rowDirection),
+        .columnDirection(columnDirection), .matrixUpdateValid(matrixUpdateValid),
+        .resultValid(resultValid), .resultReady(resultReady), .resultLast(resultLast),
+        .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights),
+        .reloadReady(reloadReady), .passThrough(passThrough)
+    );
+
+    task automatic dump_snapshot(input integer c);
+        begin
+            $fwrite(trace_fd, "C %0d\n", c);
+            $fwrite(trace_fd, "W %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
+                $signed(dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg),
+                $signed(dut.matrixEngine.systolicArr.row_loop[0].col_loop[1].mb.weightReg),
+                $signed(dut.matrixEngine.systolicArr.row_loop[0].col_loop[2].mb.weightReg),
+                $signed(dut.matrixEngine.systolicArr.row_loop[1].col_loop[0].mb.weightReg),
+                $signed(dut.matrixEngine.systolicArr.row_loop[1].col_loop[1].mb.weightReg),
+                $signed(dut.matrixEngine.systolicArr.row_loop[1].col_loop[2].mb.weightReg),
+                $signed(dut.matrixEngine.systolicArr.row_loop[2].col_loop[0].mb.weightReg),
+                $signed(dut.matrixEngine.systolicArr.row_loop[2].col_loop[1].mb.weightReg),
+                $signed(dut.matrixEngine.systolicArr.row_loop[2].col_loop[2].mb.weightReg));
+            $fwrite(trace_fd, "R");
+            for (lane = 0; lane < N; lane++) $fwrite(trace_fd, " %0d", $signed(dut.residentReductionWeight[lane]));
+            $fwrite(trace_fd, "\nWF %0d", dut.matrixEngine.weightVectorFifo.values);
+            for (entry = 0; entry < dut.matrixEngine.weightVectorFifo.values; entry++) begin
+                index = dut.matrixEngine.weightVectorFifo.readPtr + entry;
+                if (index >= N) index = index - N;
+                for (lane = 0; lane < N; lane++)
+                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.weightVectorFifo.data[index][lane*WIDTH +: WIDTH]));
+            end
+            $fwrite(trace_fd, "\nAF %0d", dut.matrixEngine.activationVectorFifo.values);
+            for (entry = 0; entry < dut.matrixEngine.activationVectorFifo.values; entry++) begin
+                index = dut.matrixEngine.activationVectorFifo.readPtr + entry;
+                if (index >= INPUT_FIFO_DEPTH) index = index - INPUT_FIFO_DEPTH;
+                for (lane = 0; lane < N; lane++)
+                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.activationVectorFifo.data[index][lane*WIDTH +: WIDTH]));
+            end
+            $fwrite(trace_fd, "\nSF %0d", dut.sampleContextFifo.values);
+            for (entry = 0; entry < dut.sampleContextFifo.values; entry++) begin
+                index = dut.sampleContextFifo.readPtr + entry;
+                if (index >= SAMPLE_CONTEXT_DEPTH) index = index - SAMPLE_CONTEXT_DEPTH;
+                $fwrite(trace_fd, " %0d", $signed(dut.sampleContextFifo.data[index][SAMPLE_CONTEXT_WIDTH-1 -: TARGET_WIDTH]));
+                for (lane = 0; lane < N; lane++)
+                    $fwrite(trace_fd, " %0d", $signed(dut.sampleContextFifo.data[index][2*lane+1 +: 2]));
+                $fwrite(trace_fd, " %0d", dut.sampleContextFifo.data[index][0]);
+            end
+            $fwrite(trace_fd, "\nOF %0d", dut.matrixEngine.outputVectorFifo.values);
+            for (entry = 0; entry < dut.matrixEngine.outputVectorFifo.values; entry++) begin
+                index = dut.matrixEngine.outputVectorFifo.readPtr + entry;
+                if (index >= OUTPUT_FIFO_DEPTH) index = index - OUTPUT_FIFO_DEPTH;
+                for (lane = 0; lane < N; lane++)
+                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.outputVectorFifo.data[index][lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH]));
+            end
+            $fwrite(trace_fd, "\nMF %0d", dut.resultMetadataFifo.values);
+            for (entry = 0; entry < dut.resultMetadataFifo.values; entry++) begin
+                index = dut.resultMetadataFifo.readPtr + entry;
+                if (index >= OUTPUT_FIFO_DEPTH+1) index = index - (OUTPUT_FIFO_DEPTH+1);
+                $fwrite(trace_fd, " %0d", $signed(dut.resultMetadataFifo.data[index][PREDICTION_WIDTH+2*N-1:2*N]));
+                for (lane = 0; lane < N; lane++)
+                    $fwrite(trace_fd, " %0d", $signed(dut.resultMetadataFifo.data[index][2*lane +: 2]));
+            end
+            $fwrite(trace_fd, "\n");
+        end
+    endtask
+
+    initial begin
+        if (!$value$plusargs("STIMULUS=%s", stimulus_path)) $fatal(1, "missing +STIMULUS path");
+        if (!$value$plusargs("TRACE=%s", trace_path)) $fatal(1, "missing +TRACE path");
+        stimulus_fd = $fopen(stimulus_path, "r");
+        trace_fd = $fopen(trace_path, "w");
+        if (!stimulus_fd || !trace_fd) $fatal(1, "cannot open stimulus or trace file");
+        status = $fscanf(stimulus_fd, "%d\n", cycle_count);
+        if (status != 1) $fatal(1, "bad stimulus header");
+        rst_n = 0; weightValid = 0; activationValid = 0; trainingEnable = 0;
+        resultReady = 0; loadReductionWeights = 0; reloadWeights = 0;
+        passThrough = 1; reduceOutput = 0; targetData = 0;
+        for (lane = 0; lane < N; lane++) begin weightData[lane] = 0; activationData[lane] = 0; reductionWeight[lane] = 0; end
+
+        for (integer c = 0; c < cycle_count; c++) begin
+            @(negedge clk);
+            status = $fscanf(stimulus_fd,
+                "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
+                input_cycle, scanned_reset_n, scanned_weight_valid,
+                scanned_weight_lane0, scanned_weight_lane1, scanned_weight_lane2,
+                scanned_activation_valid, scanned_activation_lane0,
+                scanned_activation_lane1, scanned_activation_lane2, scanned_target,
+                scanned_training_enable, scanned_result_ready,
+                scanned_reduction_lane0, scanned_reduction_lane1,
+                scanned_reduction_lane2, scanned_load_reduction_weights,
+                scanned_reload_weights, scanned_pass_through, scanned_reduce_output);
+            if (status != 20 || input_cycle != c) $fatal(1, "bad stimulus at cycle %0d", c);
+            rst_n = scanned_reset_n;
+            weightValid = scanned_weight_valid;
+            weightData[0] = scanned_weight_lane0;
+            weightData[1] = scanned_weight_lane1;
+            weightData[2] = scanned_weight_lane2;
+            activationValid = scanned_activation_valid;
+            activationData[0] = scanned_activation_lane0;
+            activationData[1] = scanned_activation_lane1;
+            activationData[2] = scanned_activation_lane2;
+            targetData = scanned_target;
+            trainingEnable = scanned_training_enable;
+            resultReady = scanned_result_ready;
+            reductionWeight[0] = scanned_reduction_lane0;
+            reductionWeight[1] = scanned_reduction_lane1;
+            reductionWeight[2] = scanned_reduction_lane2;
+            loadReductionWeights = scanned_load_reduction_weights;
+            reloadWeights = scanned_reload_weights;
+            passThrough = scanned_pass_through;
+            reduceOutput = scanned_reduce_output;
+            @(posedge clk);
+            retired = resultValid && resultReady;
+            retired_last = resultLast; retired_prediction = $signed(dut.prediction);
+            retired_direction = $signed(learningDirection); retired_target = $signed(resultTargetData);
+            for (lane = 0; lane < N; lane++) begin
+                retired_raw[lane] = $signed(dut.rawResultData[lane]);
+                retired_activated[lane] = $signed(dut.activatedData[lane]);
+                retired_result[lane] = $signed(resultData[lane]);
+            end
+            #1ps;
+            dump_snapshot(c);
+            if (retired) $fwrite(trace_fd,
+                "RT %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
+                c, retired_raw[0], retired_raw[1], retired_raw[2],
+                retired_activated[0], retired_activated[1], retired_activated[2],
+                retired_prediction, retired_direction, retired_target,
+                retired_result[0], retired_result[1], retired_result[2], retired_last);
+        end
+        $fclose(stimulus_fd); $fclose(trace_fd);
+        $display("PASS: wrote %0d post-edge snapshots", cycle_count);
+        $finish;
+    end
+endmodule
