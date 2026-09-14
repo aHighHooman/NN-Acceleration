@@ -15,7 +15,6 @@ module matrixMultiplierWeightStationary #(
     input  logic signed [1:0]            rowDirection [N],
     input  logic signed [1:0]            columnDirection [N],
     input  logic                         matrixUpdateValid,
-    input  logic signed [2*N-1:0]        reductionUpdateData,
     output logic signed [2*WIDTH+$clog2(N)-1:0] resultData [N],
     output logic                         resultValid,
     input  logic                         resultReady,
@@ -23,13 +22,9 @@ module matrixMultiplierWeightStationary #(
     output logic                         weightsLoaded,
     input  logic                         reloadWeights,
     output logic                         reloadReady,
-    output logic                         matrixUpdateAccepted,
-    output logic                         matrixUpdateComplete,
     output logic                         datapathAdvance,
     output logic                         resultEnqueue,
-    output logic signed [2*WIDTH+$clog2(N)-1:0] resultEnqueueData [N],
-    output logic                         reductionUpdateBoundaryValid,
-    output logic signed [2*N-1:0]        reductionUpdateBoundaryData
+    output logic signed [2*WIDTH+$clog2(N)-1:0] resultEnqueueData [N]
 );
 
     localparam int WEIGHT_COUNT_WIDTH   = $clog2(N+1);
@@ -152,7 +147,6 @@ module matrixMultiplierWeightStationary #(
     assign resultValid      = !outputEmpty;
     assign resultLast       = resultValid && (transmittedResultRow == N-1);
     assign arrayAdvance     = !weightsLoaded ? weightPop : !outputBlocked;
-    assign matrixUpdateAccepted = matrixUpdateValid && arrayAdvance;
     assign datapathAdvance = arrayAdvance;
     assign resultEnqueue = arrayAdvance && resultAlignedAllValid;
     // Expose the complete result vector at the same edge on which the normal
@@ -165,11 +159,6 @@ module matrixMultiplierWeightStationary #(
             assign resultEnqueueData[enqueueLane] = resultAlignedData[enqueueLane];
         end
     endgenerate
-    // The learning package enters PE(0,0) directly on this advancing edge.
-    // Launch the matching reduction boundary from that same live package so
-    // the matrix and reduction state transitions remain aligned downstream.
-    assign reductionUpdateBoundaryValid = matrixUpdateValid;
-    assign reductionUpdateBoundaryData = reductionUpdateData;
     assign activationPop    = weightsLoaded && !activationEmpty && arrayAdvance;
     assign weightPop        = !weightsLoaded && !weightEmpty;
     assign reloadReady      = weightsLoaded && activationEmpty && !skewBusy &&
@@ -284,7 +273,7 @@ module matrixMultiplierWeightStationary #(
         .row(rowData_OrchToSyst), .rowValid(validData_OrchToSyst),
         .col(weightData_FifoToLoader), .result(resultData_SystToFifo),
         .resultValid(validData_SystToFifo),
-        .updateComplete(matrixUpdateComplete),
+        .updateComplete(),
         .pipelineBusy(pipelineBusy)
     );
 

@@ -74,11 +74,8 @@ module nnAccelerator #(
     logic reductionBoundaryValidPipe[REDUCTION_BOUNDARY_STAGES];
     logic signed [2*N-1:0]
         reductionBoundaryDataPipe[REDUCTION_BOUNDARY_STAGES];
-    logic matrixUpdateAccepted, matrixUpdateComplete;
     logic matrixDatapathAdvance, matrixResultEnqueue, matrixResultPop;
     logic matrixReloadReady, reductionBoundaryBusy, reductionBoundaryApply;
-    logic reductionUpdateBoundaryValid;
-    logic signed [2*N-1:0] reductionUpdateBoundaryData;
     logic resultMetadataPush, resultMetadataPop;
     logic matrixActivationValid, matrixActivationReady;
     logic matrixResultValid, matrixResultReady, matrixResultLast;
@@ -112,7 +109,7 @@ module nnAccelerator #(
                                     reductionBoundaryValidPipe[REDUCTION_BOUNDARY_STAGES-1];
 
     always_comb begin
-        reductionBoundaryBusy = reductionUpdateBoundaryValid ||
+        reductionBoundaryBusy = matrixUpdateValid ||
                                 reductionBoundaryApply;
         for (int stage = 0; stage < REDUCTION_BOUNDARY_STAGES; stage++)
             reductionBoundaryBusy |= reductionBoundaryValidPipe[stage];
@@ -244,10 +241,10 @@ module nnAccelerator #(
         .full(), .empty(), .values()
     );
 
-    // Carry the compact reduction update through the same advancing slots as
-    // the matrix update wave.  The boundary commits the resident vector on an
-    // advancing edge, including a useful bubble edge; it has no readout event
-    // to drain and cannot hold a result valid.
+    // The accelerator owns the compact reduction update.  Stage zero samples
+    // the live package directly, while the boundary commits the resident
+    // vector on the same advancing slots as the matrix update wave, including
+    // useful bubble edges; it has no readout event to drain or hold valid.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             for (int lane = 0; lane < N; lane++)
@@ -268,9 +265,9 @@ module nnAccelerator #(
                         reductionBoundaryDataPipe[stage-1];
                 end
                 reductionBoundaryValidPipe[0] <=
-                    reductionUpdateBoundaryValid;
+                    matrixUpdateValid;
                 reductionBoundaryDataPipe[0] <=
-                    reductionUpdateBoundaryData;
+                    reductionUpdateData;
             end
 
             if (reductionBoundaryApply) begin
@@ -305,14 +302,9 @@ module nnAccelerator #(
         .activationReady(matrixActivationReady), .resultData(rawResultData),
         .rowDirection(rowDirection), .columnDirection(columnDirection),
         .matrixUpdateValid(matrixUpdateValid),
-        .reductionUpdateData(reductionUpdateData),
-        .matrixUpdateAccepted(matrixUpdateAccepted),
-        .matrixUpdateComplete(matrixUpdateComplete),
         .datapathAdvance(matrixDatapathAdvance),
         .resultEnqueue(matrixResultEnqueue),
         .resultEnqueueData(rawResultEnqueueData),
-        .reductionUpdateBoundaryValid(reductionUpdateBoundaryValid),
-        .reductionUpdateBoundaryData(reductionUpdateBoundaryData),
         .resultValid(matrixResultValid), .resultReady(matrixResultReady),
         .resultLast(matrixResultLast), .weightsLoaded(weightsLoaded),
         .reloadWeights(reloadWeights && reloadReady),
