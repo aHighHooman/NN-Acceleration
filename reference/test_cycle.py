@@ -223,6 +223,27 @@ class CycleReferenceTests(unittest.TestCase):
             tuple(matrix_multiply(samples[1], self.initial_W(), self.config().width)),
         )
 
+    def test_incomplete_observation_fails_at_result_boundary(self) -> None:
+        model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
+        model.step(self.drive(training=False))
+        model.step(self.drive(valid=False, training=False))
+        token = model._data_tokens[0]
+        self.assertTrue(
+            all(value is None for row in token.observed_weights for value in row)
+        )
+
+        # Let the first anti-diagonal be observed, then model a missing PE
+        # observation before the token reaches its final anti-diagonal.
+        model.step(self.drive(valid=False, training=False))
+        token.observed_weights[0][0] = None
+
+        with self.assertRaisesRegex(
+            AssertionError,
+            "sample reached result boundary without all PE weights",
+        ):
+            for _ in range(2 * model.config.n - 2):
+                model.step(self.drive(valid=False, training=False))
+
     def test_continuous_throughput_is_one_result_per_cycle_after_fill(self) -> None:
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
         for index in range(12):

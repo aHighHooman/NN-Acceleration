@@ -203,9 +203,10 @@ class _DataToken:
 
 
 @dataclass(frozen=True)
-class _AlignedResult:
-    sample_index: int
+class _CompletedResult:
+    sample: _Sample
     raw_matrix_result: tuple[int, ...]
+    observed_weights: tuple[tuple[int, ...], ...]
 
 
 @dataclass(frozen=True)
@@ -304,7 +305,6 @@ class CycleReference:
             or self._activation_fifo
             or self._sample_context_fifo
             or self._data_tokens
-            or self._completed_tokens
             or self._alignment
             or self._output_fifo
             or self._matrix_waves
@@ -324,7 +324,6 @@ class CycleReference:
         return not bool(
             self._activation_fifo
             or self._data_tokens
-            or self._completed_tokens
             or self._matrix_waves
             or self._alignment
             or self._output_fifo
@@ -351,8 +350,7 @@ class CycleReference:
         self._result_readout_fifo: deque[_ReadoutEntry] = deque()
         self._weight_load_pipe: list[tuple[int, ...] | None] = [None] * self.config.n
         self._data_tokens: list[_DataToken] = []
-        self._completed_tokens: dict[int, _DataToken] = {}
-        self._alignment: deque[_AlignedResult] = deque()
+        self._alignment: deque[_CompletedResult] = deque()
         self._matrix_waves: list[_MatrixWave] = []
         self._reduction_pipe: list[_ReductionWave | None] = [None] * (2 * self.config.n - 1)
         self._sample_results: list[_SampleResult] = []
@@ -378,7 +376,6 @@ class CycleReference:
         self._result_readout_fifo.clear()
         self._weight_load_pipe = [None] * self.config.n
         self._data_tokens.clear()
-        self._completed_tokens.clear()
         self._alignment.clear()
         self._matrix_waves.clear()
         self._reduction_pipe = [None] * (2 * self.config.n - 1)
@@ -467,7 +464,6 @@ class CycleReference:
             self._weights_loaded
             and not self._activation_fifo
             and not self._data_tokens
-            and not self._completed_tokens
             and not self._alignment
             and not self._output_fifo
             and self._output_row_index == 0
@@ -540,7 +536,6 @@ class CycleReference:
         self,
         accepted: _Sample | None,
         activation_pop: bool,
-        output_enqueue: bool,
     ) -> None:
         """Advance the data array and fixed result alignment one slot."""
 
@@ -570,8 +565,13 @@ class CycleReference:
                         self.config.width,
                     )
                 )
-                self._completed_tokens[token.sample.index] = token
-                self._alignment.append(_AlignedResult(token.sample.index, raw))
+                self._alignment.append(
+                    _CompletedResult(
+                        sample=token.sample,
+                        raw_matrix_result=raw,
+                        observed_weights=_matrix_tuple(observed_matrix),
+                    )
+                )
             else:
                 active.append(token)
         self._data_tokens = active
@@ -583,27 +583,17 @@ class CycleReference:
                 _DataToken(
                     sample=accepted,
                     age=0,
-                    observed_weights=_zero_matrix(self.config.n),
+                    observed_weights=[[None] * self.config.n for _ in range(self.config.n)],
                 )
             )
 
-        shifted: deque[_AlignedResult] = deque()
-        skipped_ready = output_enqueue
-        for entry in self._alignment:
-            if skipped_ready:
-                skipped_ready = False
-                continue
-            shifted.append(entry)
-        self._alignment = shifted
-
     def _make_result(
         self,
-        token: _DataToken,
-        raw_result: tuple[int, ...],
+        completed: _CompletedResult,
         pass_through: bool,
         resident_R: Sequence[int],
     ) -> _SampleResult:
-        observed = token.observed_weights
+        observed = completed.observed_weights
         if any(value is None for row in observed for value in row):
             raise AssertionError("completed sample has an unobserved PE weight")
         W_used = tuple(
@@ -611,7 +601,7 @@ class CycleReference:
             for row in observed
         )
         R_used = tuple(int(value) for value in resident_R)
-        activated = tuple(activate(raw_result, pass_through, self.config.matrix_result_width))
+        activated = tuple(activate(completed.raw_matrix_result, pass_through, self.config.matrix_result_width))
         prediction = weighted_vector_reduction(
             activated,
             R_used,
@@ -620,13 +610,13 @@ class CycleReference:
             self.config.fraction_bits,
         )
         direction = learning_direction(
-            token.sample.target,
+            completed.sample.target,
             prediction,
             self.config.target_width,  # type: ignore[arg-type]
             self.config.prediction_width,
         )
         _, _, matrix_direction = matrix_update_directions(
-            token.sample.input_vector,
+            completed.sample.input_vector,
             activated,
             R_used,
             direction,
@@ -637,23 +627,23 @@ class CycleReference:
         reduction_direction = reduction_update_directions(activated, direction)
         zeros = tuple(tuple(0 for _ in range(self.config.n)) for _ in range(self.config.n))
         result = _SampleResult(
-            sample_index=token.sample.index,
-            input_vector=token.sample.input_vector,
-            target=token.sample.target,
-            training_enable=token.sample.training_enable,
+            sample_index=completed.sample.index,
+            input_vector=completed.sample.input_vector,
+            target=completed.sample.target,
+            training_enable=completed.sample.training_enable,
             W_used=W_used,
             R_used=R_used,
-            raw_matrix_result=raw_result,
+            raw_matrix_result=completed.raw_matrix_result,
             activated_result=activated,
             prediction=prediction,
             learning_direction=direction,
             matrix_update_directions=_matrix_tuple(matrix_direction)
-            if token.sample.training_enable
+            if completed.sample.training_enable
             else zeros,
             reduction_update_directions=tuple(reduction_direction)
-            if token.sample.training_enable
+            if completed.sample.training_enable
             else (0,) * self.config.n,
-            update_generated=token.sample.training_enable,
+            update_generated=completed.sample.training_enable,
         )
         self._sample_results.append(result)
         return result
@@ -758,8 +748,6 @@ class CycleReference:
 
         activation_for_array = self._activation_fifo[0] if activation_pop else None
         result_enqueue = bool(datapath_advance and aligned_head_ready)
-        alignment_to_enqueue = self._alignment[0] if result_enqueue else None
-
         injected_matrix: _MatrixWave | None = None
         injected_reduction: _ReductionWave | None = None
         matrix_update_accepted = bool(
@@ -790,7 +778,7 @@ class CycleReference:
         resident_R_before = self._R[:]
 
         if datapath_advance and self._weights_loaded:
-            self._shift_data_and_alignment(activation_for_array, activation_pop, result_enqueue)
+            self._shift_data_and_alignment(activation_for_array, activation_pop)
         if datapath_advance:
             self._advance_matrix_waves(injected_matrix)
             self._advance_reduction_waves(injected_reduction, cycle_inputs.load_reduction_weights)
@@ -829,30 +817,27 @@ class CycleReference:
             self._sample_context_fifo.append(accepted_sample)
 
         if result_enqueue:
-            assert alignment_to_enqueue is not None
-            token = self._completed_tokens.pop(alignment_to_enqueue.sample_index, None)
-            context_for_result = next(
-                (sample for sample in self._sample_context_fifo if sample.index == alignment_to_enqueue.sample_index),
-                None,
-            )
-            if token is None or context_for_result is None:
-                raise AssertionError("aligned result is missing its sample state")
+            completed_to_enqueue = self._alignment.popleft()
             result = self._make_result(
-                token,
-                alignment_to_enqueue.raw_matrix_result,
+                completed_to_enqueue,
                 pass_through,
                 resident_R_before,
             )
-            self._output_fifo.append(_OutputEntry(alignment_to_enqueue.sample_index, alignment_to_enqueue.raw_matrix_result))
+            self._output_fifo.append(
+                _OutputEntry(
+                    completed_to_enqueue.sample.index,
+                    completed_to_enqueue.raw_matrix_result,
+                )
+            )
             self._result_readout_fifo.append(
                 _ReadoutEntry(
-                    alignment_to_enqueue.sample_index,
+                    completed_to_enqueue.sample.index,
                     result.prediction,
                     tuple(ternary_sign(value) for value in result.R_used),
                 )
             )
             self._enqueue_cycles.append(cycle_number)
-            self._enqueued_sample_indices.append(alignment_to_enqueue.sample_index)
+            self._enqueued_sample_indices.append(completed_to_enqueue.sample.index)
 
         if result_retired:
             if not self._output_fifo or not self._result_readout_fifo or not self._sample_context_fifo:
