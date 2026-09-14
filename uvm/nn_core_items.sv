@@ -56,15 +56,11 @@
 
     class nn_core_result_row extends uvm_sequence_item;
         result_t data[N];
-        bit last;
-        int unsigned row_index;
 
         `uvm_object_utils(nn_core_result_row)
 
         function new(string name = "nn_core_result_row");
             super.new(name);
-            last = 1'b0;
-            row_index = 0;
         endfunction
     endclass
 

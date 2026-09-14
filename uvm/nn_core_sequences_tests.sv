@@ -37,7 +37,6 @@
             input_monitor.matrix_ap.connect(scoreboard.expected_fifo.analysis_export);
             input_monitor.matrix_ap.connect(coverage.matrix_imp);
             result_monitor.result_ap.connect(scoreboard.actual_fifo.analysis_export);
-            result_monitor.result_ap.connect(coverage.result_imp);
         endfunction
 
         task wait_for_completion(input int unsigned expected_matrices);
@@ -61,10 +60,6 @@
                 `uvm_error("RESULT_COUNT", $sformatf(
                     "observed %0d result rows, expected %0d",
                     result_monitor.rows_observed, expected_matrices * N))
-            if (result_monitor.framing_errors != 0)
-                `uvm_error("FRAMING", $sformatf(
-                    "result monitor recorded %0d framing errors",
-                    result_monitor.framing_errors))
         endtask
     endclass
 

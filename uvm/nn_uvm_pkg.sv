@@ -22,7 +22,6 @@ package nn_uvm_pkg;
     } reset_phase_e;
 
     `uvm_analysis_imp_decl(_matrix)
-    `uvm_analysis_imp_decl(_result)
 
     // Keep this package as the single compile entry point.  The implementation
     // is grouped by verification role and included in dependency order.

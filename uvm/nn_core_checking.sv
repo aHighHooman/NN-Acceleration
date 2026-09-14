@@ -57,16 +57,6 @@
 
                 for (int row = 0; row < N; row++) begin
                     actual_fifo.get(actual);
-                    if (actual.row_index != row) begin
-                        `uvm_error("FRAMING", $sformatf(
-                            "scoreboard saw row index %0d while expecting %0d",
-                            actual.row_index, row))
-                    end
-                    if (actual.last !== (row == N-1)) begin
-                        `uvm_error("FRAMING", $sformatf(
-                            "scoreboard saw resultLast=%0b on row %0d",
-                            actual.last, row))
-                    end
                     for (int col = 0; col < N; col++) begin
                         if (actual.data[col] !== expected[row][col]) begin
                             `uvm_error("MISMATCH", $sformatf(
@@ -106,12 +96,10 @@
 
         virtual nn_core_if #(WIDTH, N) vif;
         uvm_analysis_imp_matrix #(nn_core_matrix_item, nn_core_coverage) matrix_imp;
-        uvm_analysis_imp_result #(nn_core_result_row, nn_core_coverage) result_imp;
 
         int unsigned matrix_count;
         int unsigned negative_operand_count;
         int unsigned repeated_weight_matrix_count;
-        bit result_last_seen;
         int unsigned weight_bubble_cycles;
         int unsigned activation_bubble_cycles;
         int unsigned activation_stall_cycles;
@@ -129,11 +117,9 @@
         function new(string name, uvm_component parent);
             super.new(name, parent);
             matrix_imp = new("matrix_imp", this);
-            result_imp = new("result_imp", this);
             matrix_count = 0;
             negative_operand_count = 0;
             repeated_weight_matrix_count = 0;
-            result_last_seen = 1'b0;
             weight_bubble_cycles = 0;
             activation_bubble_cycles = 0;
             activation_stall_cycles = 0;
@@ -174,11 +160,6 @@
                 repeated_weight_matrix_count++;
             last_weight_generation = item.weight_generation;
             have_last_generation = 1'b1;
-        endfunction
-
-        function void write_result(nn_core_result_row row);
-            if (row.last)
-                result_last_seen = 1'b1;
         endfunction
 
         task run_phase(uvm_phase phase);
@@ -252,8 +233,6 @@
                 `uvm_error("COVERAGE", "weight reload bin was not observed")
             if (reset_count == 0)
                 `uvm_error("COVERAGE", "injected reset bin was not observed")
-            if (!result_last_seen)
-                `uvm_error("COVERAGE", "resultLast bin was not observed")
         endfunction
 
         function void report_phase(uvm_phase phase);

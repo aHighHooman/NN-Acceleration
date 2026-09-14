@@ -111,14 +111,12 @@
         uvm_analysis_port #(nn_core_result_row) result_ap;
         int unsigned next_row;
         int unsigned rows_observed;
-        int unsigned framing_errors;
 
         function new(string name, uvm_component parent);
             super.new(name, parent);
             result_ap = new("result_ap", this);
             next_row = 0;
             rows_observed = 0;
-            framing_errors = 0;
         endfunction
 
         function void build_phase(uvm_phase phase);
@@ -136,18 +134,15 @@
                 end else if (vif.monitor_cb.resultValid && vif.monitor_cb.resultReady) begin
                     nn_core_result_row row;
                     row = nn_core_result_row::type_id::create("accepted_result_row");
-                    row.row_index = next_row;
-                    row.last = vif.monitor_cb.resultLast;
                     for (int lane = 0; lane < N; lane++)
                         row.data[lane] = vif.monitor_cb.resultData[lane];
 
-                    if (row.last !== (next_row == N-1)) begin
-                        framing_errors++;
+                    if (vif.monitor_cb.resultLast !== (next_row == N-1)) begin
                         `uvm_error("FRAMING", $sformatf(
                             "resultLast mismatch at accepted row %0d", next_row))
                     end
 
-                    if (row.last)
+                    if (next_row == N-1)
                         next_row = 0;
                     else
                         next_row++;

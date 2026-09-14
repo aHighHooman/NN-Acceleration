@@ -23,6 +23,17 @@ $vlib = Join-Path $questaBin "vlib.exe"
 $vlog = Join-Path $questaBin "vlog.exe"
 $vsim = Join-Path $questaBin "vsim.exe"
 
+function Invoke-RtlTest {
+    param([string]$Top, [string]$Log, [string]$Failure)
+    & $vsim -c "work.$Top" -l $Log `
+        -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
+    if ($LASTEXITCODE -ne 0) { throw $Failure }
+    $logText = Get-Content -Raw $Log
+    if ($logText -match "\*\* (Error|Fatal):") {
+        throw "$Failure See $(Join-Path $buildDir $Log)"
+    }
+}
+
 if (-not $env:SALT_LICENSE_SERVER) {
     $userSaltLicense = [Environment]::GetEnvironmentVariable(
         "SALT_LICENSE_SERVER", "User")
@@ -51,11 +62,18 @@ $sources = @(
     (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationarySPI.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationarySPI_tb.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/nnAccelerator_tb.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/nnAcceleratorPhase5L_tb.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/matrixWeightUpdateWave_tb.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/weightedVectorReduction_tb.sv")
 )
+
+Push-Location $projectRoot
+try {
+    & python -m unittest discover -s reference -p "test_*.py"
+    if ($LASTEXITCODE -ne 0) { throw "Python golden-reference tests failed." }
+}
+finally {
+    Pop-Location
+}
 
 Push-Location $buildDir
 try {
@@ -65,36 +83,24 @@ try {
     & $vlog -sv @sources
     if ($LASTEXITCODE -ne 0) { throw "vlog failed." }
 
-    & $vsim -c work.matrixMultiplierWeightStationary_tb `
-        -l core-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
-    if ($LASTEXITCODE -ne 0) { throw "Core regression failed." }
+    Invoke-RtlTest "weightedVectorReduction_tb" "reduction-regression.log" `
+        "Weighted reduction regression failed."
+    Invoke-RtlTest "matrixMultiplierWeightStationary_tb" "core-regression.log" `
+        "Core regression failed."
+    Invoke-RtlTest "matrixWeightUpdateWave_tb" "matrix-update-regression.log" `
+        "Matrix update-wave regression failed."
 
-    & $vsim -c work.matrixMultiplierWeightStationarySPI_tb `
-        -l spi-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
-    if ($LASTEXITCODE -ne 0) { throw "SPI regression failed." }
+    & pwsh -File (Join-Path $PSScriptRoot "run_rtl_reference_compare.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "Golden RTL comparison failed." }
 
-    & $vsim -c work.weightedVectorReduction_tb `
-        -l reduction-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
-    if ($LASTEXITCODE -ne 0) { throw "Weighted reduction regression failed." }
+    & pwsh -File (Join-Path $PSScriptRoot "run_uvm.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "UVM protocol regression failed." }
 
-    & $vsim -c work.nnAccelerator_tb `
-        -l accelerator-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
-    if ($LASTEXITCODE -ne 0) { throw "Accelerator target/comparator regression failed." }
-
-    & $vsim -c work.nnAcceleratorPhase5K_3x3_tb `
-        -l accelerator-phase5k-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
-    if ($LASTEXITCODE -ne 0) { throw "Phase 5K 3x3 learning-boundary regression failed." }
-
-    & $vsim -c work.nnAcceleratorPhase5L_tb `
-        -l accelerator-phase5l-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
-    if ($LASTEXITCODE -ne 0) { throw "Phase 5L inference/training throughput regression failed." }
-
-    & $vsim -c work.matrixWeightUpdateWave_tb `
-        -l matrix-update-regression.log -do "run -all; quit -code [coverage attribute -name TESTSTATUS] -f"
-    if ($LASTEXITCODE -ne 0) { throw "Matrix update-wave regression failed." }
+    Invoke-RtlTest "matrixMultiplierWeightStationarySPI_tb" "spi-regression.log" `
+        "SPI regression failed."
 }
 finally {
     Pop-Location
 }
 
-Write-Output "PASS: core, SPI, reduction, Phase 5K/5L accelerator, and matrix update-wave regressions completed."
+Write-Output "PASS: Python references, local RTL units, golden RTL comparison, UVM protocol, and SPI regressions completed."

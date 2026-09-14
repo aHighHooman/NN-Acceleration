@@ -116,8 +116,35 @@ sequenceDiagram
 
 ## Verification
 
-Verification has one core UVM environment and a small set of direct,
-purpose-built accelerator testbenches:
+Verification is split by responsibility so that each guarantee has one
+primary owner:
+
+- `FunctionalReference` owns end-to-end numerical and learning behavior.
+- `CycleReference` plus the RTL trace bridge owns accelerator latency,
+  W/R evolution, FIFO contents, bubbles, and backpressure state.
+- The core UVM environment owns randomized interface traffic, reset/reload,
+  ordering, and compact traffic coverage. Its small matrix predictor checks
+  result data during that randomized traffic; the result monitor alone checks
+  `resultLast` framing.
+- Directed RTL units own reduction arithmetic, PE/update-wave mechanics, and
+  `N=2/3/4` matrix-core parameterization.
+- The SPI bench owns serialization, CDC, ordering, and output backpressure,
+  with one identity-matrix numerical smoke transaction.
+
+Run the complete regression in ownership order with:
+
+```powershell
+pwsh -File scripts/run_modelsim.ps1
+```
+
+This runs the Python reference tests, local RTL units, golden RTL comparison,
+UVM protocol regression, and SPI regression in that order.
+
+The Phase 6E golden RTL comparison can also be run directly:
+
+```powershell
+pwsh -File scripts/run_rtl_reference_compare.ps1
+```
 
 ### Core behavior: existing UVM environment
 
@@ -135,33 +162,10 @@ Run the core UVM regression with:
 pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_regression_test
 ```
 
-### Accelerator/training behavior: directed testbenches
-
-Accelerator and training behavior is verified directly by
-`nnAccelerator_tb.sv`, `matrixWeightUpdateWave_tb.sv`, and
-`weightedVectorReduction_tb.sv`, run by `scripts/run_modelsim.ps1`. The
-directed coverage includes:
-
-- 2x2, 3x3, and 4x4 arrays, composed pass-through/ReLU behavior, and composed activation-to-reduction predictions
-- atomic activation/target/training-enable acceptance, including metadata-FIFO-full backpressure
-- per-sample `trainingEnable` alignment across four consecutive `0,1,0,1` samples, mixed training/inference samples, and inference samples leaving matrix and reduction weights unchanged
-- target, input-sign, prediction, and buffered-training alignment under input bubbles and output backpressure
-- all three learning directions, narrow-target sign extension, zero input signs, and a closed ReLU gate
-- stalled update waves, overlapping matrix update packages, anti-diagonal ordering, and shared data/update/sideband stalls
-- exact 3x3 relationships `S0 -> S7`, `S1 -> S8`, and `S2 -> S9` under no-stall traffic, plus preserved ordering across a shared data/update-wave freeze
-- old-state result backlog, ordered readout events under stalls and bubbles, and signed one-LSB saturation at both endpoints
-- worst-case accumulation, asynchronous `clk`/`sclk` SPI transfers, and stable outputs under backpressure
-
 The scripts discover the Quartus-installed Questa under
 `C:\altera_lite\25.1std\questa_fse\win64`; a different installation can be
-selected with `NN_ACCEL_QUESTA_BIN`. Run the directed regression with:
-
-```powershell
-pwsh -File scripts/run_modelsim.ps1
-```
-
-With Questa configured, the regression scripts treat any simulation error as
-a failure.
+selected with `NN_ACCEL_QUESTA_BIN`. With Questa configured, the regression
+scripts treat any simulation error as a failure.
 
 At the `nnAccelerator` boundary, `targetData` and `trainingEnable` are accepted
 atomically with the complete `activationData[N]` vector on
@@ -205,8 +209,8 @@ pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_regression_test -Seed 12345
 ```
 
 The UVM compile targets the direct core interface at `N=3`, `WIDTH=8` for a
-fast regression. The existing directed regression remains the reference for
-the supported 2x2, 3x3, and 4x4 configurations.
+fast regression. `matrixMultiplierWeightStationary_tb.sv` retains focused
+coverage of the supported 2x2, 3x3, and 4x4 configurations.
 
 ### FPGA build snapshot
 
@@ -250,12 +254,22 @@ clock domains, and DE1-SoC pin locations still need explicit constraints.
 |   |-- weightedVectorReduction.sv
 |   |-- weightedVectorReduction_tb.sv
 |   |-- matrixMultiplierWeightStationary_tb.sv
+|   |-- matrixWeightUpdateWave_tb.sv
+|   |-- nnAcceleratorStateTrace_tb.sv
 |   `-- matrixMultiplierWeightStationarySPI_tb.sv
+|-- reference/
+|   |-- arithmetic.py
+|   |-- functional.py
+|   |-- cycle.py
+|   |-- rtl_reference_compare.py
+|   |-- test_functional.py
+|   `-- test_cycle.py
 |-- Quartus Stuff/
 |   |-- NN_Acceleration.qpf
 |   `-- NN_Acceleration.qsf
 |-- scripts/
 |   |-- run_modelsim.ps1
+|   |-- run_rtl_reference_compare.ps1
 |   `-- run_uvm.ps1
 `-- uvm/
 |   |-- nn_core_if.sv
