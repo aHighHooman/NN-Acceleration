@@ -11,7 +11,7 @@ from reference.arithmetic import (
     matrix_multiply,
 )
 from reference.cycle import CycleConfig, CycleInputs, CycleReference, CycleSnapshot
-from reference.functional import FunctionalReference, ReferenceConfig
+from reference.functional import FunctionalReference, ReferenceConfig, Sample
 
 
 class CycleReferenceTests(unittest.TestCase):
@@ -453,22 +453,28 @@ class CycleReferenceTests(unittest.TestCase):
         W = self.initial_W()
         R = [16, 24, 32]
         samples = [
-            ((1, 2, 3), 127, True),
-            ((-2, 3, 1), -20, False),
-            ((3, -1, 2), 40, True),
-            ((0, 2, -3), 0, True),
-            ((-1, -2, -3), -60, True),
-            ((4, 1, 0), 12, False),
-            ((2, 2, 1), 100, True),
-            ((-3, 0, 2), -40, True),
-            ((1, -4, 3), 25, True),
-            ((2, -2, -1), 7, False),
+            Sample((1, 2, 3), 127, True),
+            Sample((-2, 3, 1), -20, False),
+            Sample((3, -1, 2), 40, True),
+            Sample((0, 2, -3), 0, True),
+            Sample((-1, -2, -3), -60, True),
+            Sample((4, 1, 0), 12, False),
+            Sample((2, 2, 1), 100, True),
+            Sample((-3, 0, 2), -40, True),
+            Sample((1, -4, 3), 25, True),
+            Sample((2, -2, -1), 7, False),
         ]
         functional = FunctionalReference(functional_config, W, R)
         functional_records = functional.run(samples)
         cycle = CycleReference(config, W, R)
-        for x, target, training in samples:
-            cycle.step(self.drive(x=x, target=target, training=training))
+        for sample in samples:
+            cycle.step(
+                self.drive(
+                    x=sample.x,
+                    target=sample.target,
+                    training=sample.training_enable,
+                )
+            )
         cycle.flush()
 
         self.assertEqual(len(cycle._sample_results), len(functional_records))

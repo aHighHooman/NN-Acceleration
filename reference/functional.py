@@ -9,7 +9,7 @@ skew, valid/ready, FIFOs, or any other cycle-level implementation state.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,7 +44,6 @@ class ReferenceConfig:
     reduction_weight_width: int = 8
     pass_through: bool = True
     reduce_output: bool = False
-    update_visibility_delay: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.n, int) or isinstance(self.n, bool) or self.n < 1:
@@ -53,8 +52,6 @@ class ReferenceConfig:
             raise ValueError("width must be a positive integer")
         if self.target_width is None:
             object.__setattr__(self, "target_width", self.width)
-        if self.update_visibility_delay is None:
-            object.__setattr__(self, "update_visibility_delay", 2 * self.n + 1)
 
         for name in ("width", "target_width", "reduction_weight_width"):
             value = getattr(self, name)
@@ -66,12 +63,6 @@ class ReferenceConfig:
             or self.fraction_bits < 0
         ):
             raise ValueError("fraction_bits must be a non-negative integer")
-        if (
-            not isinstance(self.update_visibility_delay, int)
-            or isinstance(self.update_visibility_delay, bool)
-            or self.update_visibility_delay < 1
-        ):
-            raise ValueError("update_visibility_delay must be positive")
 
     @property
     def matrix_result_width(self) -> int:
@@ -81,54 +72,11 @@ class ReferenceConfig:
     def prediction_width(self) -> int:
         return prediction_width(self.width, self.n)
 
-    # RTL-style aliases are useful when copying parameter values from a testbench.
     @property
-    def N(self) -> int:
-        return self.n
+    def update_visibility_delay(self) -> int:
+        """Number of samples between an update source and its visibility."""
 
-    @property
-    def WIDTH(self) -> int:
-        return self.width
-
-    @property
-    def FRACTION_BITS(self) -> int:
-        return self.fraction_bits
-
-    @property
-    def fractionBits(self) -> int:
-        return self.fraction_bits
-
-    @property
-    def TARGET_WIDTH(self) -> int:
-        return self.target_width  # type: ignore[return-value]
-
-    @property
-    def targetWidth(self) -> int:
-        return self.target_width  # type: ignore[return-value]
-
-    @property
-    def REDUCTION_WEIGHT_WIDTH(self) -> int:
-        return self.reduction_weight_width
-
-    @property
-    def reductionWeightWidth(self) -> int:
-        return self.reduction_weight_width
-
-    @property
-    def passThrough(self) -> bool:
-        return self.pass_through
-
-    @property
-    def reduceOutput(self) -> bool:
-        return self.reduce_output
-
-    @property
-    def updateVisibilityDelay(self) -> int:
-        return self.update_visibility_delay  # type: ignore[return-value]
-
-
-AcceleratorConfig = ReferenceConfig
-Config = ReferenceConfig
+        return 2 * self.n + 1
 
 
 @dataclass(frozen=True)
@@ -148,11 +96,6 @@ class Sample:
         object.__setattr__(self, "x", tuple(int(value) for value in x))
         object.__setattr__(self, "target", int(target))
         object.__setattr__(self, "training_enable", bool(training_enable))
-
-    @property
-    def trainingEnable(self) -> bool:
-        return self.training_enable
-
 
 @dataclass(frozen=True)
 class SampleRecord:
@@ -180,42 +123,6 @@ class SampleRecord:
     activation_gate: tuple[bool, ...]
     update_generated: bool
     update_visible_at: int | None
-
-    @property
-    def x(self) -> tuple[int, ...]:
-        return self.input_vector
-
-    @property
-    def w_used(self) -> tuple[tuple[int, ...], ...]:
-        return self.W_used
-
-    @property
-    def r_used(self) -> tuple[int, ...]:
-        return self.R_used
-
-    @property
-    def trainingEnable(self) -> bool:
-        return self.training_enable
-
-    @property
-    def learningDirection(self) -> int:
-        return self.learning_direction
-
-    @property
-    def rowDirection(self) -> tuple[int, ...]:
-        return self.row_direction
-
-    @property
-    def columnDirection(self) -> tuple[int, ...]:
-        return self.column_direction
-
-    @property
-    def matrixUpdateDirections(self) -> tuple[tuple[int, ...], ...]:
-        return self.matrix_update_directions
-
-    @property
-    def reductionUpdateDirections(self) -> tuple[int, ...]:
-        return self.reduction_update_directions
 
     @property
     def candidate_matrix_update_directions(self) -> tuple[tuple[int, ...], ...]:
@@ -279,67 +186,6 @@ class _UpdatePackage:
     reduction_direction: tuple[int, ...]
 
 
-def _read_config_value(config: Any, names: Sequence[str], default: Any = None) -> Any:
-    if isinstance(config, Mapping):
-        for name in names:
-            if name in config:
-                return config[name]
-        return default
-    for name in names:
-        if hasattr(config, name):
-            return getattr(config, name)
-    return default
-
-
-def _coerce_config(config: ReferenceConfig | Mapping[str, Any] | Any) -> ReferenceConfig:
-    if isinstance(config, ReferenceConfig):
-        return config
-    if config is None:
-        return ReferenceConfig()
-    return ReferenceConfig(
-        n=_read_config_value(config, ("n", "N"), 3),
-        width=_read_config_value(config, ("width", "WIDTH"), 16),
-        fraction_bits=_read_config_value(
-            config,
-            ("fraction_bits", "fractionBits", "FRACTION_BITS"),
-            4,
-        ),
-        target_width=_read_config_value(
-            config,
-            ("target_width", "targetWidth", "TARGET_WIDTH"),
-            None,
-        ),
-        reduction_weight_width=_read_config_value(
-            config,
-            (
-                "reduction_weight_width",
-                "reductionWeightWidth",
-                "REDUCTION_WEIGHT_WIDTH",
-            ),
-            8,
-        ),
-        pass_through=_read_config_value(
-            config,
-            ("pass_through", "passThrough"),
-            True,
-        ),
-        reduce_output=_read_config_value(
-            config,
-            ("reduce_output", "reduceOutput"),
-            False,
-        ),
-        update_visibility_delay=_read_config_value(
-            config,
-            (
-                "update_visibility_delay",
-                "updateVisibilityDelay",
-                "UPDATE_VISIBILITY_DELAY",
-            ),
-            None,
-        ),
-    )
-
-
 def _copy_matrix(values: Sequence[Sequence[int]], n: int, width: int) -> list[list[int]]:
     if len(values) != n or any(len(row) != n for row in values):
         raise ValueError("W must be an N by N matrix")
@@ -359,46 +205,18 @@ def _zero_matrix(n: int) -> tuple[tuple[int, ...], ...]:
     return tuple(tuple(0 for _ in range(n)) for _ in range(n))
 
 
-def _coerce_sample(sample: Sample | Mapping[str, Any] | Sequence[Any] | Any) -> Sample:
-    if isinstance(sample, Sample):
-        return sample
-    if isinstance(sample, Mapping):
-        x = sample.get("x", sample.get("input_vector", sample.get("input")))
-        target = sample.get("target")
-        training = sample.get(
-            "training_enable",
-            sample.get("trainingEnable", sample.get("train", True)),
-        )
-        if x is None or target is None:
-            raise ValueError("sample mapping must contain x/input_vector and target")
-        return Sample(x, target, training)
-    if hasattr(sample, "x") and hasattr(sample, "target"):
-        return Sample(
-            sample.x,
-            sample.target,
-            getattr(sample, "training_enable", getattr(sample, "trainingEnable", True)),
-        )
-    try:
-        x, target, training = sample
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "sample must be Sample, mapping, or (x, target, training_enable)"
-        ) from exc
-    return Sample(x, target, training)
-
-
 class FunctionalReference:
     """Architectural end-to-end model for continuous no-stall samples."""
 
     def __init__(
         self,
-        config: ReferenceConfig | Mapping[str, Any] | Any = None,
-        W: Sequence[Sequence[int]] | None = None,
-        R: Sequence[int] | None = None,
+        config: ReferenceConfig,
+        W: Sequence[Sequence[int]],
+        R: Sequence[int],
     ) -> None:
-        if W is None or R is None:
-            raise ValueError("initial W and R are required")
-        self.config = _coerce_config(config)
+        if not isinstance(config, ReferenceConfig):
+            raise TypeError("config must be a ReferenceConfig")
+        self.config = config
         self._initial_W = _copy_matrix(W, self.config.n, self.config.width)
         self._initial_R = _copy_vector(
             R,
@@ -560,15 +378,17 @@ class FunctionalReference:
 
     def step(
         self,
-        sample: Sample | Mapping[str, Any] | Sequence[Any] | Any,
+        sample: Sample,
     ) -> SampleRecord:
         """Simulate one sample from the current continuous stream position."""
 
-        return self._step(_coerce_sample(sample))
+        if not isinstance(sample, Sample):
+            raise TypeError("sample must be a Sample")
+        return self._step(sample)
 
     def run(
         self,
-        samples: Sequence[Sample | Mapping[str, Any] | Sequence[Any] | Any],
+        samples: Sequence[Sample],
         *,
         drain_updates: bool = True,
     ) -> list[SampleRecord]:

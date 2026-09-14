@@ -1,8 +1,6 @@
 """Independent architectural reference model for the neural-network accelerator."""
 
 from .functional import (
-    AcceleratorConfig,
-    Config,
     FunctionalReference,
     ReferenceConfig,
     Sample,
@@ -18,8 +16,6 @@ from .cycle import (
 )
 
 __all__ = [
-    "AcceleratorConfig",
-    "Config",
     "FunctionalReference",
     "ReferenceConfig",
     "Sample",
