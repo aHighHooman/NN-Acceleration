@@ -37,11 +37,10 @@ module nnAccelerator #(
 
     localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
-    // The resident reduction vector commits at the same advancing edge as
-    // the last PE on the matrix update wave.  There are 2N-1 anti-diagonals
-    // from PE(0,0) through PE(N-1,N-1).
-    localparam int REDUCTION_BOUNDARY_STAGES = 2*N-1;
-    // Sample metadata remains resident until its corresponding result is
+    // The resident reduction vector commits after the same 2N-1 advancing
+    // slots as the matrix update wave, from PE(0,0) through PE(N-1,N-1).
+    localparam int REDUCTION_UPDATE_DELAY = 2*N-1;
+    // Sample context remains resident until its corresponding result is
     // consumed, so its lifetime is longer than the matrix activation FIFO's.
     localparam int SAMPLE_CONTEXT_DEPTH =
         (INPUT_FIFO_DEPTH > (2*N + 2)) ? INPUT_FIFO_DEPTH : (2*N + 2);
@@ -64,19 +63,19 @@ module nnAccelerator #(
     logic signed [PREDICTION_WIDTH-1:0] enqueuePrediction;
     logic signed [2*N-1:0] reductionWeightSignPushData;
     logic signed [2*N-1:0] reductionWeightSignHead;
-    logic signed [PREDICTION_WIDTH+2*N-1:0] resultMetadataPushData;
-    logic signed [PREDICTION_WIDTH+2*N-1:0] resultMetadataHead;
+    logic signed [PREDICTION_WIDTH+2*N-1:0] resultReadoutPushData;
+    logic signed [PREDICTION_WIDTH+2*N-1:0] resultReadoutHead;
     logic signed [COMPARE_WIDTH-1:0] comparePrediction, compareTarget;
     logic signed [2*N-1:0] inputSignPushData, inputSignHead;
     logic trainingEnableHead;
     logic signed [1:0] reductionDirection[N];
     logic signed [2*N-1:0] reductionUpdateData;
-    logic reductionBoundaryValidPipe[REDUCTION_BOUNDARY_STAGES];
+    logic reductionUpdateValidPipe[REDUCTION_UPDATE_DELAY];
     logic signed [2*N-1:0]
-        reductionBoundaryDataPipe[REDUCTION_BOUNDARY_STAGES];
+        reductionUpdateDirectionPipe[REDUCTION_UPDATE_DELAY];
     logic matrixDatapathAdvance, matrixResultEnqueue, matrixResultPop;
-    logic matrixReloadReady, reductionBoundaryBusy, reductionBoundaryApply;
-    logic resultMetadataPush, resultMetadataPop;
+    logic matrixReloadReady, reductionUpdateBusy, applyReductionUpdate;
+    logic resultReadoutPush, resultReadoutPop;
     logic matrixActivationValid, matrixActivationReady;
     logic matrixResultValid, matrixResultReady, matrixResultLast;
     logic signed [SAMPLE_CONTEXT_WIDTH-1:0] sampleContextPushData;
@@ -95,7 +94,7 @@ module nnAccelerator #(
     assign matrixActivationValid = activationValid && sampleCanAccept;
     assign samplePush            = activationValid && activationReady;
 
-    // Reduction metadata is a transaction sideband pushed and popped with
+    // Result readout state is a transaction sideband pushed and popped with
     // each ordinary matrix result.  It never participates in forward-path
     // flow control; the FIFO counts are structurally identical to the result
     // stream and are therefore not another reason for a result to wait.
@@ -105,16 +104,15 @@ module nnAccelerator #(
     assign matrixResultPop   = matrixResultValid && matrixResultReady;
     assign resultLast        = matrixResultLast && resultValid;
     assign matrixUpdateValid = samplePop && trainingEnableHead;
-    assign reductionBoundaryApply = matrixDatapathAdvance &&
-                                    reductionBoundaryValidPipe[REDUCTION_BOUNDARY_STAGES-1];
+    assign applyReductionUpdate = matrixDatapathAdvance &&
+                                  reductionUpdateValidPipe[REDUCTION_UPDATE_DELAY-1];
 
     always_comb begin
-        reductionBoundaryBusy = matrixUpdateValid ||
-                                reductionBoundaryApply;
-        for (int stage = 0; stage < REDUCTION_BOUNDARY_STAGES; stage++)
-            reductionBoundaryBusy |= reductionBoundaryValidPipe[stage];
+        reductionUpdateBusy = matrixUpdateValid;
+        for (int stage = 0; stage < REDUCTION_UPDATE_DELAY; stage++)
+            reductionUpdateBusy |= reductionUpdateValidPipe[stage];
     end
-    assign reloadReady = matrixReloadReady && !reductionBoundaryBusy;
+    assign reloadReady = matrixReloadReady && !reductionUpdateBusy;
 
     // Compare the rescaled architectural prediction with the aligned FIFO
     // head. Assignment to the wider signed signals sign-extends either side.
@@ -150,7 +148,7 @@ module nnAccelerator #(
     // inference sample or while an output is stalled. The reduction-weight
     // sign is captured with the ordinary result when it enters the result
     // buffer; this keeps a buffered prediction and its learning package tied
-    // together even when a later boundary has already advanced the resident
+    // together even when a later update has already advanced the resident
     // vector.
     always_comb begin
         for (int lane = 0; lane < N; lane++) begin
@@ -186,8 +184,8 @@ module nnAccelerator #(
 
     // Capture only the reduction result and the ternary sign of the resident
     // coefficient with each normal result transaction.  No reduction event is
-    // created for an input bubble, and no update-only item can get in front of
-    // a ready result.
+    // created for an input bubble, and no standalone update item can get in
+    // front of a ready result.
     always_comb begin
         reductionWeightSignPushData = '0;
         for (int lane = 0; lane < N; lane++) begin
@@ -198,7 +196,7 @@ module nnAccelerator #(
             else
                 reductionWeightSignPushData[2*lane +: 2] = 2'sd0;
         end
-        resultMetadataPushData = {
+        resultReadoutPushData = {
             enqueuePrediction, reductionWeightSignPushData
         };
     end
@@ -210,10 +208,10 @@ module nnAccelerator #(
     assign inputSignHead = sampleContextHead[2*N:1];
     assign trainingEnableHead = sampleContextHead[0];
 
-    assign prediction = resultMetadataHead[PREDICTION_WIDTH+2*N-1:2*N];
-    assign reductionWeightSignHead = resultMetadataHead[2*N-1:0];
-    assign resultMetadataPush = matrixResultEnqueue;
-    assign resultMetadataPop  = matrixResultPop;
+    assign prediction = resultReadoutHead[PREDICTION_WIDTH+2*N-1:2*N];
+    assign reductionWeightSignHead = resultReadoutHead[2*N-1:0];
+    assign resultReadoutPush = matrixResultEnqueue;
+    assign resultReadoutPop  = matrixResultPop;
 
     // FIFO order, rather than a cycle count, carries the complete sample
     // context to the result transaction produced by the corresponding
@@ -228,51 +226,51 @@ module nnAccelerator #(
         .full(sampleContextFull), .empty(sampleContextEmpty), .values()
     );
 
-    // Ordinary result metadata is pushed and popped with each matrix result.
-    // It is not an event stream and its fullness is deliberately not part of
-    // the array's advance decision.
+    // Result readout state is pushed and popped with each matrix result.  It
+    // never participates in forward-path flow control; its capacity matches
+    // the paired output FIFO.
     signedFifo #(
         .WIDTH(PREDICTION_WIDTH+2*N),
-        .DEPTH(OUTPUT_FIFO_DEPTH+1)
-    ) resultMetadataFifo (
+        .DEPTH(OUTPUT_FIFO_DEPTH)
+    ) resultReadoutFifo (
         .clk(clk), .rst_n(rst_n),
-        .push(resultMetadataPush), .pushData(resultMetadataPushData),
-        .pop(resultMetadataPop), .popData(resultMetadataHead),
+        .push(resultReadoutPush), .pushData(resultReadoutPushData),
+        .pop(resultReadoutPop), .popData(resultReadoutHead),
         .full(), .empty(), .values()
     );
 
     // The accelerator owns the compact reduction update.  Stage zero samples
-    // the live package directly, while the boundary commits the resident
+    // the live package directly, while the update pipe commits the resident
     // vector on the same advancing slots as the matrix update wave, including
-    // useful bubble edges; it has no readout event to drain or hold valid.
+    // useful bubble edges.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             for (int lane = 0; lane < N; lane++)
                 residentReductionWeight[lane] <= '0;
-            for (int stage = 0; stage < REDUCTION_BOUNDARY_STAGES; stage++) begin
-                reductionBoundaryValidPipe[stage] <= 1'b0;
-                reductionBoundaryDataPipe[stage] <= '0;
+            for (int stage = 0; stage < REDUCTION_UPDATE_DELAY; stage++) begin
+                reductionUpdateValidPipe[stage] <= 1'b0;
+                reductionUpdateDirectionPipe[stage] <= '0;
             end
         end else if (loadReductionWeights) begin
             for (int lane = 0; lane < N; lane++)
                 residentReductionWeight[lane] <= reductionWeight[lane];
         end else begin
             if (matrixDatapathAdvance) begin
-                for (int stage = REDUCTION_BOUNDARY_STAGES-1; stage > 0; stage--) begin
-                    reductionBoundaryValidPipe[stage] <=
-                        reductionBoundaryValidPipe[stage-1];
-                    reductionBoundaryDataPipe[stage] <=
-                        reductionBoundaryDataPipe[stage-1];
+                for (int stage = REDUCTION_UPDATE_DELAY-1; stage > 0; stage--) begin
+                    reductionUpdateValidPipe[stage] <=
+                        reductionUpdateValidPipe[stage-1];
+                    reductionUpdateDirectionPipe[stage] <=
+                        reductionUpdateDirectionPipe[stage-1];
                 end
-                reductionBoundaryValidPipe[0] <=
+                reductionUpdateValidPipe[0] <=
                     matrixUpdateValid;
-                reductionBoundaryDataPipe[0] <=
+                reductionUpdateDirectionPipe[0] <=
                     reductionUpdateData;
             end
 
-            if (reductionBoundaryApply) begin
+            if (applyReductionUpdate) begin
                 for (int lane = 0; lane < N; lane++) begin
-                    case ($signed(reductionBoundaryDataPipe[REDUCTION_BOUNDARY_STAGES-1][2*lane +: 2]))
+                    case ($signed(reductionUpdateDirectionPipe[REDUCTION_UPDATE_DELAY-1][2*lane +: 2]))
                         2'sd1: begin
                             if (residentReductionWeight[lane] != REDUCTION_WEIGHT_MAX)
                                 residentReductionWeight[lane] <=

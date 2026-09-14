@@ -162,8 +162,8 @@ class SampleContext:
 
 
 @dataclass(frozen=True)
-class ResultMetadata:
-    """Payload of the architectural result-metadata FIFO."""
+class ResultReadout:
+    """Prediction and resident reduction-weight signs for one result."""
 
     prediction: int
     reduction_weight_signs: tuple[int, ...]
@@ -180,7 +180,7 @@ class CycleSnapshot:
     activation_fifo: tuple[tuple[int, ...], ...]
     sample_context_fifo: tuple[SampleContext, ...]
     output_fifo: tuple[tuple[int, ...], ...]
-    result_metadata_fifo: tuple[ResultMetadata, ...]
+    result_readout_fifo: tuple[ResultReadout, ...]
 
 
 @dataclass
@@ -206,7 +206,6 @@ class _DataToken:
 class _AlignedResult:
     sample_index: int
     raw_matrix_result: tuple[int, ...]
-    remaining: int = 0
 
 
 @dataclass(frozen=True)
@@ -216,7 +215,7 @@ class _OutputEntry:
 
 
 @dataclass(frozen=True)
-class _MetadataEntry:
+class _ReadoutEntry:
     sample_index: int
     prediction: int
     reduction_weight_signs: tuple[int, ...]
@@ -330,7 +329,7 @@ class CycleReference:
             or self._alignment
             or self._output_fifo
             or self._sample_context_fifo
-            or self._result_metadata_fifo
+            or self._result_readout_fifo
             or any(wave is not None for wave in self._reduction_pipe)
         )
 
@@ -349,7 +348,7 @@ class CycleReference:
         self._activation_fifo: deque[_Sample] = deque()
         self._sample_context_fifo: deque[_Sample] = deque()
         self._output_fifo: deque[_OutputEntry] = deque()
-        self._result_metadata_fifo: deque[_MetadataEntry] = deque()
+        self._result_readout_fifo: deque[_ReadoutEntry] = deque()
         self._weight_load_pipe: list[tuple[int, ...] | None] = [None] * self.config.n
         self._data_tokens: list[_DataToken] = []
         self._completed_tokens: dict[int, _DataToken] = {}
@@ -376,7 +375,7 @@ class CycleReference:
         self._activation_fifo.clear()
         self._sample_context_fifo.clear()
         self._output_fifo.clear()
-        self._result_metadata_fifo.clear()
+        self._result_readout_fifo.clear()
         self._weight_load_pipe = [None] * self.config.n
         self._data_tokens.clear()
         self._completed_tokens.clear()
@@ -452,14 +451,14 @@ class CycleReference:
     def _normalize_reduction(self, values: Sequence[int]) -> tuple[int, ...]:
         return tuple(_vector_copy(values, self.config.n, self.config.reduction_weight_width, "reduction_weight"))
 
-    def _output_head(self) -> tuple[_OutputEntry | None, _MetadataEntry | None, _Sample | None]:
+    def _output_head(self) -> tuple[_OutputEntry | None, _ReadoutEntry | None, _Sample | None]:
         return (
             self._output_fifo[0] if self._output_fifo else None,
-            self._result_metadata_fifo[0] if self._result_metadata_fifo else None,
+            self._result_readout_fifo[0] if self._result_readout_fifo else None,
             self._sample_context_fifo[0] if self._sample_context_fifo else None,
         )
 
-    def _matrix_reload_ready(self, reduction_boundary_busy: bool) -> bool:
+    def _matrix_reload_ready(self, reduction_update_busy: bool) -> bool:
         """Whether matrix weights may reload at a complete output frame."""
 
         # Stream quiescence intentionally omits frame position.  Reload adds
@@ -473,8 +472,17 @@ class CycleReference:
             and not self._output_fifo
             and self._output_row_index == 0
             and not self._matrix_waves
-            and not reduction_boundary_busy
+            and not reduction_update_busy
         )
+
+    def _assert_result_queues_paired(self) -> None:
+        if len(self._output_fifo) > self.config.output_fifo_depth:
+            raise AssertionError("output FIFO exceeded its configured depth")
+        if len(self._output_fifo) != len(self._result_readout_fifo):
+            raise AssertionError("output and readout FIFO occupancies diverged")
+        for output, readout in zip(self._output_fifo, self._result_readout_fifo):
+            if output.sample_index != readout.sample_index:
+                raise AssertionError("output and readout FIFO order diverged")
 
     def _apply_matrix_diagonal(self, wave: _MatrixWave, diagonal: int) -> None:
         direction = _zero_matrix(self.config.n)
@@ -582,18 +590,10 @@ class CycleReference:
         shifted: deque[_AlignedResult] = deque()
         skipped_ready = output_enqueue
         for entry in self._alignment:
-            if skipped_ready and entry.remaining == 0:
+            if skipped_ready:
                 skipped_ready = False
                 continue
-            shifted.append(
-                entry
-                if entry.remaining == 0
-                else _AlignedResult(
-                    entry.sample_index,
-                    entry.raw_matrix_result,
-                    entry.remaining - 1,
-                )
-            )
+            shifted.append(entry)
         self._alignment = shifted
 
     def _make_result(
@@ -659,6 +659,7 @@ class CycleReference:
         return result
 
     def _snapshot(self) -> CycleSnapshot:
+        self._assert_result_queues_paired()
         return CycleSnapshot(
             cycle=self._cycle,
             W=_matrix_tuple(self._W),
@@ -670,9 +671,9 @@ class CycleReference:
                 for sample in self._sample_context_fifo
             ),
             output_fifo=tuple(entry.raw_matrix_result for entry in self._output_fifo),
-            result_metadata_fifo=tuple(
-                ResultMetadata(entry.prediction, entry.reduction_weight_signs)
-                for entry in self._result_metadata_fifo
+            result_readout_fifo=tuple(
+                ResultReadout(entry.prediction, entry.reduction_weight_signs)
+                for entry in self._result_readout_fifo
             ),
         )
 
@@ -692,15 +693,15 @@ class CycleReference:
             self.snapshots.append(snapshot)
             return snapshot
 
-        output_head, metadata_head, context_head = self._output_head()
-        result_valid = output_head is not None and metadata_head is not None and context_head is not None
+        output_head, readout_head, context_head = self._output_head()
+        result_valid = output_head is not None and readout_head is not None and context_head is not None
         current_activated: tuple[int, ...] | None = None
         prediction = 0
         direction = 0
         if result_valid:
-            assert output_head is not None and metadata_head is not None and context_head is not None
+            assert output_head is not None and readout_head is not None and context_head is not None
             current_activated = tuple(activate(output_head.raw_matrix_result, pass_through, self.config.matrix_result_width))
-            prediction = metadata_head.prediction
+            prediction = readout_head.prediction
             direction = learning_direction(
                 context_head.target,
                 prediction,
@@ -720,15 +721,17 @@ class CycleReference:
         weight_accepted = bool(cycle_inputs.weight_valid and weight_ready)
         weight_popped = bool(not self._weights_loaded and self._weight_fifo)
 
-        reduction_tail_present = self._weights_loaded and self._reduction_pipe[-1] is not None
-        reduction_boundary_busy = bool(
-            reduction_tail_present or any(wave is not None for wave in self._reduction_pipe)
+        reduction_update_entering = bool(
+            result_retired and context_head is not None and context_head.training_enable
         )
-        reload_ready = self._matrix_reload_ready(reduction_boundary_busy)
+        reduction_update_busy = bool(
+            reduction_update_entering or any(wave is not None for wave in self._reduction_pipe)
+        )
+        reload_ready = self._matrix_reload_ready(reduction_update_busy)
         reload_accepted = bool(cycle_inputs.reload_weights and reload_ready)
 
         output_full = len(self._output_fifo) >= self.config.output_fifo_depth
-        aligned_head_ready = bool(self._alignment and self._alignment[0].remaining == 0)
+        aligned_head_ready = bool(self._alignment)
         output_blocked = bool(output_full and not result_retired and aligned_head_ready)
         datapath_advance = weight_popped if not self._weights_loaded else not output_blocked
 
@@ -757,11 +760,11 @@ class CycleReference:
             and datapath_advance
         )
         if matrix_update_accepted:
-            assert metadata_head is not None and current_activated is not None and context_head is not None
+            assert readout_head is not None and current_activated is not None and context_head is not None
             row_direction, column_direction, matrix_direction = matrix_update_directions(
                 context_head.input_vector,
                 current_activated,
-                metadata_head.reduction_weight_signs,
+                readout_head.reduction_weight_signs,
                 direction,
                 self.config.width,
                 self.config.reduction_weight_width,
@@ -829,8 +832,8 @@ class CycleReference:
                 resident_R_before,
             )
             self._output_fifo.append(_OutputEntry(alignment_to_enqueue.sample_index, alignment_to_enqueue.raw_matrix_result))
-            self._result_metadata_fifo.append(
-                _MetadataEntry(
+            self._result_readout_fifo.append(
+                _ReadoutEntry(
                     alignment_to_enqueue.sample_index,
                     result.prediction,
                     tuple(ternary_sign(value) for value in result.R_used),
@@ -840,13 +843,13 @@ class CycleReference:
             self._enqueued_sample_indices.append(alignment_to_enqueue.sample_index)
 
         if result_retired:
-            if not self._output_fifo or not self._result_metadata_fifo or not self._sample_context_fifo:
-                raise AssertionError("retired result FIFO transaction is not fully paired")
+            if not self._output_fifo or not self._result_readout_fifo or not self._sample_context_fifo:
+                raise AssertionError("retired result transaction is not fully paired")
             retired_output = self._output_fifo.popleft()
-            retired_metadata = self._result_metadata_fifo.popleft()
+            retired_readout = self._result_readout_fifo.popleft()
             retired_context = self._sample_context_fifo.popleft()
-            if not retired_output.sample_index == retired_metadata.sample_index == retired_context.index:
-                raise AssertionError("result, metadata, and context order diverged")
+            if not retired_output.sample_index == retired_readout.sample_index == retired_context.index:
+                raise AssertionError("result, readout, and context order diverged")
             self._output_row_index = (self._output_row_index + 1) % self.config.n
             self._retirement_cycles.append(cycle_number)
             self._retired_sample_indices.append(retired_context.index)
@@ -862,6 +865,6 @@ __all__ = [
     "CycleInputs",
     "CycleReference",
     "CycleSnapshot",
-    "ResultMetadata",
+    "ResultReadout",
     "SampleContext",
 ]

@@ -74,8 +74,8 @@ module nnAcceleratorStateTrace_tb;
         !dut.matrixEngine.resultAlignBusy &&
         dut.matrixEngine.outputEmpty &&
         dut.sampleContextEmpty &&
-        dut.resultMetadataFifo.empty &&
-        !dut.reductionBoundaryBusy;
+        dut.resultReadoutFifo.empty &&
+        !dut.reductionUpdateBusy;
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
@@ -104,6 +104,9 @@ module nnAcceleratorStateTrace_tb;
 
     task automatic dump_snapshot(input integer c);
         begin
+            if (dut.matrixEngine.outputVectorFifo.values !==
+                dut.resultReadoutFifo.values)
+                $fatal(1, "output and readout FIFO occupancies diverged at cycle %0d", c);
             $fwrite(trace_fd, "C %0d\n", c);
             $fwrite(trace_fd, "W %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
                 $signed(dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg),
@@ -147,13 +150,13 @@ module nnAcceleratorStateTrace_tb;
                 for (lane = 0; lane < N; lane++)
                     $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.outputVectorFifo.data[index][lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH]));
             end
-            $fwrite(trace_fd, "\nMF %0d", dut.resultMetadataFifo.values);
-            for (entry = 0; entry < dut.resultMetadataFifo.values; entry++) begin
-                index = dut.resultMetadataFifo.readPtr + entry;
-                if (index >= OUTPUT_FIFO_DEPTH+1) index = index - (OUTPUT_FIFO_DEPTH+1);
-                $fwrite(trace_fd, " %0d", $signed(dut.resultMetadataFifo.data[index][PREDICTION_WIDTH+2*N-1:2*N]));
+            $fwrite(trace_fd, "\nRF %0d", dut.resultReadoutFifo.values);
+            for (entry = 0; entry < dut.resultReadoutFifo.values; entry++) begin
+                index = dut.resultReadoutFifo.readPtr + entry;
+                if (index >= OUTPUT_FIFO_DEPTH) index = index - OUTPUT_FIFO_DEPTH;
+                $fwrite(trace_fd, " %0d", $signed(dut.resultReadoutFifo.data[index][PREDICTION_WIDTH+2*N-1:2*N]));
                 for (lane = 0; lane < N; lane++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.resultMetadataFifo.data[index][2*lane +: 2]));
+                    $fwrite(trace_fd, " %0d", $signed(dut.resultReadoutFifo.data[index][2*lane +: 2]));
             end
             $fwrite(trace_fd, "\n");
         end

@@ -41,15 +41,15 @@ module matrixMultiplierWeightStationary #(
 
     logic signed [VECTOR_WIDTH-1:0] weightVectorPushData;
     logic signed [VECTOR_WIDTH-1:0] weightVectorHead;
-    logic signed [WIDTH-1:0] weightData_FifoToLoader [N];
+    logic signed [WIDTH-1:0] queuedWeightRow [N];
     logic weightFull, weightEmpty;
     logic signed [VECTOR_WIDTH-1:0] activationVectorPushData;
     logic signed [VECTOR_WIDTH-1:0] activationVectorHead;
-    logic signed [WIDTH-1:0] activationData_FifoToOrch[N];
+    logic signed [WIDTH-1:0] queuedActivation[N];
     logic activationFull, activationEmpty;
     logic signed [RESULT_VECTOR_WIDTH-1:0] outputVectorPushData;
     logic signed [RESULT_VECTOR_WIDTH-1:0] outputVectorHead;
-    logic signed [RESULT_WIDTH-1:0] resultData_FifoToOutput[N];
+    logic signed [RESULT_WIDTH-1:0] outputVectorLaneData[N];
     logic outputFull, outputEmpty;
     localparam int RESULT_ALIGN_STORAGE = (N > 1) ? N-1 : 1;
     logic signed [RESULT_WIDTH-1:0]
@@ -59,10 +59,10 @@ module matrixMultiplierWeightStationary #(
     logic resultAlignedValid[N], resultAlignedAllValid, resultAlignBusy;
     logic signed [WIDTH-1:0] skewData[N][N];
     logic skewValid[N][N];
-    logic signed [WIDTH-1:0] rowData_OrchToSyst[N];
-    logic validData_OrchToSyst[N];
-    logic signed [RESULT_WIDTH-1:0] resultData_SystToFifo[N];
-    logic validData_SystToFifo[N];
+    logic signed [WIDTH-1:0] skewedActivation[N];
+    logic skewedActivationValid[N];
+    logic signed [RESULT_WIDTH-1:0] arrayResult[N];
+    logic arrayResultValid[N];
     logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked;
 
     always_comb begin
@@ -79,11 +79,11 @@ module matrixMultiplierWeightStationary #(
 
     always_comb begin
         for (int lane = 0; lane < N; lane++) begin
-            weightData_FifoToLoader[lane] =
+            queuedWeightRow[lane] =
                 weightVectorHead[lane*WIDTH +: WIDTH];
-            activationData_FifoToOrch[lane] =
+            queuedActivation[lane] =
                 activationVectorHead[lane*WIDTH +: WIDTH];
-            resultData_FifoToOutput[lane] =
+            outputVectorLaneData[lane] =
                 outputVectorHead[lane*RESULT_WIDTH +: RESULT_WIDTH];
         end
     end
@@ -102,9 +102,9 @@ module matrixMultiplierWeightStationary #(
                     resultAlignValid[alignLane][ALIGN_DELAY-1];
             end else begin : last_column
                 assign resultAlignedData[alignLane] =
-                    resultData_SystToFifo[alignLane];
+                    arrayResult[alignLane];
                 assign resultAlignedValid[alignLane] =
-                    validData_SystToFifo[alignLane];
+                    arrayResultValid[alignLane];
             end
         end
     endgenerate
@@ -171,7 +171,7 @@ module matrixMultiplierWeightStationary #(
     genvar resultLane;
     generate
         for (resultLane = 0; resultLane < N; resultLane = resultLane + 1) begin : output_lanes
-            assign resultData[resultLane] = resultData_FifoToOutput[resultLane];
+            assign resultData[resultLane] = outputVectorLaneData[resultLane];
         end
     endgenerate
 
@@ -200,8 +200,8 @@ module matrixMultiplierWeightStationary #(
     genvar laneIndex;
     generate
         for (laneIndex = 0; laneIndex < N; laneIndex = laneIndex + 1) begin : skew_outputs
-            assign rowData_OrchToSyst[laneIndex]   = skewData[laneIndex][laneIndex];
-            assign validData_OrchToSyst[laneIndex] = skewValid[laneIndex][laneIndex];
+            assign skewedActivation[laneIndex]      = skewData[laneIndex][laneIndex];
+            assign skewedActivationValid[laneIndex] = skewValid[laneIndex][laneIndex];
         end
     endgenerate
 
@@ -242,8 +242,8 @@ module matrixMultiplierWeightStationary #(
 
             if (weightsLoaded && arrayAdvance) begin
                 for (int lane = 0; lane < N-1; lane++) begin
-                    resultAlignData[lane][0] <= resultData_SystToFifo[lane];
-                    resultAlignValid[lane][0] <= validData_SystToFifo[lane];
+                    resultAlignData[lane][0] <= arrayResult[lane];
+                    resultAlignValid[lane][0] <= arrayResultValid[lane];
                     for (int stage = 1; stage < N-1-lane; stage++) begin
                         resultAlignData[lane][stage] <=
                             resultAlignData[lane][stage-1];
@@ -252,7 +252,7 @@ module matrixMultiplierWeightStationary #(
                     end
                 end
                 for (int lane = 0; lane < N; lane++) begin
-                    skewData[lane][0]  <= activationData_FifoToOrch[lane];
+                    skewData[lane][0]  <= queuedActivation[lane];
                     skewValid[lane][0] <= activationPop;
 
                     for (int d = 1; d <= lane; d++) begin
@@ -268,9 +268,9 @@ module matrixMultiplierWeightStationary #(
         .clk(clk), .rst_n(rst_n), .advance(arrayAdvance), .loadWeight(weightPop),
         .rowDirection(rowDirection), .columnDirection(columnDirection),
         .updateValid(matrixUpdateValid),
-        .row(rowData_OrchToSyst), .rowValid(validData_OrchToSyst),
-        .col(weightData_FifoToLoader), .result(resultData_SystToFifo),
-        .resultValid(validData_SystToFifo),
+        .row(skewedActivation), .rowValid(skewedActivationValid),
+        .col(queuedWeightRow), .result(arrayResult),
+        .resultValid(arrayResultValid),
         .updateComplete(),
         .pipelineBusy(pipelineBusy)
     );

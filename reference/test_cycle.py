@@ -59,7 +59,7 @@ class CycleReferenceTests(unittest.TestCase):
             snapshot.activation_fifo,
             snapshot.sample_context_fifo,
             snapshot.output_fifo,
-            snapshot.result_metadata_fifo,
+            snapshot.result_readout_fifo,
         )
 
     @staticmethod
@@ -79,7 +79,7 @@ class CycleReferenceTests(unittest.TestCase):
                 "activation_fifo",
                 "sample_context_fifo",
                 "output_fifo",
-                "result_metadata_fifo",
+                "result_readout_fifo",
             ],
         )
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
@@ -207,7 +207,7 @@ class CycleReferenceTests(unittest.TestCase):
         e7 = model.step(self.drive(x=(0, -2, 1), target=0, training=False))
         self.assertEqual(e7.cycle, 7)
         self.assertEqual(len(e7.output_fifo), 1)
-        self.assertEqual(len(e7.result_metadata_fifo), 1)
+        self.assertEqual(len(e7.result_readout_fifo), 1)
         self.assertEqual(
             e7.output_fifo[0],
             tuple(matrix_multiply(samples[0], self.initial_W(), self.config().width)),
@@ -217,7 +217,7 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertEqual(e8.cycle, 8)
         self.assertEqual(model._enqueue_cycles[:2], [7, 8])
         self.assertEqual(model._retirement_cycles[:1], [8])
-        self.assertEqual(len(e8.result_metadata_fifo), 1)
+        self.assertEqual(len(e8.result_readout_fifo), 1)
         self.assertEqual(
             e8.output_fifo[0],
             tuple(matrix_multiply(samples[1], self.initial_W(), self.config().width)),
@@ -279,7 +279,7 @@ class CycleReferenceTests(unittest.TestCase):
             (tuple(matrix_multiply((1, -2, 0), self.initial_W(), self.config().width)),),
         )
         self.assertEqual(
-            result_storage.result_metadata_fifo[0].reduction_weight_signs,
+            result_storage.result_readout_fifo[0].reduction_weight_signs,
             (1, 1, 1),
         )
 
@@ -288,7 +288,7 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertEqual(drained.activation_fifo, ())
         self.assertEqual(drained.sample_context_fifo, ())
         self.assertEqual(drained.output_fifo, ())
-        self.assertEqual(drained.result_metadata_fifo, ())
+        self.assertEqual(drained.result_readout_fifo, ())
 
     def test_weight_fifo_snapshot_is_logical_host_order(self) -> None:
         model = CycleReference(self.config(), R=[16, 24, 32])

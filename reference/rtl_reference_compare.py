@@ -342,9 +342,9 @@ def read_trace(path: Path) -> tuple[list[dict[str, object]], list[dict[str, obje
         elif f[0] == "SF":
             entries = _parse_counted(f, N + 2)
             current["sample_context_fifo"] = tuple((e[0], tuple(e[1:1+N]), bool(e[-1])) for e in entries)
-        elif f[0] == "MF":
+        elif f[0] == "RF":
             entries = _parse_counted(f, N + 1)
-            current["result_metadata_fifo"] = tuple((e[0], tuple(e[1:])) for e in entries)
+            current["result_readout_fifo"] = tuple((e[0], tuple(e[1:])) for e in entries)
         else:
             raise ValueError(f"unknown trace record {f[0]} at line {line_number}")
     return snapshots, retirements
@@ -406,8 +406,15 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
                 _fail(cycle, field, left, right)
         exp_context = tuple((e.target, e.input_signs, e.training_enable) for e in exp.sample_context_fifo)
         _compare_sequence(cycle, "sampleContextFifo", exp_context, act.get("sample_context_fifo", ()))
-        exp_metadata = tuple((e.prediction, e.reduction_weight_signs) for e in exp.result_metadata_fifo)
-        _compare_sequence(cycle, "resultMetadataFifo", exp_metadata, act.get("result_metadata_fifo", ()))
+        exp_readout = tuple((e.prediction, e.reduction_weight_signs) for e in exp.result_readout_fifo)
+        actual_readout = act.get("result_readout_fifo", ())
+        _compare_sequence(cycle, "resultReadoutFifo", exp_readout, actual_readout)
+        actual_output = act.get("output_fifo", ())
+        if len(exp.output_fifo) != len(exp.result_readout_fifo):
+            _fail(cycle, "reference output/readout FIFO occupancy pairing",
+                  len(exp.output_fifo), len(exp.result_readout_fifo))
+        if len(actual_output) != len(actual_readout):
+            _fail(cycle, "output/readout FIFO occupancy pairing", len(actual_output), len(actual_readout))
 
     functional_comparisons = 0
     for comparison in comparison_inputs.functional_comparisons:
@@ -493,10 +500,25 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
                states[i].activation_fifo == states[i-1].activation_fifo and
                states[i].sample_context_fifo == states[i-1].sample_context_fifo and
                states[i].output_fifo == states[i-1].output_fifo and
-               states[i].result_metadata_fifo == states[i-1].result_metadata_fifo
+               states[i].result_readout_fifo == states[i-1].result_readout_fifo
                for i in range(1, len(states)))
     if not held:
         raise AssertionError("output_backpressure did not produce a held architectural snapshot")
+    simultaneous_full_pop_push = any(
+        backpressure.start_cycle < cycle <= backpressure.end_cycle
+        and len(expected[cycle - 1].output_fifo) == config.output_fifo_depth
+        and inputs[cycle].inputs.result_ready
+        and expected[cycle - 1].output_fifo
+        and expected[cycle - 1].result_readout_fifo
+        and expected[cycle - 1].sample_context_fifo
+        and len(expected[cycle].output_fifo) == config.output_fifo_depth
+        and expected[cycle].output_fifo != expected[cycle - 1].output_fifo
+        for cycle in range(backpressure.start_cycle + 1, backpressure.end_cycle + 1)
+    )
+    if not simultaneous_full_pop_push:
+        raise AssertionError(
+            "output_backpressure did not exercise simultaneous full pop/push"
+        )
     return len(expected), functional_comparisons
 
 

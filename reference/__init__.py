@@ -13,7 +13,7 @@ from .cycle import (
     CycleInputs,
     CycleReference,
     CycleSnapshot,
-    ResultMetadata,
+    ResultReadout,
     SampleContext,
 )
 
@@ -28,6 +28,6 @@ __all__ = [
     "CycleInputs",
     "CycleReference",
     "CycleSnapshot",
-    "ResultMetadata",
+    "ResultReadout",
     "SampleContext",
 ]

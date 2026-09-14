@@ -19,25 +19,34 @@ flowchart LR
     end
 
     subgraph CORE["Accelerator clock domain (`clk`)"]
-        W_FIFO["N weight FIFOs"]
-        A_FIFO["N activation FIFOs"]
+        W_FIFO["weight-vector FIFO<br/>depth N"]
+        A_FIFO["activation-vector FIFO<br/>depth INPUT_FIFO_DEPTH"]
+        S_FIFO["sampleContextFifo<br/>target + input signs + training"]
         SKEW["Activation skew network"]
         ARRAY["N x N weight-stationary PE array"]
-        R_FIFO["N result FIFOs"]
-        ACT["Combinational activation layer"]
-        REDUCE["Resident weighted vector reduction"]
-        TRAIN["Aligned SSLMS package generator"]
-        UPDATE["live entry + 2N-2 registered update stages"]
+        ALIGN["Complete-result alignment"]
+        O_FIFO["outputVectorFifo<br/>depth OUTPUT_FIFO_DEPTH"]
+        ACT["Activation layer"]
+        READOUT["resultReadoutFifo<br/>prediction + reduction signs<br/>depth OUTPUT_FIFO_DEPTH"]
+        RETIRE["Result retirement"]
+        M_UPDATE["Matrix update wave"]
+        R_UPDATE["2N-1-stage reduction update delay"]
     end
 
     W_RX --> W_CDC --> W_FIFO --> ARRAY
     A_RX --> A_CDC --> A_FIFO --> SKEW --> ARRAY
-    ARRAY --> R_FIFO --> ACT --> REDUCE --> R_CDC --> R_TX
-    A_FIFO --> TRAIN
-    ACT --> TRAIN
-    REDUCE --> TRAIN
-    TRAIN --> UPDATE --> ARRAY
+    A_RX --> A_CDC --> S_FIFO
+    ARRAY --> ALIGN --> O_FIFO --> RETIRE --> R_CDC --> R_TX
+    ALIGN --> ACT --> READOUT --> RETIRE
+    S_FIFO --> RETIRE
+    RETIRE --> M_UPDATE --> ARRAY
+    RETIRE --> R_UPDATE
 ```
+
+The core has five architectural FIFOs: the weight-vector FIFO, the
+activation-vector FIFO, `sampleContextFifo`, `outputVectorFifo`, and
+`resultReadoutFifo`. The last two are structurally paired result storage; the
+readout FIFO does not introduce an independent flow-control path.
 
 Each processing element stores one weight and performs a signed multiply-accumulate while forwarding the activation and partial sum:
 
@@ -82,7 +91,7 @@ sequenceDiagram
 `activationData`, `targetData`, and `trainingEnable` are per-sample
 transaction state. They are accepted atomically on
 `activationValid && activationReady`; the existing datapath and transaction
-metadata keep them aligned with the corresponding result.
+state keeps them aligned with the corresponding result.
 
 `passThrough` and `reduceOutput` are accelerator stream configuration, not
 per-sample metadata. They may be selected before traffic begins. Once a sample
@@ -92,7 +101,7 @@ associated with that stream. After the accelerator is quiescent, either signal
 may be changed before new traffic is accepted. In short, the supported
 sequence is configure, process a stream, drain, then reconfigure; changing
 either mode while work is outstanding is illegal. The mode bits do not travel
-through `sampleContextFifo` or `resultMetadataFifo`, and the RTL intentionally
+through `sampleContextFifo` or `resultReadoutFifo`, and the RTL intentionally
 continues to use their live, configuration-lifetime values.
 
 - Activation inputs and matrix weights are signed `WIDTH`-bit fixed-point values with `FRACTION_BITS` fractional bits. A stored integer represents `stored_integer / 2^FRACTION_BITS`.
@@ -109,15 +118,15 @@ continues to use their live, configuration-lifetime values.
 - `reduceOutput = 0` returns the sign-extended activated vector. `reduceOutput = 1` returns the rescaled prediction in lane 0 and zero in lanes `1:N-1`.
 - The internal `outputRowIndex` advances and wraps only on a `resultValid && resultReady` handshake. `resultLast` is asserted for the current row `N-1`; the counter is not part of stream-quiescence state.
 - `reductionWeight[N]` is the initialization vector for resident reduction-weight registers. Pulsing `loadReductionWeights` copies the complete vector atomically. Loading has priority over learning, so configuration software must use it only while the sample and update pipelines are quiescent.
-- Every `resultValid && resultReady` completion whose buffered `trainingEnable` is high launches one packed reduction-update sideband alongside its matrix-update package. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not launch an update. The matrix engine owns the matrix update wave; `nnAccelerator` owns the reduction boundary pipe.
-- The same training-enabled completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use that sample's snapshotted reduction-weight signs and the pass-through/ReLU activation gate.
+- A complete raw result is aligned and enqueued in `outputVectorFifo`. At that same `matrixResultEnqueue` event, activation and weighted reduction use the resident reduction weights; the prediction and the signs of those resident weights are enqueued together in `resultReadoutFifo`. The two result-side FIFOs have the same `OUTPUT_FIFO_DEPTH` and are pushed and popped by the same events, so their occupancies and entries remain paired.
+- Result retirement pops one output vector, one readout entry, and one sample-context entry together. If the retired sample's buffered `trainingEnable` is high, retirement launches one packed matrix-update package and one reduction-update package. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not launch an update.
+- The same training-enabled completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the reduction-weight signs stored with that result and the pass-through/ReLU activation gate.
 - Each valid package updates PE(0,0) directly on its acceptance edge, then `2*N-2` registered stages carry it across the remaining PE anti-diagonals. Diagonal `d` updates every PE where `row + column == d` by the ternary outer product, with signed one-LSB saturation. The update pipeline and datapath share `arrayAdvance`, so both freeze together under backpressure and successive packages may overlap.
-- The local `systolicArrayWeightStationary.updateComplete` event still asserts once for each package on the advancing edge that applies its final anti-diagonal. The reduction boundary pipe receives the same live package directly in `nnAccelerator` and advances under the matrix engine's `datapathAdvance`, reaching readout beside the last sample that uses the old complete network state.
+- The local `systolicArrayWeightStationary.updateComplete` event still asserts once for each package on the advancing edge that applies its final anti-diagonal. `reductionUpdateValidPipe` and `reductionUpdateDirectionPipe` receive the same retired-result package in `nnAccelerator` and advance under the matrix engine's `datapathAdvance`. The final valid stage applies the reduction update after the unchanged `2*N-1` delay.
 - A PE multiply and the weighted reduction both use their resident weights present before an update edge. Accepting the last old-state result applies the reduction direction directly to the sole resident reduction vector with signed one-LSB saturation; the next sample then uses both the updated matrix and updated reduction weights. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
 - In continuous no-stall traffic, a sample's scalar prediction is available after `2*N-1` cycles, its learning direction is formed combinationally in that cycle, and PE(0,0) applies the update on the following edge. The sample on that edge still uses the old weight; the next sample is the first affected, so update `U_S` first affects sample `S + 2*N + 1` (distance 7 for `N=3`).
-- The result path stores an ordered stream of sample and reduction-boundary events. At a combined boundary/sample event, the sample is evaluated with resident `Rcurrent` and the accepting edge updates that vector in place. Update-only events occupy otherwise idle datapath slots, so bubbles cannot drop learning packages. Continuous traffic still accepts one boundary/sample event per cycle without reduction snapshots, next-state bypasses, version counters, or catch-up cycles.
-- Original input signs, targets, and per-sample training-enable bits are pushed and popped by the same sample events. Any metadata FIFO can therefore backpressure the complete transaction, and their heads remain paired with the current prediction under result stalls.
-- The SPI wrapper exposes `trainingEnable`; inference-only integrations must drive it low, as the SPI directed test does.
+- The matrix and reduction update mechanisms are separate from result storage: output backpressure freezes the datapath and both update paths together, while `resultReadoutFifo` is not an additional flow-control decision. No update-only readout events, full reduction-vector snapshots, version counters, or catch-up cycles exist in the current architecture; only each result's prediction and required ternary signs are stored.
+- `sampleContextFifo` stores target, original-input signs, and per-sample `trainingEnable`; its head advances only when the paired result retires. The current SPI adapter supports normal inference. If `trainingEnable` is asserted through that adapter, `targetData` is supplied as zero, so learning is toward target zero; arbitrary supervised targets are not transported by the present SPI interface.
 - Assert `reloadWeights` only while `reloadReady` is high.
 - Stream quiescence and matrix reload readiness are distinct. Stream
   quiescence means that no accepted sample, result, or update work remains, so
@@ -140,8 +149,8 @@ continues to use their live, configuration-lifetime values.
 | `FRACTION_BITS` | `4` | Fractional bits in activation inputs, matrix weights, predictions, and targets |
 | `TARGET_WIDTH` | `WIDTH` | Signed target width; narrower targets are sign-extended for prediction comparison |
 | `REDUCTION_WEIGHT_WIDTH` | `8` | Signed weighted-readout coefficient width; the default Q1.7 format has one sign bit and seven fractional bits |
-| `INPUT_FIFO_DEPTH` | `2*N` | Per-lane activation FIFO depth |
-| `OUTPUT_FIFO_DEPTH` | `2*N` | Per-lane result FIFO depth |
+| `INPUT_FIFO_DEPTH` | `2*N` | Activation-vector FIFO depth |
+| `OUTPUT_FIFO_DEPTH` | `2*N` | Shared depth of `outputVectorFifo` and `resultReadoutFifo` |
 
 ## Verification
 
@@ -199,8 +208,8 @@ scripts treat any simulation error as a failure.
 
 At the `nnAccelerator` boundary, `targetData` and `trainingEnable` are accepted
 atomically with the complete `activationData[N]` vector on
-`activationValid && activationReady`. One ordered target FIFO contributes to
-activation backpressure and presents its
+`activationValid && activationReady`. The packed `sampleContextFifo` contributes
+to activation backpressure and presents its
 head as `resultTargetData`; that head advances only with the shared
 `resultValid && resultReady` result transaction. No fixed pipeline latency is
 used to align targets and predictions. While `resultValid` is asserted, the
@@ -208,25 +217,28 @@ signed 2-bit `learningDirection` compares that target head with the full scalar
 prediction: `+1` when the target is greater, `0` when equal, and `-1` when the
 target is less. Narrower operands are sign-extended for the comparison, and the
 target, prediction, and direction remain stable together under backpressure.
-Equally deep FIFOs carry two-bit signs for every original input lane and the
-training-enable bit. On a training-enabled result handshake, those signs and
-the current pre-activation values form one `rowDirection`/`columnDirection`
-package while the corresponding reduction directions are packed into an
-update sideband. The package observes the same snapshotted reduction weights
-that produced its prediction.
+The `sampleContextFifo` carries two-bit signs for every original input lane and
+the training-enable bit. `outputVectorFifo` and `resultReadoutFifo` are paired:
+the first stores the raw result vector, while the second stores the prediction
+and the signs of the resident reduction weights used for that prediction. They
+have equal depth and shared push/pop events; readout state is not an extra
+flow-control input.
+On a training-enabled result handshake, those signs and the current
+pre-activation values form one `rowDirection`/`columnDirection` package while
+the corresponding reduction directions are packed into an update sideband.
+The package observes the same resident reduction weights that produced its
+prediction.
 On an `arrayAdvance`, the matrix engine applies the live package directly to
 anti-diagonal zero and captures it for anti-diagonals 1 through `2*N-2`. Weight loading
 has priority over learning, and matrix-update stages contribute to pipeline-busy
 state so a reload cannot overtake a pending update wave. The reduction sideband
-follows the same boundary under `arrayAdvance`. Its alignment pipeline ends one
-advancing slot before the first new-state result, so the remaining result path
-records the package beside the final old-state sample. At readout, weighted
-reduction reads the sole resident vector directly; accepting a combined event
-applies its packed ternary directions to that vector on the edge. An update-only
-event applies in its original idle slot. Backpressure holds the head sample and
-boundary together, preserving ordering without per-sample reduction snapshots,
-combinational next-state selection, version comparison, or continuous-stream
-catch-up cycles.
+follows the same `arrayAdvance` slots. At readout, weighted reduction reads the
+sole resident vector directly; a training result retirement launches its packed
+ternary directions, with the matrix update starting at PE(0,0) on that edge and
+the delayed reduction update applying after `2*N-1` advancing slots.
+Backpressure holds the paired result/readout/context heads together, preserving
+ordering without full per-sample reduction-vector snapshots, combinational
+next-state selection, version comparison, or continuous-stream catch-up cycles.
 
 The regression uses seeded `$urandom` stimulus instead of constrained
 randomization and covergroups, so it remains usable with the Questa FPGA
@@ -242,13 +254,18 @@ The UVM compile targets the direct core interface at `N=3`, `WIDTH=8` for a
 fast regression. `matrixMultiplierWeightStationary_tb.sv` retains focused
 coverage of the supported 2x2, 3x3, and 4x4 configurations.
 
-### FPGA build snapshot
+### FPGA/build documentation
 
-A Quartus Prime Lite Edition 25.1 compilation completed successfully for the
-default `N=3`, `WIDTH=16` configuration, targeting the DE1-SoC Cyclone V
-`5CSEMA5F31C6` device.
+The checked-in Quartus project in `Quartus Stuff/NN_Acceleration.qsf` currently
+targets Cyclone V device `5CGXFC7C7F23C8` and uses
+`matrixMultiplierWeightStationarySPI` as its top-level entity.
 
-| Metric | Post-fit result |
+The following numbers are a historical build snapshot, not a synthesis result
+for the current checked-in QSF. They are retained as reported for the default
+`N=3`, `WIDTH=16` configuration on the DE1-SoC Cyclone V
+`5CSEMA5F31C6` device:
+
+| Metric | Historical post-fit result |
 |---|---:|
 | Logic utilization | 666 / 32,070 ALMs (2%) |
 | Registers | 1,230 |
@@ -257,14 +274,14 @@ default `N=3`, `WIDTH=16` configuration, targeting the DE1-SoC Cyclone V
 | DSP blocks | 9 / 87 (10%) |
 | I/O pins | 30 / 457 (7%) |
 
-The project constrains `clk` to 50 MHz in `NN_Acceleration.sdc`. The post-fit
-Timing Analyzer passes that requirement at every analyzed corner, with
-worst-case setup slack of 10.954 ns, worst-case hold slack of 0.154 ns, and a
-worst reported slow-corner same-clock-domain Fmax estimate of 110.55 MHz.
+No `.sdc` file is checked in, and the current QSF does not assign one. Therefore
+this repository makes no current timing-constraint or Timing Analyzer claim.
+Any timing values associated with the historical table were produced by that
+historical build and must not be interpreted as results for the current QSF.
 
-The design is not yet fully timing-constrained or ready for board programming:
-the externally supplied SPI `sclk`, input/output delays, relationships between
-clock domains, and DE1-SoC pin locations still need explicit constraints.
+The current project also has no checked-in pin assignment or external SPI
+`sclk`/input-output delay constraints, so it is not documented here as ready
+for board programming.
 
 ## Repository layout
 
