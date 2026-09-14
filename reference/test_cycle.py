@@ -24,6 +24,7 @@ class CycleReferenceTests(unittest.TestCase):
             "target_width": 8,
             "reduction_weight_width": 8,
             "pass_through": True,
+            "reduce_output": False,
         }
         values.update(overrides)
         return CycleConfig(**values)  # type: ignore[arg-type]
@@ -40,7 +41,6 @@ class CycleReferenceTests(unittest.TestCase):
         training: bool = True,
         valid: bool = True,
         ready: bool = True,
-        pass_through: bool | None = None,
     ) -> CycleInputs:
         return CycleInputs(
             activation_valid=valid,
@@ -48,7 +48,6 @@ class CycleReferenceTests(unittest.TestCase):
             target_data=target,
             training_enable=training,
             result_ready=ready,
-            pass_through=pass_through,
         )
 
     @staticmethod
@@ -84,6 +83,22 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertEqual(snapshot.sample_context_fifo[0].input_signs, (1, 1, 1))
         self.assertEqual(snapshot.sample_context_fifo[0].target, 127)
         self.assertEqual(snapshot.output_fifo, ())
+
+    def test_configuration_change_requires_quiescence(self) -> None:
+        self.assertNotIn("pass_through", {field.name for field in fields(CycleInputs)})
+        self.assertNotIn("reduce_output", {field.name for field in fields(CycleInputs)})
+        model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
+        model.step(self.drive(training=False))
+
+        with self.assertRaisesRegex(RuntimeError, "only when the accelerator is quiescent"):
+            model.reconfigure(pass_through=False)
+        with self.assertRaisesRegex(RuntimeError, "only when the accelerator is quiescent"):
+            model.reconfigure(reduce_output=True)
+
+        model.flush()
+        model.reconfigure(pass_through=False, reduce_output=True)
+        self.assertFalse(model.config.pass_through)
+        self.assertTrue(model.config.reduce_output)
 
     def test_absolute_n3_latency_is_e0_e7_e8(self) -> None:
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])

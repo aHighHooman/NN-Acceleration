@@ -31,7 +31,11 @@ from .arithmetic import (
 
 @dataclass(frozen=True)
 class ReferenceConfig:
-    """Architectural parameters needed by the no-stall reference model."""
+    """Architectural parameters and stream-lifetime configuration.
+
+    ``pass_through`` and ``reduce_output`` remain fixed for one modelled
+    stream.  They are deliberately not fields of :class:`Sample`.
+    """
 
     n: int = 3
     width: int = 16
@@ -39,6 +43,7 @@ class ReferenceConfig:
     target_width: int | None = None
     reduction_weight_width: int = 8
     pass_through: bool = True
+    reduce_output: bool = False
     update_visibility_delay: int | None = None
 
     def __post_init__(self) -> None:
@@ -112,6 +117,10 @@ class ReferenceConfig:
     @property
     def passThrough(self) -> bool:
         return self.pass_through
+
+    @property
+    def reduceOutput(self) -> bool:
+        return self.reduce_output
 
     @property
     def updateVisibilityDelay(self) -> int:
@@ -313,6 +322,11 @@ def _coerce_config(config: ReferenceConfig | Mapping[str, Any] | Any) -> Referen
             config,
             ("pass_through", "passThrough"),
             True,
+        ),
+        reduce_output=_read_config_value(
+            config,
+            ("reduce_output", "reduceOutput"),
+            False,
         ),
         update_visibility_delay=_read_config_value(
             config,

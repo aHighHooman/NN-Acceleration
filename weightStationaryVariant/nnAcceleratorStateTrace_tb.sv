@@ -40,6 +40,11 @@ module nnAcceleratorStateTrace_tb;
     integer retired, retired_last, retired_prediction, retired_direction, retired_target;
     integer retired_raw[0:N-1], retired_activated[0:N-1], retired_result[0:N-1];
     string stimulus_path, trace_path;
+    // Verification-only contract state.  reloadReady is the DUT's existing
+    // indication that accepted samples, buffered results, and update waves
+    // have drained; neither mode bit is added to synthesizable RTL state.
+    logic configurationActive;
+    logic configuredPassThrough, configuredReduceOutput;
 
     always #5ns clk = ~clk;
 
@@ -58,6 +63,31 @@ module nnAcceleratorStateTrace_tb;
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights),
         .reloadReady(reloadReady), .passThrough(passThrough)
     );
+
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            configurationActive <= 1'b0;
+            configuredPassThrough <= passThrough;
+            configuredReduceOutput <= reduceOutput;
+        end else begin
+            if (configurationActive && !reloadReady) begin
+                if (passThrough !== configuredPassThrough)
+                    $fatal(1, "passThrough changed while accelerator work was outstanding");
+                if (reduceOutput !== configuredReduceOutput)
+                    $fatal(1, "reduceOutput changed while accelerator work was outstanding");
+            end
+
+            if (activationValid && activationReady) begin
+                if (!configurationActive || reloadReady) begin
+                    configuredPassThrough <= passThrough;
+                    configuredReduceOutput <= reduceOutput;
+                end
+                configurationActive <= 1'b1;
+            end else if (configurationActive && reloadReady) begin
+                configurationActive <= 1'b0;
+            end
+        end
+    end
 
     task automatic dump_snapshot(input integer c);
         begin

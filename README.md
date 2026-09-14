@@ -77,6 +77,24 @@ sequenceDiagram
 
 ## Data and flow-control contract
 
+### Transaction state and stream configuration
+
+`activationData`, `targetData`, and `trainingEnable` are per-sample
+transaction state. They are accepted atomically on
+`activationValid && activationReady`; the existing datapath and transaction
+metadata keep them aligned with the corresponding result.
+
+`passThrough` and `reduceOutput` are accelerator stream configuration, not
+per-sample metadata. They may be selected before traffic begins. Once a sample
+is accepted, both signals must remain stable until the accelerator has
+completely drained every accepted sample, buffered result, and learning update
+associated with that stream. After the accelerator is quiescent, either signal
+may be changed before new traffic is accepted. In short, the supported
+sequence is configure, process a stream, drain, then reconfigure; changing
+either mode while work is outstanding is illegal. The mode bits do not travel
+through `sampleContextFifo` or `resultMetadataFifo`, and the RTL intentionally
+continues to use their live, configuration-lifetime values.
+
 - Activation inputs and matrix weights are signed `WIDTH`-bit fixed-point values with `FRACTION_BITS` fractional bits. A stored integer represents `stored_integer / 2^FRACTION_BITS`.
 - One vector uses `N` parallel, MSB-first SPI lanes sharing `sclk`. Each lane has its own chip-select and data signal.
 - Send weight rows in reverse order: row `N-1` through row `0`.
@@ -121,7 +139,8 @@ primary owner:
 
 - `FunctionalReference` owns end-to-end numerical and learning behavior.
 - `CycleReference` plus the RTL trace bridge owns accelerator latency,
-  W/R evolution, FIFO contents, bubbles, and backpressure state.
+  W/R evolution, FIFO contents, bubbles, backpressure state, and the
+  drain-before-reconfiguration contract for `passThrough`/`reduceOutput`.
 - The core UVM environment owns randomized interface traffic, reset/reload,
   ordering, and compact traffic coverage. Its small matrix predictor checks
   result data during that randomized traffic; the result monitor alone checks

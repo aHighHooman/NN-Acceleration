@@ -47,63 +47,77 @@ class Scenario:
 
 
 @dataclass(frozen=True)
+class DrivenCycle:
+    """One RTL edge plus the quiescent-lifetime configuration on its pins."""
+
+    inputs: CycleInputs
+    pass_through: bool = True
+    reduce_output: bool = False
+
+
+@dataclass(frozen=True)
 class ComparisonInputs:
-    cycles: tuple[CycleInputs, ...]
+    cycles: tuple[DrivenCycle, ...]
     scenarios: tuple[Scenario, ...]
     functional_comparisons: tuple[FunctionalComparison, ...]
 
 
+def _driven(inputs: CycleInputs, *, pass_through: bool = True,
+            reduce_output: bool = False) -> DrivenCycle:
+    return DrivenCycle(inputs, pass_through, reduce_output)
+
+
 def _idle_cycle(*, ready: bool = True, pass_through: bool = True,
-                reduce_output: bool = False) -> CycleInputs:
-    return CycleInputs(result_ready=ready, pass_through=pass_through,
-                       reduce_output=reduce_output)
+                reduce_output: bool = False) -> DrivenCycle:
+    return _driven(CycleInputs(result_ready=ready), pass_through=pass_through,
+                   reduce_output=reduce_output)
 
 
 def _reset_and_load_weights(weight_matrix: Sequence[Sequence[int]],
                             reduction_weights: Sequence[int],
-                            *, pass_through: bool = True) -> list[CycleInputs]:
+                            *, pass_through: bool = True,
+                            reduce_output: bool = False) -> list[DrivenCycle]:
     """Reset, load R, and stream W in the host order required by the RTL."""
 
     result = [
-        CycleInputs(reset_n=False, pass_through=pass_through),
-        CycleInputs(reset_n=False, pass_through=pass_through),
+        _driven(CycleInputs(reset_n=False), pass_through=pass_through,
+                reduce_output=reduce_output),
+        _driven(CycleInputs(reset_n=False), pass_through=pass_through,
+                reduce_output=reduce_output),
     ]
     # The first host vector ultimately occupies the bottom PE row, hence the
     # reverse row order.  This is interface stimulus, not a second model.
     for index, row in enumerate(reversed(weight_matrix)):
         result.append(
-            CycleInputs(
+            _driven(CycleInputs(
                 weight_valid=True,
                 weight_data=tuple(row),
                 reduction_weight=tuple(reduction_weights),
                 load_reduction_weights=index == 0,
                 result_ready=True,
-                pass_through=pass_through,
-            )
+            ), pass_through=pass_through, reduce_output=reduce_output)
         )
-    result.append(_idle_cycle(pass_through=pass_through))
+    result.append(_idle_cycle(pass_through=pass_through, reduce_output=reduce_output))
     return result
 
 
 def _activation_cycle(x: Sequence[int], target: int, training: bool, *, ready: bool = True,
-                      pass_through: bool = True, reduce_output: bool = False) -> CycleInputs:
-    return CycleInputs(
+                      pass_through: bool = True, reduce_output: bool = False) -> DrivenCycle:
+    return _driven(CycleInputs(
         activation_valid=True,
         activation_data=tuple(x),
         target_data=target,
         training_enable=training,
         result_ready=ready,
-        pass_through=pass_through,
-        reduce_output=reduce_output,
-    )
+    ), pass_through=pass_through, reduce_output=reduce_output)
 
 
 def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
-    cycles: list[CycleInputs] = []
+    cycles: list[DrivenCycle] = []
     scenarios: list[Scenario] = []
     functional_comparisons: list[FunctionalComparison] = []
 
-    def add_scenario(name: str, scenario_cycles: Iterable[CycleInputs],
+    def add_scenario(name: str, scenario_cycles: Iterable[DrivenCycle],
                      samples_to_compare: Sequence[Sample] = (),
                      *, initial_weight_matrix: Sequence[Sequence[int]] = INITIAL_WEIGHT_MATRIX,
                      initial_reduction_weights: Sequence[int] = INITIAL_REDUCTION_WEIGHTS,
@@ -183,10 +197,10 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
         for sample in pre_reload_samples
     )
     reload_cycles.extend(_idle_cycle() for _ in range(20))
-    reload_cycles.append(CycleInputs(reload_weights=True, result_ready=True, pass_through=True))
+    reload_cycles.append(_driven(CycleInputs(reload_weights=True, result_ready=True)))
     for row in reversed(RELOADED_WEIGHT_MATRIX):
-        reload_cycles.append(CycleInputs(weight_valid=True, weight_data=tuple(row), result_ready=True,
-                                        pass_through=True))
+        reload_cycles.append(_driven(CycleInputs(
+            weight_valid=True, weight_data=tuple(row), result_ready=True)))
     reload_cycles.append(_idle_cycle())
     post_start_offset = len(reload_cycles)
     reload_cycles.extend(
@@ -201,18 +215,50 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
         len(cycles) - 1, RELOADED_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS,
         post_reload_samples, True, False))
 
-    # 7: configuration is held in ReLU/reduced-output mode until the stream is drained.
+    # 7: run and drain pass-through/reduced mode, change both configuration
+    # pins while quiescent, then run and drain ReLU/vector mode without reset.
+    pass_samples = tuple(Sample(x, t, False) for x, t in (
+        ((-2, 1, 3), 0), ((1, -4, 2), 5), ((3, 0, -1), -2)))
     relu_samples = tuple(Sample(x, t, False) for x, t in (
         ((-3, 1, 0), 2), ((2, -4, 1), -3), ((1, 1, -2), 4), ((-2, -1, 3), 1),
         ((4, 0, -1), 8), ((-1, 2, 2), -5)))
-    add_scenario("relu_activation", [
-        *_reset_and_load_weights(RELOADED_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS, pass_through=False),
-        *[_activation_cycle(sample.x, sample.target, False,
-                            pass_through=False, reduce_output=True)
-          for sample in relu_samples],
-        *[_idle_cycle(pass_through=False, reduce_output=True) for _ in range(24)]],
-        relu_samples, initial_weight_matrix=RELOADED_WEIGHT_MATRIX,
-        pass_through=False, reduce_output=True)
+    transition_start = len(cycles)
+    transition_cycles = _reset_and_load_weights(
+        RELOADED_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS,
+        pass_through=True, reduce_output=True)
+    pass_start = transition_start
+    transition_cycles.extend(
+        _activation_cycle(sample.x, sample.target, False,
+                          pass_through=True, reduce_output=True)
+        for sample in pass_samples
+    )
+    transition_cycles.extend(
+        _idle_cycle(pass_through=True, reduce_output=True) for _ in range(24)
+    )
+    pass_end = transition_start + len(transition_cycles) - 1
+    relu_start = pass_end + 1
+    transition_cycles.extend(
+        _activation_cycle(sample.x, sample.target, False,
+                          pass_through=False, reduce_output=False)
+        for sample in relu_samples
+    )
+    transition_cycles.extend(
+        _idle_cycle(pass_through=False, reduce_output=False) for _ in range(24)
+    )
+    cycles.extend(transition_cycles)
+    scenarios.append(Scenario("quiescent_configuration_transition", transition_start, len(cycles) - 1))
+    functional_comparisons.extend((
+        FunctionalComparison(
+            "quiescent_pass_through_reduced", pass_start, pass_end,
+            RELOADED_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS,
+            pass_samples, True, True,
+        ),
+        FunctionalComparison(
+            "quiescent_relu_vector", relu_start, len(cycles) - 1,
+            RELOADED_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS,
+            relu_samples, False, False,
+        ),
+    ))
 
     return ComparisonInputs(tuple(cycles), tuple(scenarios), tuple(functional_comparisons))
 
@@ -222,21 +268,22 @@ def write_stimulus(path: Path, comparison_inputs: ComparisonInputs) -> None:
     with path.open("w", encoding="ascii", newline="\n") as stream:
         stream.write(f"{len(comparison_inputs.cycles)}\n")
         for cycle, item in enumerate(comparison_inputs.cycles):
-            weight = item.weight_data or (0,) * N
-            activation = item.activation_data or (0,) * N
-            reduction = item.reduction_weight or (0,) * N
+            inputs = item.inputs
+            weight = inputs.weight_data or (0,) * N
+            activation = inputs.activation_data or (0,) * N
+            reduction = inputs.reduction_weight or (0,) * N
             values = (
-                cycle, int(item.reset_n), int(item.weight_valid), *weight,
-                int(item.activation_valid), *activation, item.target_data,
-                int(item.training_enable), int(item.result_ready), *reduction,
-                int(item.load_reduction_weights), int(item.reload_weights),
-                int(True if item.pass_through is None else item.pass_through),
+                cycle, int(inputs.reset_n), int(inputs.weight_valid), *weight,
+                int(inputs.activation_valid), *activation, inputs.target_data,
+                int(inputs.training_enable), int(inputs.result_ready), *reduction,
+                int(inputs.load_reduction_weights), int(inputs.reload_weights),
+                int(item.pass_through),
                 int(item.reduce_output),
             )
             stream.write(" ".join(str(value) for value in values) + "\n")
 
 
-def read_stimulus(path: Path) -> tuple[CycleInputs, ...]:
+def read_stimulus(path: Path) -> tuple[DrivenCycle, ...]:
     lines = path.read_text(encoding="ascii").splitlines()
     count = int(lines[0])
     if len(lines) != count + 1:
@@ -246,11 +293,11 @@ def read_stimulus(path: Path) -> tuple[CycleInputs, ...]:
         v = [int(field) for field in line.split()]
         if len(v) != 20 or v[0] != expected_cycle:
             raise ValueError(f"malformed stimulus line for cycle {expected_cycle}")
-        result.append(CycleInputs(reset_n=bool(v[1]), weight_valid=bool(v[2]),
+        result.append(DrivenCycle(CycleInputs(reset_n=bool(v[1]), weight_valid=bool(v[2]),
             weight_data=tuple(v[3:6]), activation_valid=bool(v[6]),
             activation_data=tuple(v[7:10]), target_data=v[10], training_enable=bool(v[11]),
             result_ready=bool(v[12]), reduction_weight=tuple(v[13:16]),
-            load_reduction_weights=bool(v[16]), reload_weights=bool(v[17]),
+            load_reduction_weights=bool(v[16]), reload_weights=bool(v[17])),
             pass_through=bool(v[18]), reduce_output=bool(v[19])))
     return tuple(result)
 
@@ -319,7 +366,14 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         raise AssertionError("stimulus file length does not match the deterministic scenario definitions")
     config = CycleConfig(n=N, width=WIDTH, fraction_bits=FRACTION_BITS,
                          target_width=TARGET_WIDTH, reduction_weight_width=REDUCTION_WEIGHT_WIDTH)
-    expected = CycleReference(config).run(inputs)
+    cycle_model = CycleReference(config)
+    expected = []
+    for driven_cycle in inputs:
+        cycle_model.reconfigure(
+            pass_through=driven_cycle.pass_through,
+            reduce_output=driven_cycle.reduce_output,
+        )
+        expected.append(cycle_model.step(driven_cycle.inputs))
     actual, retirements = read_trace(trace_path)
     if len(actual) != len(expected):
         raise AssertionError(f"trace has {len(actual)} snapshots; expected {len(expected)}")
@@ -356,7 +410,8 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
     for comparison in comparison_inputs.functional_comparisons:
         model = FunctionalReference(ReferenceConfig(n=N, width=WIDTH, fraction_bits=FRACTION_BITS,
             target_width=TARGET_WIDTH, reduction_weight_width=REDUCTION_WEIGHT_WIDTH,
-            pass_through=comparison.pass_through), comparison.W, comparison.R)
+            pass_through=comparison.pass_through, reduce_output=comparison.reduce_output),
+            comparison.W, comparison.R)
         records = model.run(comparison.samples)
         retired = [r for r in retirements
                    if comparison.start_cycle <= int(r["cycle"]) <= comparison.end_cycle]
@@ -376,7 +431,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
                 if left != right:
                     _fail(cycle, f"{comparison.name} sample {index} {label}", left, right)
             expected_output = ((record.prediction, 0, 0)
-                               if comparison.reduce_output else record.activated_result)
+                               if model.config.reduce_output else record.activated_result)
             functional_comparisons += 1
             if expected_output != rtl["result"]:
                 _fail(cycle, f"{comparison.name} sample {index} external result", expected_output, rtl["result"])

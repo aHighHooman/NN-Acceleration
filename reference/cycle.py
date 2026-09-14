@@ -14,7 +14,7 @@ learning updates move through the accelerator-specific schedule.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Sequence
 
 from .arithmetic import (
@@ -56,7 +56,12 @@ def _matrix_tuple(values: Sequence[Sequence[int]]) -> tuple[tuple[int, ...], ...
 
 @dataclass(frozen=True)
 class CycleConfig:
-    """Parameters needed by the cycle-indexed reference."""
+    """Parameters and quiescent-lifetime configuration for the cycle model.
+
+    ``pass_through`` and ``reduce_output`` describe a stream configuration,
+    not an accepted sample.  Use :meth:`CycleReference.reconfigure` to change
+    either value, and only after all work from the preceding stream drains.
+    """
 
     n: int = 3
     width: int = 16
@@ -66,6 +71,7 @@ class CycleConfig:
     input_fifo_depth: int | None = None
     output_fifo_depth: int | None = None
     pass_through: bool = True
+    reduce_output: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.n, int) or isinstance(self.n, bool) or self.n < 1:
@@ -106,7 +112,11 @@ class CycleConfig:
 
 @dataclass(frozen=True)
 class CycleInputs:
-    """External values present before one simulated rising edge."""
+    """Per-cycle transaction and flow-control values before a rising edge.
+
+    The stream configuration is intentionally absent.  In particular,
+    ``passThrough`` and ``reduceOutput`` are not sample metadata.
+    """
 
     activation_valid: bool = False
     activation_data: tuple[int, ...] = ()
@@ -117,8 +127,6 @@ class CycleInputs:
     weight_data: tuple[int, ...] = ()
     reduction_weight: tuple[int, ...] = ()
     load_reduction_weights: bool = False
-    reduce_output: bool = False
-    pass_through: bool | None = None
     reload_weights: bool = False
     reset_n: bool = True
 
@@ -136,12 +144,6 @@ class CycleInputs:
             tuple(int(v) for v in self.reduction_weight),
         )
         object.__setattr__(self, "load_reduction_weights", bool(self.load_reduction_weights))
-        object.__setattr__(self, "reduce_output", bool(self.reduce_output))
-        object.__setattr__(
-            self,
-            "pass_through",
-            None if self.pass_through is None else bool(self.pass_through),
-        )
         object.__setattr__(self, "reload_weights", bool(self.reload_weights))
         object.__setattr__(self, "reset_n", bool(self.reset_n))
 
@@ -379,6 +381,38 @@ class CycleReference:
         if self.in_flight:
             raise RuntimeError("cycle model did not drain within max_cycles")
         return added
+
+    def reconfigure(
+        self,
+        *,
+        pass_through: bool | None = None,
+        reduce_output: bool | None = None,
+    ) -> None:
+        """Change stream configuration at a quiescent boundary.
+
+        An accepted sample, buffered result, or pending learning update keeps
+        the current configuration live.  The model rejects a change until all
+        such work has drained; no mode value is copied into a sample or FIFO.
+        """
+
+        next_pass_through = (
+            self.config.pass_through if pass_through is None else bool(pass_through)
+        )
+        next_reduce_output = (
+            self.config.reduce_output if reduce_output is None else bool(reduce_output)
+        )
+        if (
+            next_pass_through != self.config.pass_through
+            or next_reduce_output != self.config.reduce_output
+        ) and self.in_flight:
+            raise RuntimeError(
+                "passThrough/reduceOutput may change only when the accelerator is quiescent"
+            )
+        self.config = replace(
+            self.config,
+            pass_through=next_pass_through,
+            reduce_output=next_reduce_output,
+        )
 
     def run(self, cycles: Sequence[CycleInputs]) -> list[CycleSnapshot]:
         return [self.step(cycle_inputs) for cycle_inputs in cycles]
@@ -623,7 +657,7 @@ class CycleReference:
         if not isinstance(cycle_inputs, CycleInputs):
             raise TypeError("step expects CycleInputs")
         cycle_number = self._cycle
-        pass_through = self.config.pass_through if cycle_inputs.pass_through is None else cycle_inputs.pass_through
+        pass_through = self.config.pass_through
 
         if not cycle_inputs.reset_n:
             self._hardware_reset()
