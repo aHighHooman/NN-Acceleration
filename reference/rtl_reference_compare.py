@@ -394,8 +394,13 @@ def read_trace(path: Path) -> tuple[list[dict[str, object]], list[dict[str, obje
             values = tuple(map(int, f[1:])); current["W"] = tuple(values[i:i+N] for i in range(0, N*N, N))
         elif f[0] == "R":
             current["R"] = tuple(map(int, f[1:]))
-        elif f[0] in ("WF", "AF", "OF"):
-            current[{"WF": "weight_fifo", "AF": "activation_fifo", "OF": "output_fifo"}[f[0]]] = _parse_counted(f, N)
+        elif f[0] == "PW":
+            entries = _parse_counted(f, N)
+            if len(entries) > 1:
+                raise ValueError(f"bad PW trace payload at line {line_number}")
+            current["pending_weight_row"] = entries[0] if entries else None
+        elif f[0] in ("AF", "OF"):
+            current[{"AF": "activation_fifo", "OF": "output_fifo"}[f[0]]] = _parse_counted(f, N)
         elif f[0] == "SF":
             entries = _parse_counted(f, N + 2)
             current["sample_context_fifo"] = tuple((e[0], tuple(e[1:1+N]), bool(e[-1])) for e in entries)
@@ -461,7 +466,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         for lane in range(N):
             if exp.R[lane] != actual_R[lane]:
                 _fail(cycle, f"R[{lane}]", exp.R[lane], actual_R[lane])
-        for field in ("weight_fifo", "activation_fifo", "output_fifo"):
+        for field in ("pending_weight_row", "activation_fifo", "output_fifo"):
             left = getattr(exp, field); right = act.get(field)
             if isinstance(left, tuple) and isinstance(right, tuple):
                 _compare_sequence(cycle, field, left, right)
@@ -562,7 +567,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
     states = [expected[i] for i in range(backpressure.start_cycle, backpressure.end_cycle + 1)]
     held = any(len(states[i].output_fifo) == config.output_fifo_depth and
                states[i].W == states[i-1].W and states[i].R == states[i-1].R and
-               states[i].weight_fifo == states[i-1].weight_fifo and
+               states[i].pending_weight_row == states[i-1].pending_weight_row and
                states[i].activation_fifo == states[i-1].activation_fifo and
                states[i].sample_context_fifo == states[i-1].sample_context_fifo and
                states[i].output_fifo == states[i-1].output_fifo and
@@ -621,7 +626,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         before = phase6l_states[cycle - 1]
         during = phase6l_states[cycle]
         architectural_fields = (
-            "W", "R", "weight_fifo", "activation_fifo", "sample_context_fifo",
+            "W", "R", "pending_weight_row", "activation_fifo", "sample_context_fifo",
             "output_fifo", "result_readout_fifo",
         )
         if any(getattr(before, field) != getattr(during, field) for field in architectural_fields):

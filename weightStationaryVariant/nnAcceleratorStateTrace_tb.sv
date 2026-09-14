@@ -124,13 +124,10 @@ module nnAcceleratorStateTrace_tb;
                 $signed(dut.matrixEngine.systolicArr.row_loop[2].col_loop[2].mb.weightReg));
             $fwrite(trace_fd, "R");
             for (lane = 0; lane < N; lane++) $fwrite(trace_fd, " %0d", $signed(dut.residentReductionWeight[lane]));
-            $fwrite(trace_fd, "\nWF %0d", dut.matrixEngine.weightVectorFifo.values);
-            for (entry = 0; entry < dut.matrixEngine.weightVectorFifo.values; entry++) begin
-                index = dut.matrixEngine.weightVectorFifo.readPtr + entry;
-                if (index >= N) index = index - N;
+            $fwrite(trace_fd, "\nPW %0d", dut.matrixEngine.pendingWeightValid);
+            if (dut.matrixEngine.pendingWeightValid)
                 for (lane = 0; lane < N; lane++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.weightVectorFifo.data[index][lane*WIDTH +: WIDTH]));
-            end
+                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.pendingWeightRow[lane]));
             $fwrite(trace_fd, "\nAF %0d", dut.matrixEngine.activationVectorFifo.values);
             for (entry = 0; entry < dut.matrixEngine.activationVectorFifo.values; entry++) begin
                 index = dut.matrixEngine.activationVectorFifo.readPtr + entry;

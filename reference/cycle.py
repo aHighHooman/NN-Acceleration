@@ -2,9 +2,9 @@
 
 ``CycleReference.step`` applies the external values present before one rising
 edge.  Its return value is a photograph of the persistent architectural state
-immediately after that edge.  Only the resident weights and the five
-architectural FIFO payloads are part of that photograph; timing positions and
-handshake signals remain private implementation details of this model.
+immediately after that edge.  Only the resident weights, pending weight row,
+and architectural FIFO payloads are part of that photograph; timing positions
+and handshake signals remain private implementation details of this model.
 
 The numerical operations are deliberately delegated to ``arithmetic.py``.
 This module decides when those operations happen and how samples, results, and
@@ -176,7 +176,7 @@ class CycleSnapshot:
     cycle: int
     W: tuple[tuple[int, ...], ...]
     R: tuple[int, ...]
-    weight_fifo: tuple[tuple[int, ...], ...]
+    pending_weight_row: tuple[int, ...] | None
     activation_fifo: tuple[tuple[int, ...], ...]
     sample_context_fifo: tuple[SampleContext, ...]
     output_fifo: tuple[tuple[int, ...], ...]
@@ -253,7 +253,7 @@ class _SampleResult:
 
 
 class CycleReference:
-    """Cycle-indexed reference of resident W/R state and architectural FIFOs."""
+    """Cycle-indexed reference of resident W/R state and stream buffers."""
 
     def __init__(
         self,
@@ -299,7 +299,7 @@ class CycleReference:
     @property
     def in_flight(self) -> bool:
         return bool(
-            self._weight_fifo
+            self._pending_weight_row is not None
             or (not self._weights_loaded and self._loaded_weight_count)
             or self._activation_fifo
             or self._sample_context_fifo
@@ -344,7 +344,7 @@ class CycleReference:
         self._weights_loaded = self._initial_weights_loaded
         self._loaded_weight_count = self.config.n if self._weights_loaded else 0
         self._output_row_index = 0
-        self._weight_fifo: deque[tuple[int, ...]] = deque()
+        self._pending_weight_row: tuple[int, ...] | None = None
         self._activation_fifo: deque[_Sample] = deque()
         self._sample_context_fifo: deque[_Sample] = deque()
         self._output_fifo: deque[_OutputEntry] = deque()
@@ -371,7 +371,7 @@ class CycleReference:
         self._weights_loaded = False
         self._loaded_weight_count = 0
         self._output_row_index = 0
-        self._weight_fifo.clear()
+        self._pending_weight_row = None
         self._activation_fifo.clear()
         self._sample_context_fifo.clear()
         self._output_fifo.clear()
@@ -664,7 +664,7 @@ class CycleReference:
             cycle=self._cycle,
             W=_matrix_tuple(self._W),
             R=tuple(self._R),
-            weight_fifo=tuple(self._weight_fifo),
+            pending_weight_row=self._pending_weight_row,
             activation_fifo=tuple(sample.input_vector for sample in self._activation_fifo),
             sample_context_fifo=tuple(
                 SampleContext(sample.target, sample.input_signs, sample.training_enable)
@@ -716,10 +716,17 @@ class CycleReference:
         activation_ready = self._weights_loaded and not activation_full and sample_can_accept
         activation_accepted = bool(cycle_inputs.activation_valid and activation_ready)
 
-        weight_full = len(self._weight_fifo) >= self.config.n
-        weight_ready = not self._weights_loaded and not weight_full
+        pending_weight_consumed = bool(
+            not self._weights_loaded and self._pending_weight_row is not None
+        )
+        consuming_final_weight_row = bool(
+            pending_weight_consumed and self._loaded_weight_count == self.config.n - 1
+        )
+        weight_ready = bool(
+            not self._weights_loaded
+            and (self._pending_weight_row is None or not consuming_final_weight_row)
+        )
         weight_accepted = bool(cycle_inputs.weight_valid and weight_ready)
-        weight_popped = bool(not self._weights_loaded and self._weight_fifo)
 
         reduction_update_entering = bool(
             result_retired and context_head is not None and context_head.training_enable
@@ -733,7 +740,9 @@ class CycleReference:
         output_full = len(self._output_fifo) >= self.config.output_fifo_depth
         aligned_head_ready = bool(self._alignment)
         output_blocked = bool(output_full and not result_retired and aligned_head_ready)
-        datapath_advance = weight_popped if not self._weights_loaded else not output_blocked
+        datapath_advance = (
+            pending_weight_consumed if not self._weights_loaded else not output_blocked
+        )
 
         activation_pop = bool(self._weights_loaded and self._activation_fifo and datapath_advance)
         accepted_sample: _Sample | None = None
@@ -787,8 +796,9 @@ class CycleReference:
             self._advance_reduction_waves(injected_reduction, cycle_inputs.load_reduction_weights)
 
         pushed_weight = self._normalize_weight(cycle_inputs.weight_data) if weight_accepted else None
-        if weight_popped:
-            loaded_row = self._weight_fifo[0]
+        if pending_weight_consumed:
+            loaded_row = self._pending_weight_row
+            assert loaded_row is not None
             self._weight_load_pipe = [loaded_row] + self._weight_load_pipe[:-1]
             for row in range(self.config.n):
                 self._W[row] = list(self._weight_load_pipe[row]) if self._weight_load_pipe[row] is not None else [0] * self.config.n
@@ -804,11 +814,13 @@ class CycleReference:
             self._weights_loaded = False
             self._loaded_weight_count = 0
             self._weight_load_pipe = [None] * self.config.n
+            self._pending_weight_row = None
 
-        if weight_popped:
-            self._weight_fifo.popleft()
-        if pushed_weight is not None:
-            self._weight_fifo.append(pushed_weight)
+        if weight_accepted:
+            assert pushed_weight is not None
+            self._pending_weight_row = pushed_weight
+        elif pending_weight_consumed:
+            self._pending_weight_row = None
 
         if activation_pop:
             self._activation_fifo.popleft()

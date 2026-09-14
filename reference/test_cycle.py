@@ -55,7 +55,7 @@ class CycleReferenceTests(unittest.TestCase):
         return (
             snapshot.W,
             snapshot.R,
-            snapshot.weight_fifo,
+            snapshot.pending_weight_row,
             snapshot.activation_fifo,
             snapshot.sample_context_fifo,
             snapshot.output_fifo,
@@ -75,7 +75,7 @@ class CycleReferenceTests(unittest.TestCase):
                 "cycle",
                 "W",
                 "R",
-                "weight_fifo",
+                "pending_weight_row",
                 "activation_fifo",
                 "sample_context_fifo",
                 "output_fifo",
@@ -255,10 +255,10 @@ class CycleReferenceTests(unittest.TestCase):
             )
             self.assertEqual(records[sample_index].R_used, tuple(value + generation for value in initial_R))
 
-    def test_fifo_snapshots_cover_startup_fill_and_drain(self) -> None:
+    def test_buffer_snapshots_cover_startup_fill_and_drain(self) -> None:
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
         first = model.step(self.drive(x=(1, -2, 0), target=17, training=False))
-        self.assertEqual(first.weight_fifo, ())
+        self.assertIsNone(first.pending_weight_row)
         self.assertEqual(first.activation_fifo, ((1, -2, 0),))
         self.assertEqual(
             first.sample_context_fifo[0].input_signs,
@@ -290,16 +290,65 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertEqual(drained.output_fifo, ())
         self.assertEqual(drained.result_readout_fifo, ())
 
-    def test_weight_fifo_snapshot_is_logical_host_order(self) -> None:
+    def test_pending_weight_snapshot_is_logical_host_order(self) -> None:
         model = CycleReference(self.config(), R=[16, 24, 32])
         e0 = model.step(CycleInputs(weight_valid=True, weight_data=(7, 8, 9)))
         e1 = model.step(CycleInputs(weight_valid=True, weight_data=(4, 5, 6)))
         e2 = model.step(CycleInputs(weight_valid=True, weight_data=(1, 2, 3)))
-        self.assertEqual(e0.weight_fifo, ((7, 8, 9),))
-        self.assertEqual(e1.weight_fifo, ((4, 5, 6),))
-        self.assertEqual(e2.weight_fifo, ((1, 2, 3),))
+        self.assertEqual(e0.pending_weight_row, (7, 8, 9))
+        self.assertEqual(e1.pending_weight_row, (4, 5, 6))
+        self.assertEqual(e2.pending_weight_row, (1, 2, 3))
         model.step(CycleInputs(result_ready=True))
         self.assertEqual(model.W, [[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+
+    def test_pending_weight_stage_supports_simultaneous_refill(self) -> None:
+        for n in (2, 3, 4):
+            with self.subTest(n=n):
+                rows = tuple(
+                    tuple(row * n + lane + 1 for lane in range(n))
+                    for row in range(n)
+                )
+                model = CycleReference(self.config(n=n), R=[1] * n)
+
+                snapshots = [
+                    model.step(CycleInputs(weight_valid=True, weight_data=row))
+                    for row in rows
+                ]
+                self.assertEqual(
+                    [snapshot.pending_weight_row for snapshot in snapshots],
+                    list(rows),
+                )
+                zero_row = [0] * n
+                for index, snapshot in enumerate(snapshots):
+                    expected_rows = [list(row) for row in reversed(rows[:index])]
+                    expected_rows.extend([zero_row] * (n - len(expected_rows)))
+                    self.assertEqual(snapshot.W, tuple(tuple(row) for row in expected_rows))
+
+    def test_pending_weight_stage_rejects_extra_row_on_final_consumption(self) -> None:
+        for n in (2, 3, 4):
+            with self.subTest(n=n):
+                rows = tuple(
+                    tuple(row * n + lane + 1 for lane in range(n))
+                    for row in range(n)
+                )
+                extra = tuple(90 + lane for lane in range(n))
+                model = CycleReference(self.config(n=n), R=[1] * n)
+
+                for row in rows:
+                    model.step(CycleInputs(weight_valid=True, weight_data=row))
+                final = model.step(CycleInputs(weight_valid=True, weight_data=extra))
+                self.assertTrue(model.weights_loaded)
+                self.assertIsNone(final.pending_weight_row)
+                self.assertEqual(model.W, [list(row) for row in reversed(rows)])
+
+                reloaded = model.step(CycleInputs(reload_weights=True, result_ready=True))
+                self.assertFalse(model.weights_loaded)
+                self.assertIsNone(reloaded.pending_weight_row)
+
+                first_reloaded = model.step(
+                    CycleInputs(weight_valid=True, weight_data=extra)
+                )
+                self.assertEqual(first_reloaded.pending_weight_row, extra)
 
     def test_input_bubbles_do_not_stop_learning(self) -> None:
         initial_W = self.initial_W()

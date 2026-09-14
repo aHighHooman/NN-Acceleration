@@ -33,16 +33,15 @@ module matrixMultiplierWeightStationary #(
     localparam int VECTOR_WIDTH         = N * WIDTH;
     localparam int RESULT_VECTOR_WIDTH  = N * RESULT_WIDTH;
 
-    logic weightPush, weightPop;
+    logic weightPush, consumePendingWeightRow;
     logic activationPush, activationPop;
     logic outputPop;
     logic [WEIGHT_COUNT_WIDTH-1:0] loadedWeightRows;
     logic [OUTPUT_ROW_WIDTH-1:0] outputRowIndex;
 
-    logic signed [VECTOR_WIDTH-1:0] weightVectorPushData;
-    logic signed [VECTOR_WIDTH-1:0] weightVectorHead;
-    logic signed [WIDTH-1:0] queuedWeightRow [N];
-    logic weightFull, weightEmpty;
+    logic signed [WIDTH-1:0] pendingWeightRow [N];
+    logic pendingWeightValid;
+    logic consumingFinalWeightRow;
     logic signed [VECTOR_WIDTH-1:0] activationVectorPushData;
     logic signed [VECTOR_WIDTH-1:0] activationVectorHead;
     logic signed [WIDTH-1:0] queuedActivation[N];
@@ -66,11 +65,9 @@ module matrixMultiplierWeightStationary #(
     logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked;
 
     always_comb begin
-        weightVectorPushData     = '0;
         activationVectorPushData = '0;
         outputVectorPushData     = '0;
         for (int lane = 0; lane < N; lane++) begin
-            weightVectorPushData[lane*WIDTH +: WIDTH] = weightData[lane];
             activationVectorPushData[lane*WIDTH +: WIDTH] = activationData[lane];
             outputVectorPushData[lane*RESULT_WIDTH +: RESULT_WIDTH] =
                 resultAlignedData[lane];
@@ -79,8 +76,6 @@ module matrixMultiplierWeightStationary #(
 
     always_comb begin
         for (int lane = 0; lane < N; lane++) begin
-            queuedWeightRow[lane] =
-                weightVectorHead[lane*WIDTH +: WIDTH];
             queuedActivation[lane] =
                 activationVectorHead[lane*WIDTH +: WIDTH];
             outputVectorLaneData[lane] =
@@ -139,14 +134,20 @@ module matrixMultiplierWeightStationary #(
     // matching the old lockstep lane FIFO behavior.
     assign outputBlocked    = resultAlignedAllValid && outputFull && !outputPop;
 
-    assign weightReady      = !weightsLoaded && !weightFull;
+    // A pending row can be replaced on the same edge on which it is consumed,
+    // except when that consumption completes the current N-row matrix.
+    assign consumePendingWeightRow = !weightsLoaded && pendingWeightValid;
+    assign consumingFinalWeightRow = consumePendingWeightRow &&
+                                     (loadedWeightRows == N-1);
+    assign weightReady      = !weightsLoaded &&
+                              (!pendingWeightValid || !consumingFinalWeightRow);
     assign weightPush       = weightValid && weightReady;
     assign activationReady  = weightsLoaded && !activationFull;
     assign activationPush   = activationValid && activationReady;
     assign outputPop        = resultValid && resultReady;
     assign resultValid      = !outputEmpty;
     assign resultLast       = resultValid && (outputRowIndex == N-1);
-    assign arrayAdvance     = !weightsLoaded ? weightPop : !outputBlocked;
+    assign arrayAdvance     = !weightsLoaded ? consumePendingWeightRow : !outputBlocked;
     assign datapathAdvance = arrayAdvance;
     assign resultEnqueue = arrayAdvance && resultAlignedAllValid;
     // Expose the complete result vector at the same edge on which the normal
@@ -160,7 +161,6 @@ module matrixMultiplierWeightStationary #(
         end
     endgenerate
     assign activationPop    = weightsLoaded && !activationEmpty && arrayAdvance;
-    assign weightPop        = !weightsLoaded && !weightEmpty;
     // Stream quiescence is represented by the distributed empty/busy state.
     // Reload readiness is stricter: a complete N-row output frame must also
     // have retired, leaving the output frame position at row zero.
@@ -174,13 +174,6 @@ module matrixMultiplierWeightStationary #(
             assign resultData[resultLane] = outputVectorLaneData[resultLane];
         end
     endgenerate
-
-    signedFifo #(.WIDTH(VECTOR_WIDTH), .DEPTH(N)) weightVectorFifo (
-        .clk(clk), .rst_n(rst_n), .push(weightPush),
-        .pushData(weightVectorPushData), .pop(weightPop),
-        .popData(weightVectorHead), .full(weightFull), .empty(weightEmpty),
-        .values()
-    );
 
     signedFifo #(.WIDTH(VECTOR_WIDTH), .DEPTH(INPUT_FIFO_DEPTH)) activationVectorFifo (
         .clk(clk), .rst_n(rst_n), .push(activationPush),
@@ -210,8 +203,10 @@ module matrixMultiplierWeightStationary #(
             weightsLoaded        <= 0;
             loadedWeightRows     <= 0;
             outputRowIndex       <= 0;
+            pendingWeightValid   <= 0;
 
             for (int lane = 0; lane < N; lane++) begin
+                pendingWeightRow[lane] <= 0;
                 for (int stage = 0; stage < RESULT_ALIGN_STORAGE; stage++) begin
                     resultAlignData[lane][stage]  <= 0;
                     resultAlignValid[lane][stage] <= 0;
@@ -222,7 +217,17 @@ module matrixMultiplierWeightStationary #(
                 end
             end
         end else begin
-            if (weightPop) begin
+            if (weightPush) begin
+                for (int lane = 0; lane < N; lane++)
+                    pendingWeightRow[lane] <= weightData[lane];
+                pendingWeightValid <= 1;
+            end else if (consumePendingWeightRow) begin
+                for (int lane = 0; lane < N; lane++)
+                    pendingWeightRow[lane] <= 0;
+                pendingWeightValid <= 0;
+            end
+
+            if (consumePendingWeightRow) begin
                 if (loadedWeightRows == N-1) begin
                     loadedWeightRows <= 0;
                     weightsLoaded    <= 1;
@@ -238,6 +243,9 @@ module matrixMultiplierWeightStationary #(
             if (reloadWeights && reloadReady) begin
                 weightsLoaded    <= 0;
                 loadedWeightRows <= 0;
+                pendingWeightValid <= 0;
+                for (int lane = 0; lane < N; lane++)
+                    pendingWeightRow[lane] <= 0;
             end
 
             if (weightsLoaded && arrayAdvance) begin
@@ -265,11 +273,11 @@ module matrixMultiplierWeightStationary #(
     end
 
     systolicArrayWeightStationary #(.WIDTH(WIDTH), .N(N)) systolicArr (
-        .clk(clk), .rst_n(rst_n), .advance(arrayAdvance), .loadWeight(weightPop),
+        .clk(clk), .rst_n(rst_n), .advance(arrayAdvance), .loadWeight(consumePendingWeightRow),
         .rowDirection(rowDirection), .columnDirection(columnDirection),
         .updateValid(matrixUpdateValid),
         .row(skewedActivation), .rowValid(skewedActivationValid),
-        .col(queuedWeightRow), .result(arrayResult),
+        .col(pendingWeightRow), .result(arrayResult),
         .resultValid(arrayResultValid),
         .updateComplete(),
         .pipelineBusy(pipelineBusy)

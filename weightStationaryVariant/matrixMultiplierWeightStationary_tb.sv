@@ -116,6 +116,8 @@ module matrixMultiplierWeightStationary_testcase #(
         repeat (3) @(posedge clk);
         @(negedge clk) rst_n = 1'b1;
 
+        check_pending_weight_stage_contract();
+
         // Two activation matrices are transmitted back-to-back under one stationary weight matrix.
         send_weights("identity weights", weight_identity, NO_BUBBLES);
         if (N == 3)
@@ -213,6 +215,80 @@ module matrixMultiplierWeightStationary_testcase #(
         $display("\nPASS: all %0dx%0d weight-stationary tests completed.", N, N);
         done = 1'b1;
     end
+
+    task automatic check_pending_weight_stage_contract();
+        begin
+            $display("\n=== %0dx%0d: Checking pending-row refill and final boundary ===", N, N);
+
+            // Each row after the first is offered while the previous pending
+            // row is consumed.  The pending row must become the new host row
+            // on every one of those full-cadence edges.
+            for (int host_row = 0; host_row < N; host_row++) begin
+                @(negedge clk);
+                if (host_row == 0) begin
+                    if (dut.pendingWeightValid !== 1'b0 ||
+                        dut.consumePendingWeightRow !== 1'b0 ||
+                        weightReady !== 1'b1)
+                        $fatal(1, "%0dx%0d initial pending-row state mismatch", N, N);
+                end else begin
+                    if (dut.pendingWeightValid !== 1'b1 ||
+                        dut.consumePendingWeightRow !== 1'b1 ||
+                        weightReady !== 1'b1 ||
+                        dut.loadedWeightRows !== host_row-1)
+                        $fatal(1, "%0dx%0d simultaneous consume/refill mismatch at host row %0d",
+                               N, N, host_row);
+                    for (int lane = 0; lane < N; lane++)
+                        if ($signed(dut.pendingWeightRow[lane]) !==
+                            (host_row-1)*N + lane + 1)
+                            $fatal(1, "%0dx%0d pending row order mismatch at host row %0d lane %0d",
+                                   N, N, host_row, lane);
+                end
+
+                for (int lane = 0; lane < N; lane++)
+                    weightData[lane] = host_row*N + lane + 1;
+                weightValid = 1'b1;
+                @(posedge clk);
+            end
+
+            // The final pending row is consumed here.  Ready must be low on
+            // this same edge, so the attempted extra row is not staged.
+            @(negedge clk);
+            if (dut.pendingWeightValid !== 1'b1 ||
+                dut.consumePendingWeightRow !== 1'b1 ||
+                weightReady !== 1'b0 ||
+                dut.loadedWeightRows !== N-1)
+                $fatal(1, "%0dx%0d final-row ready boundary mismatch", N, N);
+            for (int lane = 0; lane < N; lane++)
+                weightData[lane] = 100 + lane;
+            weightValid = 1'b1;
+            @(posedge clk);
+            @(negedge clk);
+            weightValid = 1'b0;
+
+            if (weightsLoaded !== 1'b1 || dut.pendingWeightValid !== 1'b0 ||
+                dut.loadedWeightRows !== 0)
+                $fatal(1, "%0dx%0d final-row consumption state mismatch", N, N);
+            for (int lane = 0; lane < N; lane++)
+                if (dut.pendingWeightRow[lane] !== '0)
+                    $fatal(1, "%0dx%0d stale pending row remained after final consumption", N, N);
+            // A legal reload must leave the new matrix's pending stage empty.
+            wait(reloadReady);
+            @(negedge clk) reloadWeights = 1'b1;
+            @(posedge clk);
+            @(negedge clk) begin
+                reloadWeights = 1'b0;
+                if (weightsLoaded !== 1'b0 || dut.pendingWeightValid !== 1'b0 ||
+                    dut.loadedWeightRows !== 0)
+                    $fatal(1, "%0dx%0d reload did not clear pending-row state", N, N);
+                for (int lane = 0; lane < N; lane++)
+                    if (dut.pendingWeightRow[lane] !== '0)
+                        $fatal(1, "%0dx%0d reload retained stale pending row lane %0d",
+                               N, N, lane);
+            end
+            $display("PASS: %0dx%0d pending-row simultaneous refill, final boundary, and reload clear",
+                     N, N);
+        end
+    endtask
 
     task send_weights(input string label, input matrix_t weight_matrix, input bit add_bubbles);
         $display("\n=== %0dx%0d: Loading %s ===", N, N, label);
