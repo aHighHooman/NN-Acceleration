@@ -218,9 +218,9 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
 
     # 7: run and drain pass-through/reduced mode, change both configuration
     # pins while quiescent, then run and drain ReLU/vector mode without reset.
-    # Deliberately drain just one N=3 sample before changing modes. The DUT's
-    # acceptedActivationRow is therefore 1 rather than 0 at the configuration
-    # boundary; frame position must not keep stream configuration live.
+    # Deliberately drain just one N=3 sample before changing modes. The stream
+    # is quiescent even though the output frame position is 1; frame position
+    # must not keep stream configuration live, but it must still block reload.
     pass_samples = (Sample((-2, 1, 3), 0, False),)
     relu_samples = tuple(Sample(x, t, False) for x, t in (
         ((-3, 1, 0), 2), ((2, -4, 1), -3), ((1, 1, -2), 4), ((-2, -1, 3), 1),

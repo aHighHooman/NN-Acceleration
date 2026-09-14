@@ -44,8 +44,9 @@
 
             scoreboard.wait_for_matrices(expected_matrices);
 
-            // reloadReady is asserted only when the activation FIFOs, skew
-            // registers, systolic pipeline, and output FIFOs are all empty.
+            // Stream quiescence is described by the distributed empty/busy
+            // state.  reloadReady is stricter: those structures must be empty
+            // and the output frame position must be at row zero.
             drain_cycles = 0;
             while (vif.reloadReady !== 1'b1) begin
                 @(posedge vif.clk);

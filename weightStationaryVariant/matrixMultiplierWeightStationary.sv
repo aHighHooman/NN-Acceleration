@@ -28,8 +28,7 @@ module matrixMultiplierWeightStationary #(
 );
 
     localparam int WEIGHT_COUNT_WIDTH   = $clog2(N+1);
-    localparam int ACT_ROW_WIDTH        = $clog2(N);
-    localparam int RESULT_ROW_WIDTH     = $clog2(N);
+    localparam int OUTPUT_ROW_WIDTH     = $clog2(N);
     localparam int RESULT_WIDTH         = $clog2(N) + 2*WIDTH;
     localparam int VECTOR_WIDTH         = N * WIDTH;
     localparam int RESULT_VECTOR_WIDTH  = N * RESULT_WIDTH;
@@ -38,8 +37,7 @@ module matrixMultiplierWeightStationary #(
     logic activationPush, activationPop;
     logic outputPop;
     logic [WEIGHT_COUNT_WIDTH-1:0] loadedWeightRows;
-    logic [ACT_ROW_WIDTH-1:0] acceptedActivationRow;
-    logic [RESULT_ROW_WIDTH-1:0] transmittedResultRow;
+    logic [OUTPUT_ROW_WIDTH-1:0] outputRowIndex;
 
     logic signed [VECTOR_WIDTH-1:0] weightVectorPushData;
     logic signed [VECTOR_WIDTH-1:0] weightVectorHead;
@@ -128,7 +126,9 @@ module matrixMultiplierWeightStationary #(
     always_comb begin
         skewBusy = 0;
         for (int i = 0; i < N; i++) begin
-            for (int d = 0; d < N; d++) begin
+            // Lane i consumes only its diagonal stage, so stages 0..i are
+            // the complete live skew path for that lane.
+            for (int d = 0; d <= i; d++) begin
                 skewBusy |= skewValid[i][d];
             end
         end
@@ -145,7 +145,7 @@ module matrixMultiplierWeightStationary #(
     assign activationPush   = activationValid && activationReady;
     assign outputPop        = resultValid && resultReady;
     assign resultValid      = !outputEmpty;
-    assign resultLast       = resultValid && (transmittedResultRow == N-1);
+    assign resultLast       = resultValid && (outputRowIndex == N-1);
     assign arrayAdvance     = !weightsLoaded ? weightPop : !outputBlocked;
     assign datapathAdvance = arrayAdvance;
     assign resultEnqueue = arrayAdvance && resultAlignedAllValid;
@@ -161,9 +161,12 @@ module matrixMultiplierWeightStationary #(
     endgenerate
     assign activationPop    = weightsLoaded && !activationEmpty && arrayAdvance;
     assign weightPop        = !weightsLoaded && !weightEmpty;
+    // Stream quiescence is represented by the distributed empty/busy state.
+    // Reload readiness is stricter: a complete N-row output frame must also
+    // have retired, leaving the output frame position at row zero.
     assign reloadReady      = weightsLoaded && activationEmpty && !skewBusy &&
                               !pipelineBusy && !resultAlignBusy && outputEmpty &&
-                              (acceptedActivationRow == 0);
+                              (outputRowIndex == 0);
 
     genvar resultLane;
     generate
@@ -206,8 +209,7 @@ module matrixMultiplierWeightStationary #(
         if (!rst_n) begin
             weightsLoaded        <= 0;
             loadedWeightRows     <= 0;
-            acceptedActivationRow<= 0;
-            transmittedResultRow <= 0;
+            outputRowIndex       <= 0;
 
             for (int lane = 0; lane < N; lane++) begin
                 for (int stage = 0; stage < RESULT_ALIGN_STORAGE; stage++) begin
@@ -229,12 +231,8 @@ module matrixMultiplierWeightStationary #(
                 end
             end
 
-            if (activationPush) begin
-                acceptedActivationRow <= (acceptedActivationRow == N-1) ? 0 : acceptedActivationRow + 1;
-            end
-
             if (outputPop) begin
-                transmittedResultRow <= (transmittedResultRow == N-1) ? 0 : transmittedResultRow + 1;
+                outputRowIndex <= (outputRowIndex == N-1) ? 0 : outputRowIndex + 1;
             end
 
             if (reloadWeights && reloadReady) begin
@@ -257,7 +255,7 @@ module matrixMultiplierWeightStationary #(
                     skewData[lane][0]  <= activationData_FifoToOrch[lane];
                     skewValid[lane][0] <= activationPop;
 
-                    for (int d = 1; d < N; d++) begin
+                    for (int d = 1; d <= lane; d++) begin
                         skewData[lane][d]  <= skewData[lane][d-1];
                         skewValid[lane][d] <= skewValid[lane][d-1];
                     end

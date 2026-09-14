@@ -317,7 +317,7 @@ class CycleReference:
         """Whether accepted sample/result/update work has completely drained.
 
         This is the verification configuration boundary.  It deliberately
-        excludes weight-loading state and ``acceptedActivationRow``: neither
+        excludes weight-loading state and the output frame position: neither
         represents outstanding work whose interpretation depends on the
         stream mode.
         """
@@ -344,7 +344,7 @@ class CycleReference:
         self._R = self._initial_R[:]
         self._weights_loaded = self._initial_weights_loaded
         self._loaded_weight_count = self.config.n if self._weights_loaded else 0
-        self._accepted_activation_row = 0
+        self._output_row_index = 0
         self._weight_fifo: deque[tuple[int, ...]] = deque()
         self._activation_fifo: deque[_Sample] = deque()
         self._sample_context_fifo: deque[_Sample] = deque()
@@ -371,7 +371,7 @@ class CycleReference:
         self._R = [0 for _ in range(self.config.n)]
         self._weights_loaded = False
         self._loaded_weight_count = 0
-        self._accepted_activation_row = 0
+        self._output_row_index = 0
         self._weight_fifo.clear()
         self._activation_fifo.clear()
         self._sample_context_fifo.clear()
@@ -460,6 +460,10 @@ class CycleReference:
         )
 
     def _matrix_reload_ready(self, reduction_boundary_busy: bool) -> bool:
+        """Whether matrix weights may reload at a complete output frame."""
+
+        # Stream quiescence intentionally omits frame position.  Reload adds
+        # the surviving output position so a partial frame cannot reload.
         return bool(
             self._weights_loaded
             and not self._activation_fifo
@@ -467,7 +471,7 @@ class CycleReference:
             and not self._completed_tokens
             and not self._alignment
             and not self._output_fifo
-            and self._accepted_activation_row == 0
+            and self._output_row_index == 0
             and not self._matrix_waves
             and not reduction_boundary_busy
         )
@@ -808,7 +812,6 @@ class CycleReference:
         if accepted_sample is not None:
             self._activation_fifo.append(accepted_sample)
             self._sample_context_fifo.append(accepted_sample)
-            self._accepted_activation_row = (self._accepted_activation_row + 1) % self.config.n
 
         if result_enqueue:
             assert alignment_to_enqueue is not None
@@ -844,6 +847,7 @@ class CycleReference:
             retired_context = self._sample_context_fifo.popleft()
             if not retired_output.sample_index == retired_metadata.sample_index == retired_context.index:
                 raise AssertionError("result, metadata, and context order diverged")
+            self._output_row_index = (self._output_row_index + 1) % self.config.n
             self._retirement_cycles.append(cycle_number)
             self._retired_sample_indices.append(retired_context.index)
 

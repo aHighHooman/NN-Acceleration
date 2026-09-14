@@ -107,6 +107,7 @@ continues to use their live, configuration-lifetime values.
 - Reduction weights default to signed 8-bit Q1.7 fractional coefficients (one sign bit and seven fractional bits), so one stored LSB is `1/128`. The reduction retains each complete product and accumulates at `MATRIX_RESULT_WIDTH + REDUCTION_WEIGHT_WIDTH + $clog2(N)` bits.
 - After the full weighted sum is complete, one arithmetic right shift by `FRACTION_BITS + REDUCTION_WEIGHT_WIDTH - 1` returns the prediction to the input/target binary-point position. Only then is it narrowed to the architectural prediction width.
 - `reduceOutput = 0` returns the sign-extended activated vector. `reduceOutput = 1` returns the rescaled prediction in lane 0 and zero in lanes `1:N-1`.
+- The internal `outputRowIndex` advances and wraps only on a `resultValid && resultReady` handshake. `resultLast` is asserted for the current row `N-1`; the counter is not part of stream-quiescence state.
 - `reductionWeight[N]` is the initialization vector for resident reduction-weight registers. Pulsing `loadReductionWeights` copies the complete vector atomically. Loading has priority over learning, so configuration software must use it only while the sample and update pipelines are quiescent.
 - Every `resultValid && resultReady` completion whose buffered `trainingEnable` is high launches one packed reduction-update sideband alongside its matrix-update package. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not launch an update. The matrix engine owns the matrix update wave; `nnAccelerator` owns the reduction boundary pipe.
 - The same training-enabled completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use that sample's snapshotted reduction-weight signs and the pass-through/ReLU activation gate.
@@ -118,6 +119,16 @@ continues to use their live, configuration-lifetime values.
 - Original input signs, targets, and per-sample training-enable bits are pushed and popped by the same sample events. Any metadata FIFO can therefore backpressure the complete transaction, and their heads remain paired with the current prediction under result stalls.
 - The SPI wrapper exposes `trainingEnable`; inference-only integrations must drive it low, as the SPI directed test does.
 - Assert `reloadWeights` only while `reloadReady` is high.
+- Stream quiescence and matrix reload readiness are distinct. Stream
+  quiescence means that no accepted sample, result, or update work remains, so
+  `passThrough`/`reduceOutput` may change at that boundary. `reloadReady` adds
+  the requirement that the output frame position is row zero; after a partial
+  frame drains, configuration may change but weights cannot reload until the
+  remaining rows complete the N-row frame.
+- The skew storage may remain physically rectangular, but its live geometry is
+  triangular: lane `i` propagates through stages `0..i` and consumes stage `i`.
+  Stages beyond that consuming stage are never shifted or considered by
+  `skewBusy`.
 - `weightReady` and `activationReady` indicate when a complete parallel SPI vector may be started.
 
 ## Parameters

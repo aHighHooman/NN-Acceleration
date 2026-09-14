@@ -42,7 +42,9 @@ module nnAcceleratorStateTrace_tb;
     string stimulus_path, trace_path;
     // Verification-only contract state. Stream quiescence describes only
     // accepted samples, buffered results, and learning updates. In particular,
-    // the resultLast frame position is not outstanding work.
+    // the output frame position used by resultLast/reloadReady is not
+    // outstanding work; reloadReady additionally requires that position to be
+    // row zero.
     logic streamQuiescent;
     logic configurationActive;
     logic configuredPassThrough, configuredReduceOutput;

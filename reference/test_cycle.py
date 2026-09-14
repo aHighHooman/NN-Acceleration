@@ -62,6 +62,12 @@ class CycleReferenceTests(unittest.TestCase):
             snapshot.result_metadata_fifo,
         )
 
+    @staticmethod
+    def attempt_matrix_reload(model: CycleReference) -> bool:
+        was_loaded = model.weights_loaded
+        model.step(CycleInputs(reload_weights=True, result_ready=True))
+        return was_loaded and not model.weights_loaded
+
     def test_snapshot_is_small_and_post_edge(self) -> None:
         self.assertEqual(
             [field.name for field in fields(CycleSnapshot)],
@@ -100,16 +106,88 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertFalse(model.config.pass_through)
         self.assertTrue(model.config.reduce_output)
 
-    def test_single_sample_can_reconfigure_without_frame_counter_wrap(self) -> None:
+    def test_partial_frame_quiescence_is_distinct_from_reload_readiness(self) -> None:
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
         model.step(self.drive(training=False))
         model.flush()
 
-        self.assertEqual(model._accepted_activation_row, 1)
+        # N=3, one retired row leaves the stream empty at output frame row 1.
+        self.assertEqual(model._output_row_index, 1)
         self.assertTrue(model.stream_quiescent)
         model.reconfigure(pass_through=False, reduce_output=True)
         self.assertFalse(model.config.pass_through)
         self.assertTrue(model.config.reduce_output)
+        self.assertFalse(self.attempt_matrix_reload(model))
+        self.assertTrue(model.weights_loaded)
+
+        # Two more retired rows complete the frame and wrap the surviving
+        # output position.  Reload is legal only after that wrap.
+        model.reconfigure(pass_through=True, reduce_output=False)
+        model.step(self.drive(x=(2, 0, 1), training=False))
+        model.step(self.drive(x=(-1, 3, 2), training=False))
+        model.flush()
+        self.assertEqual(model._output_row_index, 0)
+        self.assertTrue(model.stream_quiescent)
+        self.assertTrue(self.attempt_matrix_reload(model))
+
+    def test_complete_frame_result_boundary_allows_reload(self) -> None:
+        model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
+        for index in range(model.config.n):
+            model.step(self.drive(x=(index + 1, 0, 0), training=False))
+        model.flush()
+
+        self.assertEqual(model._retired_sample_indices, [0, 1, 2])
+        self.assertEqual(model._output_row_index, 0)
+        self.assertTrue(model.stream_quiescent)
+        self.assertTrue(self.attempt_matrix_reload(model))
+
+    def test_output_frame_position_changes_only_on_result_handshake(self) -> None:
+        model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
+        model.step(self.drive(training=False, ready=False))
+
+        stalled = []
+        for _ in range(8):
+            stalled.append(model.step(self.drive(valid=False, training=False, ready=False)))
+            self.assertEqual(model._output_row_index, 0)
+        self.assertTrue(stalled[-1].output_fifo)
+        self.assertTrue(model.weights_loaded)
+
+        # The result handshake advances row zero to row one.  The same edge
+        # cannot reload because output storage was non-empty before the edge.
+        model.step(self.drive(valid=False, training=False, ready=True))
+        self.assertEqual(model._output_row_index, 1)
+        self.assertTrue(model.weights_loaded)
+        self.assertFalse(self.attempt_matrix_reload(model))
+
+    def test_no_loss_no_duplication_tracks_outstanding_sample_contexts(self) -> None:
+        model = CycleReference(
+            self.config(output_fifo_depth=1),
+            self.initial_W(),
+            [16, 24, 32],
+        )
+
+        def check_accounting() -> None:
+            accepted = model._next_sample_index
+            retired = len(model._retired_sample_indices)
+            self.assertEqual(
+                accepted - retired,
+                len(model._sample_context_fifo),
+            )
+
+        for index in range(9):
+            model.step(self.drive(x=(index + 1, 1, -1), ready=True))
+            check_accounting()
+        for _ in range(3):
+            model.step(self.drive(valid=False, ready=False))
+            check_accounting()
+        for _ in range(40):
+            model.step(self.drive(valid=False, ready=True))
+            check_accounting()
+            if not model.in_flight:
+                break
+
+        self.assertEqual(model._enqueued_sample_indices, list(range(9)))
+        self.assertEqual(model._retired_sample_indices, list(range(9)))
 
     def test_absolute_n3_latency_is_e0_e7_e8(self) -> None:
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
