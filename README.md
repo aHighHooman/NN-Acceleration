@@ -166,11 +166,16 @@ primary owner:
   W/R evolution, FIFO contents, bubbles, backpressure state, and the
   drain-before-reconfiguration contract for `passThrough`/`reduceOutput`.
 - The core UVM environment owns randomized public `nnAccelerator` traffic,
-  reset/reload recovery, ordering, and no-loss/no-duplication checks. Its small
+  simple reset/reload recovery, ordering, and no-loss/no-duplication checks. It
+  uses three project transactions: an active/observed sample item, a compact
+  configuration item, and a retired-result transaction. Its small
   training-disabled per-sample predictor is only a smoke check; exact learning
   and cycle/state behavior remain owned by the references and RTL trace.
 - Directed RTL units own reduction arithmetic, PE/update-wave mechanics, and
-  `N=2/3/4` matrix-core parameterization.
+  `N=2/3/4` matrix-core parameterization. The matrix-engine bench is limited to
+  deterministic arithmetic, signed accumulation edges, basic loading, and one
+  direct result-boundary backpressure check; the update-wave bench keeps only
+  physical anti-diagonal propagation and completion checks.
 - The SPI bench owns serialization, CDC, ordering, and output backpressure,
   with one identity-matrix numerical smoke transaction.
 
@@ -195,11 +200,12 @@ The UVM environment in [`uvm/`](uvm/) connects directly to the public
 `nnAccelerator` interface. One accepted activation vector is one sample item,
 and one `resultValid && resultReady` handshake is one result item. Weight and
 reduction loading are explicit configuration commands, not fields on every
-sample. The passive monitors reconstruct only accepted public-pin traffic; the
-compact scoreboard checks ordered counts, reset/reload boundaries, and a small
-training-disabled inference predictor. It intentionally does not model
-learning waves or internal FIFOs; those remain owned by the Python references,
-RTL trace bridge, and focused RTL benches.
+sample. The input monitor tracks configuration locally and snapshots the W/R
+state and mode pins into the accepted sample; only accepted samples and retired
+results cross analysis ports. The compact scoreboard checks ordered counts,
+reset invalidation, and a small training-disabled inference predictor. It
+intentionally does not model learning waves or internal FIFOs; those remain
+owned by the Python references, RTL trace bridge, and focused RTL benches.
 
 The regression uses explicit scenario assertions for input bubbles, output
 backpressure, activation backpressure, reloads, and resets instead of a

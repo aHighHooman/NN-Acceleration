@@ -83,7 +83,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "vlib failed." }
 
     # Questa ships a compiled mtiUvm library.  The environment intentionally
-    # uses seeded $urandom stimulus and counter-based coverage so it remains
+    # uses seeded $urandom stimulus and local scenario assertions so it remains
     # runnable when svverification-licensed constrained randomization and
     # covergroups are unavailable.
     & $vlog -sv -L mtiUvm -timescale 1ns/1ps "+incdir+$uvmSource" "+incdir+$uvmDir" @rtlSources @uvmSources

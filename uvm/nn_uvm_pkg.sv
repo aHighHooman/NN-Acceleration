@@ -20,12 +20,11 @@ package nn_uvm_pkg;
     typedef logic signed [MATRIX_RESULT_WIDTH-1:0] matrix_result_t;
     typedef logic signed [RESULT_WIDTH-1:0] result_t;
 
+    // The environment has only two semantic streams: accepted samples and
+    // retired results. Configuration is reconstructed locally by the input
+    // monitor and is carried in the sample snapshot.
     `uvm_analysis_imp_decl(_sample)
     `uvm_analysis_imp_decl(_result)
-    `uvm_analysis_imp_decl(_weight_row)
-    `uvm_analysis_imp_decl(_reduction)
-    `uvm_analysis_imp_decl(_reload)
-    `uvm_analysis_imp_decl(_reset)
 
     // Keep this package as the single compile entry point.  The implementation
     // is grouped by verification role and included in dependency order.

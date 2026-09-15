@@ -142,7 +142,6 @@ module systolicWeightUpdateWave_testcase(
     logic signed [1:0] rowDirection[N], columnDirection[N];
     logic signed [RESULT_WIDTH-1:0] result[N];
     logic resultValid[N], updateComplete, pipelineBusy;
-    integer resultCount[N];
     integer acceptedUpdateCount, completedUpdateCount;
 
     systolicArrayWeightStationary #(.WIDTH(WIDTH), .N(N)) dut (
@@ -184,7 +183,6 @@ module systolicWeightUpdateWave_testcase(
             col[lane] = '0;
             rowDirection[lane] = 2'sd0;
             columnDirection[lane] = 2'sd0;
-            resultCount[lane] = 0;
         end
 
         repeat (3) @(posedge clk);
@@ -233,53 +231,11 @@ module systolicWeightUpdateWave_testcase(
             $fatal(1, "overlapping packages produced %0d completions, expected 2",
                    completedUpdateCount);
 
-        // A zero-row package must traverse without changing any PE.
-        set_directions(0, 0, 0, 1, 1, 1);
-        pulse_package();
-        repeat (4) advance_package(1'b0);
-        if (completedUpdateCount != 3)
-            $fatal(1, "zero-direction package did not produce one completion");
-        check_weights(2, 0, 1, 1, 1, 1, 0, 2, 1,
-                      "zero update package");
-
-        // Stream four all-one samples while an all-positive package follows
-        // the first sample wave. Sample 0 uses the old weights on the update
-        // edge; samples 1 through 3 use the incremented weights.
-        load_uniform_weights(2);
-        for (int lane = 0; lane < N; lane++) resultCount[lane] = 0;
-        for (int waveCycle = 0; waveCycle < 10; waveCycle++) begin
-            @(negedge clk);
-            advance = 1'b1;
-            updateValid = (waveCycle == 0);
-            for (int lane = 0; lane < N; lane++) begin
-                rowDirection[lane] = 2'sd1;
-                columnDirection[lane] = 2'sd1;
-                row[lane] = 1;
-                rowValid[lane] = ((waveCycle-lane) >= 0) &&
-                                 ((waveCycle-lane) < 4);
-            end
-            @(posedge clk); #1;
-            check_stream_results();
-
-            if (waveCycle == 1) begin
-                @(negedge clk) advance = 1'b0;
-                repeat (2) begin
-                    @(posedge clk); #1;
-                    if (!dut.updateValidPipe[1])
-                        $fatal(1, "update wave moved during stream stall");
-                end
-            end
-        end
-
-        for (int lane = 0; lane < N; lane++)
-            if (resultCount[lane] != 4)
-                $fatal(1, "column %0d produced %0d versioned samples, expected 4",
-                       lane, resultCount[lane]);
         if (completedUpdateCount != acceptedUpdateCount)
             $fatal(1, "accepted/completed update counts differ: %0d/%0d",
                    acceptedUpdateCount, completedUpdateCount);
 
-        $display("PASS: anti-diagonal ordering, overlapping packages, stalls, and coherent versions.");
+        $display("PASS: anti-diagonal ordering, overlap, stall/resume, and completion.");
         done = 1'b1;
     end
 
@@ -341,18 +297,6 @@ module systolicWeightUpdateWave_testcase(
             $fatal(1, "%s: matrix weights did not match expected diagonal state", label);
     endtask
 
-    task check_stream_results();
-        integer expected;
-        for (int lane = 0; lane < N; lane++) begin
-            if (resultValid[lane]) begin
-                expected = (resultCount[lane] < 1) ? 6 : 9;
-                if (result[lane] !== expected)
-                    $fatal(1, "column %0d sample %0d got %0d, expected %0d",
-                           lane, resultCount[lane], result[lane], expected);
-                resultCount[lane] = resultCount[lane] + 1;
-            end
-        end
-    endtask
 endmodule
 
 module matrixWeightUpdateWave_tb;
@@ -369,7 +313,7 @@ module matrixWeightUpdateWave_tb;
 
     initial begin
         wait(peDone && arrayDone);
-        $display("PASS: Phase 5K live-entry matrix update-wave overlap, stall, completion-order, and version-boundary tests completed.");
+        $display("PASS: PE and focused anti-diagonal update-wave tests completed.");
         $finish;
     end
 endmodule

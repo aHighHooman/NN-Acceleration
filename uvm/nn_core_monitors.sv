@@ -7,36 +7,33 @@
 
         virtual nn_core_if #(WIDTH, N, TARGET_WIDTH,
                              REDUCTION_WEIGHT_WIDTH) vif;
-        uvm_analysis_port #(nn_core_sample_transaction) sample_ap;
-        uvm_analysis_port #(nn_core_weight_row_transaction) weight_row_ap;
-        uvm_analysis_port #(nn_core_reduction_load_transaction) reduction_ap;
-        uvm_analysis_port #(nn_core_reload_transaction) reload_ap;
-        uvm_analysis_port #(nn_core_reset_transaction) reset_ap;
+        uvm_analysis_port #(nn_core_sample_item) sample_ap;
+
+        data_t resident_weights[N][N];
+        data_t pending_weights[N][N];
+        reduction_t resident_reduction_weights[N];
+        int unsigned pending_weight_rows;
+        bit weights_valid;
+        bit in_reset;
+        bit released_once;
 
         int unsigned samples_observed;
-        int unsigned weight_rows_observed;
         int unsigned activation_backpressure_cycles;
         int unsigned reload_count;
         int unsigned reset_count;
-        int unsigned reset_generation;
-        bit in_reset;
-        bit released_once;
 
         function new(string name, uvm_component parent);
             super.new(name, parent);
             sample_ap = new("sample_ap", this);
-            weight_row_ap = new("weight_row_ap", this);
-            reduction_ap = new("reduction_ap", this);
-            reload_ap = new("reload_ap", this);
-            reset_ap = new("reset_ap", this);
+            pending_weight_rows = 0;
+            weights_valid = 1'b0;
+            in_reset = 1'b0;
+            released_once = 1'b0;
             samples_observed = 0;
-            weight_rows_observed = 0;
             activation_backpressure_cycles = 0;
             reload_count = 0;
             reset_count = 0;
-            reset_generation = 0;
-            in_reset = 1'b0;
-            released_once = 1'b0;
+            clear_configuration();
         endfunction
 
         function void build_phase(uvm_phase phase);
@@ -48,68 +45,65 @@
                 `uvm_fatal("NO_VIF", "nn_core_input_monitor did not receive nn_core_if")
         endfunction
 
-        task publish_reset();
-            nn_core_reset_transaction reset_event;
-            reset_generation++;
-            weight_rows_observed = 0;
-            reset_event = nn_core_reset_transaction::type_id::create(
-                "observed_reset");
-            reset_event.generation = reset_generation;
-            reset_ap.write(reset_event);
-        endtask
+        function void clear_configuration();
+            for (int row = 0; row < N; row++) begin
+                for (int lane = 0; lane < N; lane++) begin
+                    resident_weights[row][lane] = '0;
+                    pending_weights[row][lane] = '0;
+                end
+                resident_reduction_weights[row] = '0;
+            end
+            pending_weight_rows = 0;
+            weights_valid = 1'b0;
+        endfunction
 
         task run_phase(uvm_phase phase);
             forever begin
                 @(vif.monitor_cb);
 
                 if (!vif.monitor_cb.rst_n) begin
-                    if (!in_reset) begin
-                        if (released_once)
-                            reset_count++;
-                        publish_reset();
-                    end
+                    if (!in_reset && released_once)
+                        reset_count++;
                     in_reset = 1'b1;
+                    clear_configuration();
                     continue;
                 end
 
                 released_once = 1'b1;
                 in_reset = 1'b0;
 
+                // These events update only the monitor's local configuration
+                // model; neither event becomes an analysis transaction.
                 if (vif.monitor_cb.reloadWeights &&
                     vif.monitor_cb.reloadReady) begin
-                    nn_core_reload_transaction reload_event;
-                    reload_event = nn_core_reload_transaction::type_id::create(
-                        "observed_reload");
                     reload_count++;
-                    weight_rows_observed = 0;
-                    reload_ap.write(reload_event);
+                    clear_configuration();
                 end
 
-                if (vif.monitor_cb.loadReductionWeights) begin
-                    nn_core_reduction_load_transaction reduction_event;
-                    reduction_event =
-                        nn_core_reduction_load_transaction::type_id::create(
-                            "observed_reduction_load");
+                if (vif.monitor_cb.loadReductionWeights)
                     for (int lane = 0; lane < N; lane++)
-                        reduction_event.data[lane] =
+                        resident_reduction_weights[lane] =
                             vif.monitor_cb.reductionWeight[lane];
-                    reduction_ap.write(reduction_event);
-                end
 
                 if (vif.monitor_cb.weightValid && vif.monitor_cb.weightReady) begin
-                    nn_core_weight_row_transaction weight_row;
-                    weight_row = nn_core_weight_row_transaction::type_id::create(
-                        "observed_weight_row");
-                    weight_row.row_index = N-1-weight_rows_observed;
-                    weight_row.completes_load = (weight_rows_observed == N-1);
+                    int row_index;
+                    row_index = N-1-pending_weight_rows;
                     for (int lane = 0; lane < N; lane++)
-                        weight_row.data[lane] = vif.monitor_cb.weightData[lane];
-                    weight_row_ap.write(weight_row);
+                        pending_weights[row_index][lane] =
+                            vif.monitor_cb.weightData[lane];
 
-                    if (weight_rows_observed == N-1)
-                        weight_rows_observed = 0;
-                    else
-                        weight_rows_observed++;
+                    if (pending_weight_rows == N-1) begin
+                        for (int row = 0; row < N; row++)
+                            for (int lane = 0; lane < N; lane++)
+                                resident_weights[row][lane] =
+                                    pending_weights[row][lane];
+                        for (int lane = 0; lane < N; lane++)
+                            resident_weights[row_index][lane] =
+                                vif.monitor_cb.weightData[lane];
+                        pending_weight_rows = 0;
+                        weights_valid = 1'b1;
+                    end else
+                        pending_weight_rows++;
                 end
 
                 if (vif.monitor_cb.activationValid &&
@@ -118,14 +112,22 @@
 
                 if (vif.monitor_cb.activationValid &&
                     vif.monitor_cb.activationReady) begin
-                    nn_core_sample_transaction sample;
-                    sample = nn_core_sample_transaction::type_id::create(
+                    nn_core_sample_item sample;
+                    sample = nn_core_sample_item::type_id::create(
                         "accepted_sample");
-                    for (int lane = 0; lane < N; lane++)
-                        sample.activation[lane] =
-                            vif.monitor_cb.activationData[lane];
+                    for (int lane = 0; lane < N; lane++) begin
+                        sample.activation[lane] = vif.monitor_cb.activationData[lane];
+                        sample.reduction_weights[lane] =
+                            resident_reduction_weights[lane];
+                    end
+                    for (int row = 0; row < N; row++)
+                        for (int lane = 0; lane < N; lane++)
+                            sample.weights[row][lane] = resident_weights[row][lane];
                     sample.target = vif.monitor_cb.targetData;
                     sample.training_enable = vif.monitor_cb.trainingEnable;
+                    sample.weights_valid = weights_valid;
+                    sample.pass_through = vif.monitor_cb.passThrough;
+                    sample.reduce_output = vif.monitor_cb.reduceOutput;
                     samples_observed++;
                     sample_ap.write(sample);
                 end
@@ -158,21 +160,17 @@
                 `uvm_fatal("NO_VIF", "nn_core_result_monitor did not receive nn_core_if")
         endfunction
 
-        // Every result handshake is one independent vector transaction.
-        // Lanes are the elements of that result, not a stream position.
         task run_phase(uvm_phase phase);
             forever begin
                 @(vif.monitor_cb);
                 if (!vif.monitor_cb.rst_n)
                     continue;
-
                 if (vif.monitor_cb.resultValid && !vif.monitor_cb.resultReady)
                     output_stall_cycles++;
-
                 if (vif.monitor_cb.resultValid && vif.monitor_cb.resultReady) begin
                     nn_core_result_transaction result;
                     result = nn_core_result_transaction::type_id::create(
-                        "accepted_result");
+                        "retired_result");
                     for (int lane = 0; lane < N; lane++)
                         result.data[lane] = vif.monitor_cb.resultData[lane];
                     results_observed++;
