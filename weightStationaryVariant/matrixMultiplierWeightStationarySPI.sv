@@ -169,7 +169,7 @@ module matrixMultiplierWeightStationarySPI #(
         .resultValid(resultValid), .resultReady(resultReady), .passThrough(passThrough),
         .reduceOutput(reduceOutput), .reductionWeight(reductionWeight),
         .loadReductionWeights(loadReductionWeights),
-        .resultLast(), .weightsLoaded(weightsLoaded),
+        .weightsLoaded(weightsLoaded),
         .reloadWeights(reloadWeights), .reloadReady(reloadReady)
     );
 

@@ -190,7 +190,7 @@
             row_limit = N;
             if (item.reset_phase == NN_RESET_DURING_WEIGHT_LOAD) begin
                 if (item.reset_after_rows == 0 || item.reset_after_rows >= N)
-                    `uvm_fatal("RESET_CONFIG", "weight reset must interrupt a partial weight frame")
+                    `uvm_fatal("RESET_CONFIG", "weight reset must interrupt a partial weight load")
                 row_limit = item.reset_after_rows;
             end
 

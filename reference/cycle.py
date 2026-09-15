@@ -310,10 +310,9 @@ class CycleReference:
     def stream_quiescent(self) -> bool:
         """Whether accepted sample/result/update work has completely drained.
 
-        This is the verification configuration boundary.  It deliberately
-        excludes weight-loading state and the output frame position: neither
-        represents outstanding work whose interpretation depends on the
-        stream mode.
+        This is the verification configuration boundary.  Weight-loading
+        state is intentionally excluded because it is not work belonging to
+        the current sample stream.
         """
 
         return not bool(
@@ -336,7 +335,6 @@ class CycleReference:
         self._R = self._initial_R[:]
         self._weights_loaded = self._initial_weights_loaded
         self._loaded_weight_count = self.config.n if self._weights_loaded else 0
-        self._output_row_index = 0
         self._pending_weight_row: tuple[int, ...] | None = None
         self._activation_fifo: deque[_Sample] = deque()
         self._sample_context_fifo: deque[_Sample] = deque()
@@ -362,7 +360,6 @@ class CycleReference:
         self._R = [0 for _ in range(self.config.n)]
         self._weights_loaded = False
         self._loaded_weight_count = 0
-        self._output_row_index = 0
         self._pending_weight_row = None
         self._activation_fifo.clear()
         self._sample_context_fifo.clear()
@@ -714,7 +711,6 @@ class CycleReference:
             and not self._result_fifo
             and not self._sample_context_fifo
             and not reduction_update_busy
-            and self._output_row_index == 0
         )
         reload_accepted = bool(cycle_inputs.reload_weights and reload_ready)
 
@@ -833,7 +829,6 @@ class CycleReference:
             retired_context = self._sample_context_fifo.popleft()
             if retired_result.sample_index != retired_context.index:
                 raise AssertionError("result and sample-context order diverged")
-            self._output_row_index = (self._output_row_index + 1) % self.config.n
             self._retirement_cycles.append(cycle_number)
             self._retired_sample_indices.append(retired_context.index)
 

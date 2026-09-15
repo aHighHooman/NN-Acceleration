@@ -45,8 +45,8 @@
             scoreboard.wait_for_matrices(expected_matrices);
 
             // Stream quiescence is described by the distributed empty/busy
-            // state.  reloadReady is stricter: those structures must be empty
-            // and the output frame position must be at row zero.
+            // state.  reloadReady additionally requires the matrix engine to
+            // report that its loaded state is reloadable.
             drain_cycles = 0;
             while (vif.reloadReady !== 1'b1) begin
                 @(posedge vif.clk);
@@ -57,10 +57,10 @@
                         expected_matrices))
             end
 
-            if (result_monitor.rows_observed != expected_matrices * N)
+            if (result_monitor.results_observed != expected_matrices * N)
                 `uvm_error("RESULT_COUNT", $sformatf(
-                    "observed %0d result rows, expected %0d",
-                    result_monitor.rows_observed, expected_matrices * N))
+                    "observed %0d result transactions, expected %0d",
+                    result_monitor.results_observed, expected_matrices * N))
         endtask
     endclass
 
@@ -261,7 +261,7 @@
                 send_item(item);
             end
 
-            // Reset while a new weight frame is only partially accepted.  No
+            // Reset while a new weight load is only partially accepted.  No
             // matrix is expected from this intentionally aborted item.
             item = nn_core_matrix_item::type_id::create("reset_partial_weights");
             fill_random_weights(item);
@@ -282,7 +282,7 @@
             send_item(item);
 
             // Reset with a stationary matrix loaded and a partial activation
-            // frame in flight.  wait_for_drain keeps earlier expected rows
+            // sequence in flight.  wait_for_drain keeps earlier expected rows
             // from being intentionally discarded by this reset.
             item = nn_core_matrix_item::type_id::create("reset_partial_activation");
             fill_edge_case_activations(item);

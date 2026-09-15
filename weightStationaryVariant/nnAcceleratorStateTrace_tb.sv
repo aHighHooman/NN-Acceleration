@@ -21,7 +21,7 @@ module nnAcceleratorStateTrace_tb;
     logic signed [WIDTH-1:0] weightData[N], activationData[N];
     logic signed [TARGET_WIDTH-1:0] targetData;
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N];
-    logic weightReady, activationReady, resultValid, resultLast, weightsLoaded, reloadReady;
+    logic weightReady, activationReady, resultValid, weightsLoaded, reloadReady;
     logic signed [PREDICTION_WIDTH-1:0] resultData[N];
     logic signed [TARGET_WIDTH-1:0] resultTargetData;
     logic signed [1:0] learningDirection, rowDirection[N], columnDirection[N];
@@ -37,15 +37,13 @@ module nnAcceleratorStateTrace_tb;
     integer scanned_load_reduction_weights, scanned_reload_weights;
     integer scanned_pass_through, scanned_reduce_output;
     integer entry, lane, index;
-    integer retired, retired_last, retired_prediction, retired_direction, retired_target;
+    integer retired, retired_prediction, retired_direction, retired_target;
     integer retired_activated[0:N-1], retired_result[0:N-1];
     integer enqueued_raw[0:N-1];
     string stimulus_path, trace_path;
     // Verification-only contract state. Stream quiescence describes only
-    // accepted samples, buffered results, and learning updates. In particular,
-    // the output frame position used by resultLast/reloadReady is not
-    // outstanding work; reloadReady additionally requires that position to be
-    // row zero.
+    // accepted samples, buffered results, and learning updates. Weight loading
+    // remains outside that stream boundary.
     logic streamQuiescent;
     logic configurationActive;
     logic configuredPassThrough, configuredReduceOutput;
@@ -68,7 +66,7 @@ module nnAcceleratorStateTrace_tb;
         .resultData(resultData), .resultTargetData(resultTargetData),
         .learningDirection(learningDirection), .rowDirection(rowDirection),
         .columnDirection(columnDirection), .matrixUpdateValid(matrixUpdateValid),
-        .resultValid(resultValid), .resultReady(resultReady), .resultLast(resultLast),
+        .resultValid(resultValid), .resultReady(resultReady),
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights),
         .reloadReady(reloadReady), .passThrough(passThrough)
     );
@@ -207,7 +205,6 @@ module nnAcceleratorStateTrace_tb;
             // alone describes the next edge after FIFO state may have moved.
             #1ps;
             retired = resultValid && resultReady;
-            retired_last = resultLast;
             retired_prediction = $signed(dut.prediction);
             retired_direction = $signed(learningDirection);
             retired_target = $signed(resultTargetData);
@@ -256,10 +253,10 @@ module nnAcceleratorStateTrace_tb;
                 "ENQ %0d %0d %0d %0d\n", c,
                 enqueued_raw[0], enqueued_raw[1], enqueued_raw[2]);
             if (retired) $fwrite(trace_fd,
-                "RT %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
+                "RT %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
                 c, retired_activated[0], retired_activated[1], retired_activated[2],
                 retired_prediction, retired_direction, retired_target,
-                retired_result[0], retired_result[1], retired_result[2], retired_last);
+                retired_result[0], retired_result[1], retired_result[2]);
         end
         $fclose(stimulus_fd); $fclose(trace_fd);
         $display("PASS: wrote %0d post-edge snapshots", cycle_count);

@@ -54,12 +54,12 @@
         endfunction
     endclass
 
-    class nn_core_result_row extends uvm_sequence_item;
+    class nn_core_result_transaction extends uvm_sequence_item;
         result_t data[N];
 
-        `uvm_object_utils(nn_core_result_row)
+        `uvm_object_utils(nn_core_result_transaction)
 
-        function new(string name = "nn_core_result_row");
+        function new(string name = "nn_core_result_transaction");
             super.new(name);
         endfunction
     endclass

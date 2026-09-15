@@ -6,7 +6,7 @@
         `uvm_component_utils(nn_core_scoreboard)
 
         uvm_tlm_analysis_fifo #(nn_core_matrix_item) expected_fifo;
-        uvm_tlm_analysis_fifo #(nn_core_result_row) actual_fifo;
+        uvm_tlm_analysis_fifo #(nn_core_result_transaction) actual_fifo;
         virtual nn_core_if #(WIDTH, N) vif;
         int unsigned matrices_checked;
 
@@ -48,21 +48,21 @@
 
         task run_phase(uvm_phase phase);
             nn_core_matrix_item item;
-            nn_core_result_row actual;
+            nn_core_result_transaction actual;
             result_matrix_t expected;
 
             forever begin
                 expected_fifo.get(item);
                 predict(item, expected);
 
-                for (int row = 0; row < N; row++) begin
+                for (int sample_index = 0; sample_index < N; sample_index++) begin
                     actual_fifo.get(actual);
                     for (int col = 0; col < N; col++) begin
-                        if (actual.data[col] !== expected[row][col]) begin
+                        if (actual.data[col] !== expected[sample_index][col]) begin
                             `uvm_error("MISMATCH", $sformatf(
                                 "C[%0d][%0d] got %0d (0x%0h) expected %0d (0x%0h)",
-                                row, col, actual.data[col], actual.data[col],
-                                expected[row][col], expected[row][col]))
+                                sample_index, col, actual.data[col], actual.data[col],
+                                expected[sample_index][col], expected[sample_index][col]))
                         end
                     end
                 end
@@ -108,8 +108,8 @@
         int unsigned reset_count;
 
         int unsigned last_weight_generation;
-        int unsigned weight_rows_in_frame;
-        int unsigned activation_rows_in_frame;
+        int unsigned weight_rows_in_matrix;
+        int unsigned activation_rows_in_matrix;
         bit have_last_generation;
         bit released_once;
         bit in_reset;
@@ -127,8 +127,8 @@
             reload_count = 0;
             reset_count = 0;
             last_weight_generation = 0;
-            weight_rows_in_frame = 0;
-            activation_rows_in_frame = 0;
+            weight_rows_in_matrix = 0;
+            activation_rows_in_matrix = 0;
             have_last_generation = 1'b0;
             released_once = 1'b0;
             in_reset = 1'b0;
@@ -174,22 +174,22 @@
                     in_reset = 1'b0;
 
                     if (!vif.monitor_cb.weightsLoaded) begin
-                        if (weight_rows_in_frame != 0 &&
+                        if (weight_rows_in_matrix != 0 &&
                             vif.monitor_cb.weightReady &&
                             !vif.monitor_cb.weightValid)
                             weight_bubble_cycles++;
                         if (vif.monitor_cb.weightValid && vif.monitor_cb.weightReady) begin
-                            if (weight_rows_in_frame == N-1)
-                                weight_rows_in_frame = 0;
+                            if (weight_rows_in_matrix == N-1)
+                                weight_rows_in_matrix = 0;
                             else
-                                weight_rows_in_frame++;
+                                weight_rows_in_matrix++;
                         end
                     end else begin
-                        weight_rows_in_frame = 0;
+                        weight_rows_in_matrix = 0;
                     end
 
                     if (vif.monitor_cb.weightsLoaded) begin
-                        if (activation_rows_in_frame != 0 &&
+                        if (activation_rows_in_matrix != 0 &&
                             vif.monitor_cb.activationReady &&
                             !vif.monitor_cb.activationValid)
                             activation_bubble_cycles++;
@@ -197,13 +197,13 @@
                             !vif.monitor_cb.activationReady)
                             activation_stall_cycles++;
                         if (vif.monitor_cb.activationValid && vif.monitor_cb.activationReady) begin
-                            if (activation_rows_in_frame == N-1)
-                                activation_rows_in_frame = 0;
+                            if (activation_rows_in_matrix == N-1)
+                                activation_rows_in_matrix = 0;
                             else
-                                activation_rows_in_frame++;
+                                activation_rows_in_matrix++;
                         end
                     end else begin
-                        activation_rows_in_frame = 0;
+                        activation_rows_in_matrix = 0;
                     end
 
                     if (vif.monitor_cb.resultValid && !vif.monitor_cb.resultReady)

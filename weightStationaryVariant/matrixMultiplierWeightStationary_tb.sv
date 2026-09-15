@@ -52,8 +52,8 @@ module matrixMultiplierWeightStationary_testcase #(
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights), .reloadReady(reloadReady)
     );
 
-    // The matrix engine has no terminal result storage or frame state.  Its
-    // reload boundary is the drain of its own computation and alignment state.
+    // The matrix engine has no terminal result storage.  Its reload boundary
+    // is the drain of its own computation and alignment state.
     assign streamQuiescent = dut.activationEmpty && !dut.skewBusy &&
                              !dut.pipelineBusy && !dut.resultAlignBusy &&
                              !dut.resultValid;
@@ -420,7 +420,7 @@ module matrixMultiplierWeightStationary_testcase #(
         end
 
         // A direct matrix-engine result handshake drains the aligned result;
-        // there is no matrix-owned output frame position or result storage.
+        // the accelerator composition owns the architectural result storage.
         resultReady = 1'b1;
         send_single_activation(sample0);
         wait_for_result_handshake("one-sample drain");

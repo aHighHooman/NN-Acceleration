@@ -71,12 +71,12 @@ sequenceDiagram
     end
     Core-->>Host: weightsLoaded = 1
 
-    loop N activation rows, normal order
+    loop each accepted activation vector, normal order
         Host->>SPI: Send one N-element activation vector
         SPI->>Core: Queue vector
     end
 
-    loop N result rows
+    loop each result transaction
         Core->>SPI: Publish one N-element result vector
         Host->>SPI: Clock out one result word per lane
     end
@@ -106,7 +106,9 @@ continues to use their live, configuration-lifetime values.
 - One vector uses `N` parallel, MSB-first SPI lanes sharing `sclk`. Each lane has its own chip-select and data signal.
 - Send weight rows in reverse order: row `N-1` through row `0`.
 - Wait for `weightsLoaded` before sending activations.
-- Send activation rows in normal order: row `0` through row `N-1`.
+- Send activation vectors in normal order. If they are being used as an
+  `N`-row matrix, vector `0` through vector `N-1` correspond to matrix rows
+  `0` through `N-1`.
 - Each result transfer corresponds to one activated output vector. In vector mode lane `j` carries element `j`; in reduction mode lane 0 carries that vector's scalar prediction and the remaining lanes carry zero.
 - Accelerator/SPI result-lane width is the architectural prediction width, `2*WIDTH + 2*$clog2(N)` bits. Unreduced activated elements are sign-extended to this width.
 - `matrixMultiplierWeightStationary` produces the raw signed `X * W` matrix product at `MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N)` without reducing precision. Its binary point has `2*FRACTION_BITS` fractional bits.
@@ -114,7 +116,7 @@ continues to use their live, configuration-lifetime values.
 - Reduction weights default to signed 8-bit Q1.7 fractional coefficients (one sign bit and seven fractional bits), so one stored LSB is `1/128`. The reduction retains each complete product and accumulates at `MATRIX_RESULT_WIDTH + REDUCTION_WEIGHT_WIDTH + $clog2(N)` bits.
 - After the full weighted sum is complete, one arithmetic right shift by `FRACTION_BITS + REDUCTION_WEIGHT_WIDTH - 1` returns the prediction to the input/target binary-point position. Only then is it narrowed to the architectural prediction width.
 - `reduceOutput = 0` returns the sign-extended activated vector. `reduceOutput = 1` returns the rescaled prediction in lane 0 and zero in lanes `1:N-1`.
-- The internal `outputRowIndex` advances and wraps only on a `resultValid && resultReady` handshake. `resultLast` is asserted for the current row `N-1`; the counter is not part of stream-quiescence state.
+- Results form an ordered stream of independent sample transactions. Each `resultValid && resultReady` handshake retires exactly one result and its matching sample context; there is no group-boundary marker or modulo-`N` result position.
 - `reductionWeight[N]` is the initialization vector for resident reduction-weight registers. Pulsing `loadReductionWeights` copies the complete vector atomically. Loading has priority over learning, so configuration software must use it only while the sample and update pipelines are quiescent.
 - Result retirement pops one `resultFifo` entry and one sample-context entry together. If the retired sample's buffered `trainingEnable` is high, retirement launches one packed matrix-update package and one reduction-update package. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not launch an update.
 - The same training-enabled completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the reduction-weight signs stored with that result and the pass-through/ReLU activation gate.
@@ -127,10 +129,15 @@ continues to use their live, configuration-lifetime values.
 - Assert `reloadWeights` only while `reloadReady` is high.
 - Stream quiescence and matrix reload readiness are distinct. Stream
   quiescence means that no accepted sample, result, or update work remains, so
-  `passThrough`/`reduceOutput` may change at that boundary. `reloadReady` adds
-  the requirement that the output frame position is row zero; after a partial
-  frame drains, configuration may change but weights cannot reload until the
-  remaining rows complete the N-row frame.
+  `passThrough`/`reduceOutput` may change at that boundary. `reloadReady` is
+  high when the matrix engine reports its loaded state is reloadable and the
+  result FIFO, sample-context FIFO, and reduction-update pipeline are empty or
+  idle. The number of previously retired samples has no effect, so a fully
+  drained stream can reload after one sample or any other sample count.
+- `N` still determines the vector width, systolic-array dimension, and square
+  matrix geometry. Sending `N` consecutive activation vectors still produces
+  the corresponding `N` rows of `XW` when desired, but those results are not
+  intrinsically grouped by the accelerator.
 - The skew storage may remain physically rectangular, but its live geometry is
   triangular: lane `i` propagates through stages `0..i` and consumes stage `i`.
   Stages beyond that consuming stage are never shifted or considered by
@@ -161,7 +168,7 @@ primary owner:
 - The core UVM environment owns randomized matrix-engine interface traffic,
   reset/reload, ordering, and compact traffic coverage. Its small matrix
   predictor checks result data during that randomized traffic; accelerator
-  framing is checked by the integrated reference/RTL trace.
+  result ordering is checked by the integrated reference/RTL trace.
 - Directed RTL units own reduction arithmetic, PE/update-wave mechanics, and
   `N=2/3/4` matrix-core parameterization.
 - The SPI bench owns serialization, CDC, ordering, and output backpressure,

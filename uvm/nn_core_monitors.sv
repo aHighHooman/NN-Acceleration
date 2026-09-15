@@ -33,7 +33,7 @@
                 `uvm_fatal("NO_VIF", "nn_core_input_monitor did not receive nn_core_if")
         endfunction
 
-        function void clear_frame_state();
+        function void clear_matrix_state();
             weight_rows_seen = 0;
             activation_rows_seen = 0;
             have_weights = 1'b0;
@@ -60,18 +60,18 @@
                     if (!in_reset)
                         weight_generation++;
                     in_reset = 1'b1;
-                    clear_frame_state();
+                    clear_matrix_state();
                 end else begin
                     in_reset = 1'b0;
 
                     if (vif.monitor_cb.reloadWeights && vif.monitor_cb.reloadReady) begin
                         weight_generation++;
-                        clear_frame_state();
+                        clear_matrix_state();
                     end
 
                     if (vif.monitor_cb.weightValid && vif.monitor_cb.weightReady) begin
                         if (weight_rows_seen >= N) begin
-                            `uvm_error("INPUT_FRAME", "accepted more than N weight rows without a frame boundary")
+                            `uvm_error("INPUT_MATRIX", "accepted more than N weight rows without a completed matrix")
                         end else begin
                             for (int lane = 0; lane < N; lane++)
                                 weight_matrix[N-1-weight_rows_seen][lane] =
@@ -86,7 +86,7 @@
 
                     if (vif.monitor_cb.activationValid && vif.monitor_cb.activationReady) begin
                         if (!have_weights) begin
-                            `uvm_error("INPUT_FRAME", "accepted activation row before a complete weight frame")
+                            `uvm_error("INPUT_MATRIX", "accepted activation row before a complete weight matrix")
                         end else begin
                             for (int lane = 0; lane < N; lane++)
                                 activation_matrix[activation_rows_seen][lane] =
@@ -108,13 +108,13 @@
         `uvm_component_utils(nn_core_result_monitor)
 
         virtual nn_core_if #(WIDTH, N) vif;
-        uvm_analysis_port #(nn_core_result_row) result_ap;
-        int unsigned rows_observed;
+        uvm_analysis_port #(nn_core_result_transaction) result_ap;
+        int unsigned results_observed;
 
         function new(string name, uvm_component parent);
             super.new(name, parent);
             result_ap = new("result_ap", this);
-            rows_observed = 0;
+            results_observed = 0;
         endfunction
 
         function void build_phase(uvm_phase phase);
@@ -124,18 +124,21 @@
                 `uvm_fatal("NO_VIF", "nn_core_result_monitor did not receive nn_core_if")
         endfunction
 
+        // Every result handshake is one independent vector transaction.  The
+        // N lanes are elements of that transaction, not a stream position.
         task run_phase(uvm_phase phase);
             forever begin
                 @(vif.monitor_cb);
                 if (vif.monitor_cb.rst_n &&
                     vif.monitor_cb.resultValid && vif.monitor_cb.resultReady) begin
-                    nn_core_result_row row;
-                    row = nn_core_result_row::type_id::create("accepted_result_row");
+                    nn_core_result_transaction result;
+                    result = nn_core_result_transaction::type_id::create(
+                        "accepted_result_transaction");
                     for (int lane = 0; lane < N; lane++)
-                        row.data[lane] = vif.monitor_cb.resultData[lane];
+                        result.data[lane] = vif.monitor_cb.resultData[lane];
 
-                    rows_observed++;
-                    result_ap.write(row);
+                    results_observed++;
+                    result_ap.write(result);
                 end
             end
         endtask

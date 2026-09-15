@@ -39,7 +39,6 @@ class FunctionalComparison:
     samples: tuple[Sample, ...]
     pass_through: bool
     reduce_output: bool
-    result_row_offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -243,10 +242,9 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
         initial_reduction_weights=PHASE6L_INITIAL_REDUCTION_WEIGHTS,
     )
 
-    # 6: drain normal traffic, legally reload, stream a second matrix, and run
-    # a separately checkable no-stall post-reload stream.
-    pre_reload_samples = [Sample((1, 0, 1), 0, False), Sample((2, 1, -1), 0, False),
-                          Sample((-1, 2, 0), 0, False)]
+    # 6: drain one sample, legally reload, stream a second matrix, and run a
+    # separately checkable no-stall post-reload stream.
+    pre_reload_samples = [Sample((1, 0, 1), 0, False)]
     post_reload_samples = tuple(Sample(x, target, False) for x, target in (
         ((2, -1, 3), 15), ((-1, 4, 2), -20), ((3, 0, -2), 7), ((1, 1, 1), 0)))
     reload_cycles = _reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
@@ -275,9 +273,8 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
 
     # 7: run and drain pass-through/reduced mode, change both configuration
     # pins while quiescent, then run and drain ReLU/vector mode without reset.
-    # Deliberately drain just one N=3 sample before changing modes. The stream
-    # is quiescent even though the output frame position is 1; frame position
-    # must not keep stream configuration live, but it must still block reload.
+    # Deliberately drain just one sample before changing modes to exercise the
+    # stream-configuration boundary independently of matrix geometry.
     pass_samples = (Sample((-2, 1, 3), 0, False),)
     relu_samples = tuple(Sample(x, t, False) for x, t in (
         ((-3, 1, 0), 2), ((2, -4, 1), -3), ((1, 1, -2), 4), ((-2, -1, 3), 1),
@@ -316,7 +313,7 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
         FunctionalComparison(
             "quiescent_relu_vector", relu_start, len(cycles) - 1,
             RELOADED_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS,
-            relu_samples, False, False, result_row_offset=len(pass_samples) % N,
+            relu_samples, False, False,
         ),
     ))
 
@@ -392,7 +389,7 @@ def read_trace(
                 "raw": tuple(map(int, f[2:])),
             })
         elif f[0] == "RT":
-            if len(f) != 2*N + 6:
+            if len(f) != 2*N + 5:
                 raise ValueError(f"bad RT record at trace line {line_number}")
             activated_start = 2
             prediction_index = activated_start + N
@@ -406,7 +403,6 @@ def read_trace(
                 "direction": int(f[direction_index]),
                 "target": int(f[target_index]),
                 "result": tuple(map(int, f[result_start:result_start+N])),
-                "last": int(f[result_start+N]),
             })
         elif current is None:
             raise ValueError(f"trace data before C at line {line_number}")
@@ -560,11 +556,6 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
             functional_comparisons += 1
             if expected_output != rtl["result"]:
                 _fail(cycle, f"{comparison.name} sample {index} external result", expected_output, rtl["result"])
-            expected_last = int(
-                (comparison.result_row_offset + index) % N == N - 1
-            )
-            if expected_last != rtl["last"]:
-                _fail(cycle, f"{comparison.name} sample {index} resultLast", expected_last, rtl["last"])
         final = actual[comparison.end_cycle]
         functional_comparisons += 2
         if tuple(tuple(row) for row in model.final_W) != final["W"]:

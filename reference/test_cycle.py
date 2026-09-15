@@ -104,58 +104,21 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertFalse(model.config.pass_through)
         self.assertTrue(model.config.reduce_output)
 
-    def test_partial_frame_quiescence_is_distinct_from_reload_readiness(self) -> None:
-        model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
-        model.step(self.drive(training=False))
-        model.flush()
+    def test_any_drained_sample_count_allows_reload(self) -> None:
+        for sample_count in (1, 2, self.config().n, self.config().n + 1):
+            with self.subTest(sample_count=sample_count):
+                model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
+                for index in range(sample_count):
+                    model.step(self.drive(x=(index + 1, 0, 0), training=False))
+                self.assertFalse(self.attempt_matrix_reload(model))
+                model.flush()
 
-        # N=3, one retired row leaves the stream empty at output frame row 1.
-        self.assertEqual(model._output_row_index, 1)
-        self.assertTrue(model.stream_quiescent)
-        model.reconfigure(pass_through=False, reduce_output=True)
-        self.assertFalse(model.config.pass_through)
-        self.assertTrue(model.config.reduce_output)
-        self.assertFalse(self.attempt_matrix_reload(model))
-        self.assertTrue(model.weights_loaded)
-
-        # Two more retired rows complete the frame and wrap the surviving
-        # output position.  Reload is legal only after that wrap.
-        model.reconfigure(pass_through=True, reduce_output=False)
-        model.step(self.drive(x=(2, 0, 1), training=False))
-        model.step(self.drive(x=(-1, 3, 2), training=False))
-        model.flush()
-        self.assertEqual(model._output_row_index, 0)
-        self.assertTrue(model.stream_quiescent)
-        self.assertTrue(self.attempt_matrix_reload(model))
-
-    def test_complete_frame_result_boundary_allows_reload(self) -> None:
-        model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
-        for index in range(model.config.n):
-            model.step(self.drive(x=(index + 1, 0, 0), training=False))
-        model.flush()
-
-        self.assertEqual(model._retired_sample_indices, [0, 1, 2])
-        self.assertEqual(model._output_row_index, 0)
-        self.assertTrue(model.stream_quiescent)
-        self.assertTrue(self.attempt_matrix_reload(model))
-
-    def test_output_frame_position_changes_only_on_result_handshake(self) -> None:
-        model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
-        model.step(self.drive(training=False, ready=False))
-
-        stalled = []
-        for _ in range(8):
-            stalled.append(model.step(self.drive(valid=False, training=False, ready=False)))
-            self.assertEqual(model._output_row_index, 0)
-        self.assertTrue(stalled[-1].result_fifo)
-        self.assertTrue(model.weights_loaded)
-
-        # The result handshake advances row zero to row one.  The same edge
-        # cannot reload because output storage was non-empty before the edge.
-        model.step(self.drive(valid=False, training=False, ready=True))
-        self.assertEqual(model._output_row_index, 1)
-        self.assertTrue(model.weights_loaded)
-        self.assertFalse(self.attempt_matrix_reload(model))
+                self.assertEqual(
+                    model._retired_sample_indices,
+                    list(range(sample_count)),
+                )
+                self.assertTrue(model.stream_quiescent)
+                self.assertTrue(self.attempt_matrix_reload(model))
 
     def test_no_loss_no_duplication_tracks_outstanding_sample_contexts(self) -> None:
         model = CycleReference(

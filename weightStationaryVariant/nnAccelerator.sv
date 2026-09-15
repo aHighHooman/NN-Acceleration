@@ -28,7 +28,6 @@ module nnAccelerator #(
     output logic                              matrixUpdateValid,
     output logic                              resultValid,
     input  logic                              resultReady,
-    output logic                              resultLast,
     output logic                              weightsLoaded,
     input  logic                              reloadWeights,
     output logic                              reloadReady,
@@ -37,7 +36,6 @@ module nnAccelerator #(
 
     localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
-    localparam int OUTPUT_ROW_WIDTH = (N > 1) ? $clog2(N) : 1;
     // The resident reduction vector commits after the same 2N-1 advancing
     // slots as the matrix update wave, from PE(0,0) through PE(N-1,N-1).
     localparam int REDUCTION_UPDATE_DELAY = 2*N-1;
@@ -85,7 +83,6 @@ module nnAccelerator #(
     logic signed [SAMPLE_CONTEXT_WIDTH-1:0] sampleContextHead;
     logic sampleContextFull, sampleContextEmpty;
     logic samplePush, samplePop, sampleCanAccept;
-    logic [OUTPUT_ROW_WIDTH-1:0] outputRowIndex;
 
     // The activation vector, target, input signs, and training-enable bit are
     // one input transaction. Gate the matrix valid as well as the external
@@ -106,7 +103,6 @@ module nnAccelerator #(
     assign resultFifoPush     = matrixResultPush;
     assign resultValid        = !resultFifoEmpty && !sampleContextEmpty;
     assign samplePop          = resultFifoPop;
-    assign resultLast         = resultValid && (outputRowIndex == N-1);
     assign matrixUpdateValid = samplePop && trainingEnableHead;
     assign applyReductionUpdate = matrixDatapathAdvance &&
                                   reductionUpdateValidPipe[REDUCTION_UPDATE_DELAY-1];
@@ -117,8 +113,7 @@ module nnAccelerator #(
             reductionUpdateBusy |= reductionUpdateValidPipe[stage];
     end
     assign reloadReady = matrixReloadReady && resultFifoEmpty &&
-                         sampleContextEmpty && !reductionUpdateBusy &&
-                         (outputRowIndex == 0);
+                         sampleContextEmpty && !reductionUpdateBusy;
 
     // Compare the rescaled architectural prediction with the aligned FIFO
     // head. Assignment to the wider signed signals sign-extends either side.
@@ -299,16 +294,6 @@ module nnAccelerator #(
                 end
             end
         end
-    end
-
-    // Framing is an accelerator-level retirement property.  It advances only
-    // when the externally visible result transaction retires, independent of
-    // the matrix engine's internal computation lifetime.
-    always_ff @(posedge clk) begin
-        if (!rst_n)
-            outputRowIndex <= '0;
-        else if (resultFifoPop)
-            outputRowIndex <= (outputRowIndex == N-1) ? 0 : outputRowIndex + 1;
     end
 
     matrixMultiplierWeightStationary #(

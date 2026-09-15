@@ -133,7 +133,7 @@ module matrixMultiplierWeightStationary #(
     assign datapathAdvance = arrayAdvance;
     assign activationPop    = weightsLoaded && !activationEmpty && arrayAdvance;
     // The matrix engine reports only its own computation state.  Result
-    // storage and output framing belong to nnAccelerator.
+    // storage belongs to nnAccelerator.
     assign reloadReady      = weightsLoaded && activationEmpty && !skewBusy &&
                               !pipelineBusy && !resultAlignBusy && !resultValid;
 

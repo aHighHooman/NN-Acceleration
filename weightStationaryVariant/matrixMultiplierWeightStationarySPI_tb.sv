@@ -74,8 +74,8 @@ module matrixMultiplierWeightStationarySPI_tb;
         send_weight_vector(vector);
         wait(weightsLoaded);
 
-        // Leave the first result unread so the second accepted row must remain
-        // ordered and stable behind the SPI output shifter.
+        // Leave the first result unread so the second accepted vector must
+        // remain ordered and stable behind the SPI output shifter.
         vector[0] = 2;
         vector[1] = -3;
         send_activation_vector(vector);
