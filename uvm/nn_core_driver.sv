@@ -1,32 +1,42 @@
     // ------------------------------------------------------------------
-    // Active ready/valid driver
+    // Active public-interface driver
     // ------------------------------------------------------------------
 
-    class nn_core_driver extends uvm_driver #(nn_core_matrix_item);
+    class nn_core_driver extends uvm_driver #(uvm_sequence_item);
         `uvm_component_utils(nn_core_driver)
 
-        virtual nn_core_if #(WIDTH, N) vif;
+        virtual nn_core_if #(WIDTH, N, TARGET_WIDTH,
+                             REDUCTION_WEIGHT_WIDTH) vif;
         int unsigned random_state;
-        int unsigned active_stall_percent;
+        int unsigned active_result_stall_percent;
         int unsigned ready_cycle;
         int unsigned stall_run;
         bit reset_active;
-        bit activation_backpressure_stress_active;
+        bit hold_result_for_input_pressure;
+
+        // These are stimulus observations used by tests for explicit scenario
+        // assertions.  They are not a generic coverage database.
+        int unsigned weight_bubbles_injected;
+        int unsigned activation_bubbles_injected;
 
         function new(string name, uvm_component parent);
             super.new(name, parent);
             random_state = DEFAULT_SEED ^ 32'hd1a5_7001;
-            active_stall_percent = 0;
+            active_result_stall_percent = 0;
             ready_cycle = 0;
             stall_run = 0;
             reset_active = 1'b0;
-            activation_backpressure_stress_active = 1'b0;
+            hold_result_for_input_pressure = 1'b0;
+            weight_bubbles_injected = 0;
+            activation_bubbles_injected = 0;
         endfunction
 
         function void build_phase(uvm_phase phase);
             int unsigned configured_seed;
             super.build_phase(phase);
-            if (!uvm_config_db #(virtual nn_core_if #(WIDTH, N))::get(
+            if (!uvm_config_db #(virtual nn_core_if #(WIDTH, N,
+                                                       TARGET_WIDTH,
+                                                       REDUCTION_WEIGHT_WIDTH))::get(
                     this, "", "vif", vif))
                 `uvm_fatal("NO_VIF", "nn_core_driver did not receive nn_core_if")
 
@@ -49,46 +59,82 @@
         endtask
 
         task drive_items();
+            uvm_sequence_item item;
+            nn_core_sample_item sample;
+            nn_core_weight_load_item load;
+
             forever begin
-                seq_item_port.get_next_item(req);
-                active_stall_percent = (req.stall_percent > 100) ?
-                                       100 : req.stall_percent;
-                if (req.stall_until_activation_backpressure)
-                    activation_backpressure_stress_active = 1'b1;
-                `uvm_info("DRV", {"Driving ", req.convert2string()}, UVM_MEDIUM)
+                seq_item_port.get_next_item(item);
 
-                if (req.reload_before)
-                    request_weight_reload();
-
-                if (req.reset_phase == NN_RESET_DURING_WEIGHT_LOAD) begin
-                    if (!req.load_weights)
-                        `uvm_fatal("RESET_CONFIG", "weight reset item must load weights")
-                    drive_weight_rows(req);
-                    seq_item_port.item_done();
-                    continue;
-                end
-
-                if (req.load_weights) begin
-                    if (vif.weightsLoaded === 1'b1)
-                        `uvm_fatal("WEIGHT_STATE", "load_weights requested while weightsLoaded is high")
-                    drive_weight_rows(req);
-                end else if (vif.weightsLoaded !== 1'b1) begin
-                    `uvm_fatal("WEIGHT_STATE", "activation item arrived without a loaded weight matrix")
-                end
-
-                if (req.reset_phase == NN_RESET_DURING_ACTIVATION) begin
-                    if (req.wait_for_drain)
-                        wait_for_idle();
-                    drive_activation_rows(req, req.reset_after_rows);
-                    reset_dut();
+                if ($cast(sample, item)) begin
+                    drive_sample(sample);
+                end else if ($cast(load, item)) begin
+                    drive_weight_load(load);
                 end else begin
-                    if (req.wait_for_drain)
-                        wait_for_idle();
-                    drive_activation_rows(req, N);
+                    `uvm_fatal("ITEM_TYPE", $sformatf(
+                        "unsupported sequence item type %s", item.get_type_name()))
                 end
 
                 seq_item_port.item_done();
             end
+        endtask
+
+        task drive_sample(nn_core_sample_item item);
+            active_result_stall_percent = (item.result_stall_percent > 100) ?
+                                          100 : item.result_stall_percent;
+            if (item.hold_result_until_activation_backpressure)
+                hold_result_for_input_pressure = 1'b1;
+
+            `uvm_info("DRV", {"Driving sample ", item.convert2string()}, UVM_MEDIUM)
+
+            if (vif.weightsLoaded !== 1'b1)
+                `uvm_fatal("WEIGHT_STATE",
+                           "sample arrived without a loaded weight configuration")
+
+            drive_activation_vector(item);
+            if (item.wait_for_drain_after)
+                wait_for_idle();
+            if (item.reset_after_accept)
+                reset_dut();
+        endtask
+
+        task drive_weight_load(nn_core_weight_load_item item);
+            int unsigned row_limit;
+
+            active_result_stall_percent = 0;
+            hold_result_for_input_pressure = 1'b0;
+            `uvm_info("DRV", {"Driving weight configuration ",
+                               item.convert2string()}, UVM_MEDIUM)
+
+            if (item.reload_before)
+                request_weight_reload();
+            else if (vif.weightsLoaded === 1'b1)
+                `uvm_fatal("WEIGHT_STATE",
+                           "new weights require an explicit drained reload")
+
+            row_limit = (item.reset_after_rows == 0) ? N : item.reset_after_rows;
+            if (row_limit > N ||
+                (item.reset_after_rows != 0 && item.reset_after_rows >= N))
+                `uvm_fatal("RESET_CONFIG", $sformatf(
+                    "partial weight reset requires 1..%0d accepted rows", N-1))
+
+            for (int unsigned row_offset = 0;
+                 row_offset < row_limit;
+                 row_offset++) begin
+                // The public loader consumes rows from N-1 down to 0.
+                drive_weight_vector(item.weights[N-1-row_offset], item.weight_bubble);
+            end
+
+            if (item.reset_after_rows != 0) begin
+                reset_dut();
+                return;
+            end
+
+            while (vif.weightsLoaded !== 1'b1)
+                @(posedge vif.clk);
+
+            if (item.load_reduction_weights)
+                load_reduction_weights(item.reduction_weights);
         endtask
 
         task drive_result_ready();
@@ -99,28 +145,29 @@
                 if (!vif.rst_n || reset_active) begin
                     vif.resultReady = 1'b0;
                     stall_run = 0;
-                end else if (activation_backpressure_stress_active) begin
-                    // Hold output back until the pressure reaches the input,
-                    // then return to this item's ordinary stall policy.
+                end else if (hold_result_for_input_pressure) begin
+                    // This deterministic mode proves that output backpressure
+                    // can reach activationReady through the public interface.
                     if (vif.activationValid && !vif.activationReady) begin
                         vif.resultReady = 1'b1;
-                        activation_backpressure_stress_active = 1'b0;
+                        hold_result_for_input_pressure = 1'b0;
                         stall_run = 0;
                     end else begin
                         vif.resultReady = 1'b0;
                         stall_run++;
                     end
-                end else if (active_stall_percent == 0) begin
+                end else if (active_result_stall_percent == 0) begin
                     vif.resultReady = 1'b1;
                     stall_run = 0;
                 end else begin
-                    // Periodic releases keep backpressure coverage deterministic and bounded.
+                    // A bounded release makes the randomized stress
+                    // reproducible and prevents a false deadlock.
                     if (stall_run >= 4 || (ready_cycle % 5) == 0) begin
                         vif.resultReady = 1'b1;
                         stall_run = 0;
                     end else begin
                         vif.resultReady = (next_random() % 100) >=
-                                          active_stall_percent;
+                                          active_result_stall_percent;
                         if (vif.resultReady)
                             stall_run = 0;
                         else
@@ -136,11 +183,17 @@
             vif.rst_n = 1'b0;
             vif.weightValid = 1'b0;
             vif.activationValid = 1'b0;
+            vif.targetData = '0;
+            vif.trainingEnable = 1'b0;
+            vif.loadReductionWeights = 1'b0;
+            vif.passThrough = 1'b1;
+            vif.reduceOutput = 1'b0;
             vif.reloadWeights = 1'b0;
             vif.resultReady = 1'b0;
             for (int lane = 0; lane < N; lane++) begin
                 vif.weightData[lane] = '0;
                 vif.activationData[lane] = '0;
+                vif.reductionWeight[lane] = '0;
             end
 
             repeat (3) @(posedge vif.clk);
@@ -170,8 +223,19 @@
                 @(posedge vif.clk);
                 cycles++;
                 if (cycles > 100000)
-                    `uvm_fatal("RELOAD_TIMEOUT", "weightsLoaded did not clear after reload")
+                    `uvm_fatal("RELOAD_TIMEOUT",
+                               "weightsLoaded did not clear after reload")
             end
+        endtask
+
+        task load_reduction_weights(input reduction_t values[N]);
+            @(negedge vif.clk);
+            for (int lane = 0; lane < N; lane++)
+                vif.reductionWeight[lane] = values[lane];
+            vif.loadReductionWeights = 1'b1;
+            @(posedge vif.clk);
+            @(negedge vif.clk);
+            vif.loadReductionWeights = 1'b0;
         endtask
 
         task wait_for_idle();
@@ -181,77 +245,52 @@
                 @(posedge vif.clk);
                 cycles++;
                 if (cycles > 100000)
-                    `uvm_fatal("DRAIN_TIMEOUT", "core did not drain before a reset boundary")
+                    `uvm_fatal("DRAIN_TIMEOUT",
+                               "core did not drain before the next sequence boundary")
             end
         endtask
 
-        task drive_weight_rows(nn_core_matrix_item item);
-            int unsigned row_limit;
-            row_limit = N;
-            if (item.reset_phase == NN_RESET_DURING_WEIGHT_LOAD) begin
-                if (item.reset_after_rows == 0 || item.reset_after_rows >= N)
-                    `uvm_fatal("RESET_CONFIG", "weight reset must interrupt a partial weight load")
-                row_limit = item.reset_after_rows;
-            end
-
-            // The core consumes the stationary matrix from row N-1 to row 0.
-            for (int unsigned row_offset = 0; row_offset < row_limit; row_offset++)
-                drive_vector(item.weights[N-1-row_offset], 1'b1, item.weight_bubbles);
-
-            if (item.reset_phase == NN_RESET_DURING_WEIGHT_LOAD) begin
-                reset_dut();
-                return;
-            end
-
-            while (vif.weightsLoaded !== 1'b1)
-                @(posedge vif.clk);
-        endtask
-
-        task drive_activation_rows(nn_core_matrix_item item, input int unsigned row_limit);
-            if (row_limit == 0 || row_limit > N)
-                `uvm_fatal("RESET_CONFIG", "activation row count must be between 1 and N")
-
-            for (int row = 0; row < row_limit; row++)
-                drive_vector(item.activations[row], 1'b0, item.activation_bubbles);
-        endtask
-
-        task drive_vector(input data_t vector[N], input bit is_weight,
-                          input bit insert_bubble);
+        task drive_weight_vector(input data_t vector[N], input bit insert_bubble);
             if (insert_bubble) begin
-                if (is_weight)
-                    vif.weightValid = 1'b0;
-                else
-                    vif.activationValid = 1'b0;
+                vif.weightValid = 1'b0;
+                weight_bubbles_injected++;
                 repeat (1 + (next_random() % 2)) @(negedge vif.clk);
             end
 
-            if (is_weight) begin
-                for (int lane = 0; lane < N; lane++)
-                    vif.weightData[lane] = vector[lane];
-                vif.weightValid = 1'b1;
-            end else begin
-                for (int lane = 0; lane < N; lane++)
-                    vif.activationData[lane] = vector[lane];
-                vif.activationValid = 1'b1;
-            end
+            for (int lane = 0; lane < N; lane++)
+                vif.weightData[lane] = vector[lane];
+            vif.weightValid = 1'b1;
 
-            // Hold valid and data through stalls to exercise ready/valid stability.
-            if (is_weight) begin
-                do begin
-                    @(posedge vif.clk);
-                end while (vif.weightValid !== 1'b1 ||
-                           vif.weightReady !== 1'b1);
-            end else begin
-                do begin
-                    @(posedge vif.clk);
-                end while (vif.activationValid !== 1'b1 ||
-                           vif.activationReady !== 1'b1);
-            end
+            do begin
+                @(posedge vif.clk);
+            end while (vif.weightValid !== 1'b1 ||
+                       vif.weightReady !== 1'b1);
 
             @(negedge vif.clk);
-            if (is_weight)
-                vif.weightValid = 1'b0;
-            else
+            vif.weightValid = 1'b0;
+        endtask
+
+        task drive_activation_vector(nn_core_sample_item item);
+            if (item.activation_bubble) begin
                 vif.activationValid = 1'b0;
+                activation_bubbles_injected++;
+                repeat (1 + (next_random() % 2)) @(negedge vif.clk);
+            end
+
+            for (int lane = 0; lane < N; lane++)
+                vif.activationData[lane] = item.activation[lane];
+            vif.targetData = item.target;
+            vif.trainingEnable = item.training_enable;
+            vif.activationValid = 1'b1;
+
+            // Data and all per-sample context remain stable until the single
+            // activation handshake completes.
+            do begin
+                @(posedge vif.clk);
+            end while (vif.activationValid !== 1'b1 ||
+                       vif.activationReady !== 1'b1);
+
+            @(negedge vif.clk);
+            vif.activationValid = 1'b0;
         endtask
     endclass

@@ -5,13 +5,16 @@ module nn_uvm_tb_top;
     import nn_uvm_pkg::*;
     `include "uvm_macros.svh"
 
-    nn_core_if #(WIDTH, N) bus();
-    logic signed [1:0] noRowDirection[N], noColumnDirection[N];
+    nn_core_if #(WIDTH, N, TARGET_WIDTH, REDUCTION_WEIGHT_WIDTH) bus();
 
-    matrixMultiplierWeightStationary #(
+    nnAccelerator #(
         .WIDTH(WIDTH),
         .N(N),
-        .INPUT_FIFO_DEPTH(2*N)
+        .FRACTION_BITS(FRACTION_BITS),
+        .TARGET_WIDTH(TARGET_WIDTH),
+        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
+        .INPUT_FIFO_DEPTH(2*N),
+        .OUTPUT_FIFO_DEPTH(2*N)
     ) dut (
         .clk(bus.clk),
         .rst_n(bus.rst_n),
@@ -19,18 +22,25 @@ module nn_uvm_tb_top;
         .weightValid(bus.weightValid),
         .weightReady(bus.weightReady),
         .activationData(bus.activationData),
+        .targetData(bus.targetData),
+        .trainingEnable(bus.trainingEnable),
         .activationValid(bus.activationValid),
         .activationReady(bus.activationReady),
-        .rowDirection(noRowDirection),
-        .columnDirection(noColumnDirection),
-        .matrixUpdateValid(1'b0),
-        .datapathAdvance(),
+        .reductionWeight(bus.reductionWeight),
+        .loadReductionWeights(bus.loadReductionWeights),
+        .reduceOutput(bus.reduceOutput),
         .resultData(bus.resultData),
+        .resultTargetData(),
+        .learningDirection(),
+        .rowDirection(),
+        .columnDirection(),
+        .matrixUpdateValid(),
         .resultValid(bus.resultValid),
         .resultReady(bus.resultReady),
         .weightsLoaded(bus.weightsLoaded),
         .reloadWeights(bus.reloadWeights),
-        .reloadReady(bus.reloadReady)
+        .reloadReady(bus.reloadReady),
+        .passThrough(bus.passThrough)
     );
 
     initial begin
@@ -42,16 +52,21 @@ module nn_uvm_tb_top;
         bus.rst_n = 1'b0;
         bus.weightValid = 1'b0;
         bus.activationValid = 1'b0;
+        bus.targetData = '0;
+        bus.trainingEnable = 1'b0;
+        bus.loadReductionWeights = 1'b0;
+        bus.passThrough = 1'b1;
+        bus.reduceOutput = 1'b0;
         bus.resultReady = 1'b0;
         bus.reloadWeights = 1'b0;
         for (int lane = 0; lane < N; lane++) begin
             bus.weightData[lane] = '0;
             bus.activationData[lane] = '0;
-            noRowDirection[lane] = 2'sd0;
-            noColumnDirection[lane] = 2'sd0;
+            bus.reductionWeight[lane] = '0;
         end
 
-        uvm_config_db #(virtual nn_core_if #(WIDTH, N))::set(
+        uvm_config_db #(virtual nn_core_if #(WIDTH, N, TARGET_WIDTH,
+                                             REDUCTION_WEIGHT_WIDTH))::set(
             null, "uvm_test_top.env*", "vif", bus);
         run_test();
     end

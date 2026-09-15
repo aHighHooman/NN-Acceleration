@@ -165,10 +165,10 @@ primary owner:
 - `CycleReference` plus the RTL trace bridge owns accelerator latency,
   W/R evolution, FIFO contents, bubbles, backpressure state, and the
   drain-before-reconfiguration contract for `passThrough`/`reduceOutput`.
-- The core UVM environment owns randomized matrix-engine interface traffic,
-  reset/reload, ordering, and compact traffic coverage. Its small matrix
-  predictor checks result data during that randomized traffic; accelerator
-  result ordering is checked by the integrated reference/RTL trace.
+- The core UVM environment owns randomized public `nnAccelerator` traffic,
+  reset/reload recovery, ordering, and no-loss/no-duplication checks. Its small
+  training-disabled per-sample predictor is only a smoke check; exact learning
+  and cycle/state behavior remain owned by the references and RTL trace.
 - Directed RTL units own reduction arithmetic, PE/update-wave mechanics, and
   `N=2/3/4` matrix-core parameterization.
 - The SPI bench owns serialization, CDC, ordering, and output backpressure,
@@ -189,15 +189,21 @@ The Phase 6E golden RTL comparison can also be run directly:
 pwsh -File scripts/run_rtl_reference_compare.ps1
 ```
 
-### Core behavior: existing UVM environment
+### Core behavior: sample-oriented UVM environment
 
-The core-level UVM environment in [`uvm/`](uvm/) connects directly to
-`matrixMultiplierWeightStationary`. It provides an active ready/valid driver,
-passive accepted-input reconstruction, a passive result monitor, an
-independent signed reference model/scoreboard, protocol assertions, and
-license-safe coverage counters. Its core checks cover signed and edge-case
-operands, raw matrix-product results, input/output backpressure, back-to-back
-matrices, weight reloads, and reset during weight load or activation.
+The UVM environment in [`uvm/`](uvm/) connects directly to the public
+`nnAccelerator` interface. One accepted activation vector is one sample item,
+and one `resultValid && resultReady` handshake is one result item. Weight and
+reduction loading are explicit configuration commands, not fields on every
+sample. The passive monitors reconstruct only accepted public-pin traffic; the
+compact scoreboard checks ordered counts, reset/reload boundaries, and a small
+training-disabled inference predictor. It intentionally does not model
+learning waves or internal FIFOs; those remain owned by the Python references,
+RTL trace bridge, and focused RTL benches.
+
+The regression uses explicit scenario assertions for input bubbles, output
+backpressure, activation backpressure, reloads, and resets instead of a
+standalone generic coverage component.
 
 Run the core UVM regression with:
 
@@ -253,9 +259,9 @@ pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_smoke_test
 pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_regression_test -Seed 12345
 ```
 
-The UVM compile targets the direct core interface at `N=3`, `WIDTH=8` for a
-fast regression. `matrixMultiplierWeightStationary_tb.sv` retains focused
-coverage of the supported 2x2, 3x3, and 4x4 configurations.
+The UVM compile targets the direct `nnAccelerator` interface at `N=3`,
+`WIDTH=8` for a fast regression. `matrixMultiplierWeightStationary_tb.sv`
+retains focused coverage of the supported 2x2, 3x3, and 4x4 configurations.
 
 ### FPGA/build documentation
 

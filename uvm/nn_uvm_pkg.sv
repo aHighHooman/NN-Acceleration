@@ -7,21 +7,25 @@ package nn_uvm_pkg;
     // sizes; changing these two package constants retargets this environment.
     localparam int WIDTH = 8;
     localparam int N = 3;
-    localparam int RESULT_WIDTH = 2*WIDTH + $clog2(N);
+    localparam int TARGET_WIDTH = WIDTH;
+    localparam int REDUCTION_WEIGHT_WIDTH = 8;
+    localparam int FRACTION_BITS = 4;
+    localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
+    localparam int RESULT_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
     localparam int unsigned DEFAULT_SEED = 32'h5eed_2026;
 
     typedef logic signed [WIDTH-1:0] data_t;
+    typedef logic signed [TARGET_WIDTH-1:0] target_t;
+    typedef logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reduction_t;
+    typedef logic signed [MATRIX_RESULT_WIDTH-1:0] matrix_result_t;
     typedef logic signed [RESULT_WIDTH-1:0] result_t;
-    typedef data_t data_matrix_t[N][N];
-    typedef result_t result_matrix_t[N][N];
 
-    typedef enum int {
-        NN_RESET_NONE = 0,
-        NN_RESET_DURING_WEIGHT_LOAD = 1,
-        NN_RESET_DURING_ACTIVATION = 2
-    } reset_phase_e;
-
-    `uvm_analysis_imp_decl(_matrix)
+    `uvm_analysis_imp_decl(_sample)
+    `uvm_analysis_imp_decl(_result)
+    `uvm_analysis_imp_decl(_weight_row)
+    `uvm_analysis_imp_decl(_reduction)
+    `uvm_analysis_imp_decl(_reload)
+    `uvm_analysis_imp_decl(_reset)
 
     // Keep this package as the single compile entry point.  The implementation
     // is grouped by verification role and included in dependency order.

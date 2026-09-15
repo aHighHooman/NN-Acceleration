@@ -1,13 +1,15 @@
 `timescale 1ns/1ps
 
-// Core-level ready/valid interface used by the UVM environment.  The
-// interface deliberately stops at the matrix core; no SPI signals belong in
-// this verification layer.
+// Public nnAccelerator interface used by the UVM environment.  This is a
+// black-box boundary: no matrix-engine or FIFO implementation signals are
+// present here.
 interface nn_core_if #(
     parameter int WIDTH = 8,
-    parameter int N = 3
+    parameter int N = 3,
+    parameter int TARGET_WIDTH = WIDTH,
+    parameter int REDUCTION_WEIGHT_WIDTH = 8
 );
-    localparam int RESULT_WIDTH = 2*WIDTH + $clog2(N);
+    localparam int RESULT_WIDTH = 2*WIDTH + 2*$clog2(N);
 
     logic clk;
     logic rst_n;
@@ -17,8 +19,15 @@ interface nn_core_if #(
     logic weightReady;
 
     logic signed [WIDTH-1:0] activationData [N];
+    logic signed [TARGET_WIDTH-1:0] targetData;
+    logic trainingEnable;
     logic activationValid;
     logic activationReady;
+
+    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight [N];
+    logic loadReductionWeights;
+    logic passThrough;
+    logic reduceOutput;
 
     logic signed [RESULT_WIDTH-1:0] resultData [N];
     logic resultValid;
@@ -36,7 +45,9 @@ interface nn_core_if #(
         default input #1step;
         input rst_n;
         input weightData, weightValid, weightReady;
-        input activationData, activationValid, activationReady;
+        input activationData, targetData, trainingEnable;
+        input activationValid, activationReady;
+        input reductionWeight, loadReductionWeights, passThrough, reduceOutput;
         input resultData, resultValid, resultReady;
         input weightsLoaded, reloadWeights, reloadReady;
     endclocking

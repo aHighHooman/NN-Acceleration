@@ -1,249 +1,256 @@
     // ------------------------------------------------------------------
-    // Independent reference model and scoreboard
+    // Compact ordered scoreboard
     // ------------------------------------------------------------------
+
+    class nn_core_expected_result extends uvm_object;
+        result_t data[N];
+        bit check_numeric;
+
+        `uvm_object_utils(nn_core_expected_result)
+
+        function new(string name = "nn_core_expected_result");
+            super.new(name);
+            check_numeric = 1'b0;
+            for (int lane = 0; lane < N; lane++)
+                data[lane] = '0;
+        endfunction
+    endclass
 
     class nn_core_scoreboard extends uvm_scoreboard;
         `uvm_component_utils(nn_core_scoreboard)
 
-        uvm_tlm_analysis_fifo #(nn_core_matrix_item) expected_fifo;
-        uvm_tlm_analysis_fifo #(nn_core_result_transaction) actual_fifo;
-        virtual nn_core_if #(WIDTH, N) vif;
-        int unsigned matrices_checked;
+        uvm_analysis_imp_sample #(nn_core_sample_transaction,
+                                  nn_core_scoreboard) sample_imp;
+        uvm_analysis_imp_result #(nn_core_result_transaction,
+                                  nn_core_scoreboard) result_imp;
+        uvm_analysis_imp_weight_row #(nn_core_weight_row_transaction,
+                                      nn_core_scoreboard) weight_row_imp;
+        uvm_analysis_imp_reduction #(nn_core_reduction_load_transaction,
+                                     nn_core_scoreboard) reduction_imp;
+        uvm_analysis_imp_reload #(nn_core_reload_transaction,
+                                  nn_core_scoreboard) reload_imp;
+        uvm_analysis_imp_reset #(nn_core_reset_transaction,
+                                 nn_core_scoreboard) reset_imp;
+
+        virtual nn_core_if #(WIDTH, N, TARGET_WIDTH,
+                             REDUCTION_WEIGHT_WIDTH) vif;
+
+        nn_core_expected_result expected_samples[$];
+        data_t resident_weights[N][N];
+        data_t pending_weights[N][N];
+        reduction_t resident_reduction_weights[N];
+        int unsigned pending_weight_rows;
+        bit weights_valid;
+
+        int unsigned accepted_sample_count;
+        int unsigned retired_result_count;
+        int unsigned samples_discarded_on_reset;
+        int unsigned reloads_observed;
+        int unsigned numeric_mismatch_count;
+        int unsigned result_without_sample_count;
 
         function new(string name, uvm_component parent);
             super.new(name, parent);
-            matrices_checked = 0;
+            sample_imp = new("sample_imp", this);
+            result_imp = new("result_imp", this);
+            weight_row_imp = new("weight_row_imp", this);
+            reduction_imp = new("reduction_imp", this);
+            reload_imp = new("reload_imp", this);
+            reset_imp = new("reset_imp", this);
+            pending_weight_rows = 0;
+            weights_valid = 1'b0;
+            accepted_sample_count = 0;
+            retired_result_count = 0;
+            samples_discarded_on_reset = 0;
+            reloads_observed = 0;
+            numeric_mismatch_count = 0;
+            result_without_sample_count = 0;
+            clear_model();
         endfunction
 
         function void build_phase(uvm_phase phase);
             super.build_phase(phase);
-            expected_fifo = new("expected_fifo", this);
-            actual_fifo = new("actual_fifo", this);
-            if (!uvm_config_db #(virtual nn_core_if #(WIDTH, N))::get(
+            if (!uvm_config_db #(virtual nn_core_if #(WIDTH, N,
+                                                       TARGET_WIDTH,
+                                                       REDUCTION_WEIGHT_WIDTH))::get(
                     this, "", "vif", vif))
                 `uvm_fatal("NO_VIF", "nn_core_scoreboard did not receive nn_core_if")
         endfunction
 
-        // This model starts from passive accepted input traffic.  It uses a
-        // wider signed accumulator, then applies the DUT's result-width
-        // truncation.
-        function void predict(nn_core_matrix_item item,
-                              output result_matrix_t expected);
-            longint signed sum;
-            longint signed activation_value;
-            longint signed weight_value;
-
+        function void clear_model();
             for (int row = 0; row < N; row++) begin
-                for (int col = 0; col < N; col++) begin
-                    sum = 0;
-                    for (int k = 0; k < N; k++) begin
-                        activation_value = $signed(item.activations[row][k]);
-                        weight_value = $signed(item.weights[k][col]);
-                        sum += activation_value * weight_value;
-                    end
-                    expected[row][col] = result_t'(sum);
+                resident_weights[row] = '{default: '0};
+                pending_weights[row] = '{default: '0};
+                resident_reduction_weights[row] = '0;
+            end
+            pending_weight_rows = 0;
+            weights_valid = 1'b0;
+        endfunction
+
+        function matrix_result_t narrow_matrix(input longint signed value);
+            narrow_matrix = matrix_result_t'(value);
+        endfunction
+
+        function result_t narrow_result(input longint signed value);
+            narrow_result = result_t'(value);
+        endfunction
+
+        function void predict_sample(
+            input nn_core_sample_transaction sample,
+            output nn_core_expected_result expected);
+            matrix_result_t raw_value[N];
+            matrix_result_t activated_value[N];
+            longint signed sum;
+            longint signed reduction_sum;
+
+            expected = nn_core_expected_result::type_id::create(
+                "expected_sample_result");
+            expected.check_numeric = !sample.training_enable;
+
+            for (int col = 0; col < N; col++) begin
+                sum = 0;
+                for (int k = 0; k < N; k++)
+                    sum += $signed(sample.activation[k]) *
+                           $signed(resident_weights[k][col]);
+                raw_value[col] = narrow_matrix(sum);
+
+                if (vif.passThrough || raw_value[col] >= 0)
+                    activated_value[col] = raw_value[col];
+                else
+                    activated_value[col] = '0;
+            end
+
+            if (vif.reduceOutput) begin
+                reduction_sum = 0;
+                for (int lane = 0; lane < N; lane++)
+                    reduction_sum += $signed(activated_value[lane]) *
+                                     $signed(resident_reduction_weights[lane]);
+                reduction_sum = reduction_sum >>>
+                    (FRACTION_BITS + REDUCTION_WEIGHT_WIDTH - 1);
+                expected.data[0] = narrow_result(reduction_sum);
+                for (int lane = 1; lane < N; lane++)
+                    expected.data[lane] = '0;
+            end else begin
+                for (int lane = 0; lane < N; lane++)
+                    expected.data[lane] = result_t'(activated_value[lane]);
+            end
+        endfunction
+
+        function void write_sample(nn_core_sample_transaction sample);
+            nn_core_expected_result expected;
+
+            if (!weights_valid)
+                `uvm_error("SAMPLE_STATE",
+                           "accepted sample observed without resident weights")
+
+            predict_sample(sample, expected);
+            expected_samples.push_back(expected);
+            accepted_sample_count++;
+        endfunction
+
+        function void write_result(nn_core_result_transaction actual);
+            nn_core_expected_result expected;
+
+            retired_result_count++;
+            if (expected_samples.size() == 0) begin
+                result_without_sample_count++;
+                `uvm_error("RESULT_ORDER",
+                           "result handshake observed with no outstanding sample")
+                return;
+            end
+
+            expected = expected_samples.pop_front();
+            if (!expected.check_numeric)
+                return;
+
+            for (int lane = 0; lane < N; lane++) begin
+                if (actual.data[lane] !== expected.data[lane]) begin
+                    numeric_mismatch_count++;
+                    `uvm_error("RESULT_MISMATCH", $sformatf(
+                        "sample result lane %0d got %0d (0x%0h) expected %0d (0x%0h)",
+                        lane, actual.data[lane], actual.data[lane],
+                        expected.data[lane], expected.data[lane]))
                 end
             end
         endfunction
 
-        task run_phase(uvm_phase phase);
-            nn_core_matrix_item item;
-            nn_core_result_transaction actual;
-            result_matrix_t expected;
-
-            forever begin
-                expected_fifo.get(item);
-                predict(item, expected);
-
-                for (int sample_index = 0; sample_index < N; sample_index++) begin
-                    actual_fifo.get(actual);
-                    for (int col = 0; col < N; col++) begin
-                        if (actual.data[col] !== expected[sample_index][col]) begin
-                            `uvm_error("MISMATCH", $sformatf(
-                                "C[%0d][%0d] got %0d (0x%0h) expected %0d (0x%0h)",
-                                sample_index, col, actual.data[col], actual.data[col],
-                                expected[sample_index][col], expected[sample_index][col]))
-                        end
-                    end
-                end
-
-                matrices_checked++;
-                `uvm_info("SCOREBOARD", $sformatf(
-                    "Checked accepted matrix %0d: %s",
-                    matrices_checked, item.convert2string()), UVM_LOW)
+        function void write_weight_row(nn_core_weight_row_transaction row);
+            if (row.row_index >= N) begin
+                `uvm_error("WEIGHT_CONFIG", "observed invalid weight row index")
+                return;
             end
-        endtask
 
-        task wait_for_matrices(input int unsigned expected_count,
-                               input int unsigned max_cycles = 100000);
+            for (int lane = 0; lane < N; lane++)
+                pending_weights[row.row_index][lane] = row.data[lane];
+
+            pending_weight_rows++;
+            if (row.completes_load) begin
+                if (pending_weight_rows != N)
+                    `uvm_error("WEIGHT_CONFIG", $sformatf(
+                        "weight load completed after %0d rows", pending_weight_rows))
+                for (int row_index = 0; row_index < N; row_index++)
+                    for (int lane = 0; lane < N; lane++)
+                        resident_weights[row_index][lane] =
+                            pending_weights[row_index][lane];
+                weights_valid = 1'b1;
+                pending_weight_rows = 0;
+            end
+        endfunction
+
+        function void write_reduction(nn_core_reduction_load_transaction load);
+            for (int lane = 0; lane < N; lane++)
+                resident_reduction_weights[lane] = load.data[lane];
+        endfunction
+
+        function void write_reload(nn_core_reload_transaction reload);
+            reloads_observed++;
+            if (expected_samples.size() != 0)
+                `uvm_error("RELOAD_ORDER",
+                           "reload observed while samples were outstanding")
+            for (int row = 0; row < N; row++)
+                resident_weights[row] = '{default: '0};
+            pending_weight_rows = 0;
+            weights_valid = 1'b0;
+        endfunction
+
+        function void write_reset(nn_core_reset_transaction reset_event);
+            samples_discarded_on_reset += expected_samples.size();
+            expected_samples.delete();
+            clear_model();
+        endfunction
+
+        task wait_for_completion(input int unsigned expected_results,
+                                 input int unsigned max_cycles = 100000);
             int unsigned cycles;
             cycles = 0;
-            while (matrices_checked < expected_count) begin
+            while (retired_result_count < expected_results ||
+                   expected_samples.size() != 0) begin
                 @(posedge vif.clk);
                 cycles++;
                 if (cycles > max_cycles)
                     `uvm_fatal("SCOREBOARD_TIMEOUT", $sformatf(
-                        "checked %0d of %0d expected matrices",
-                        matrices_checked, expected_count))
+                        "retired %0d of %0d results with %0d samples outstanding; accepted=%0d resultValid/Ready=%0b/%0b reloadReady=%0b weightsLoaded=%0b",
+                        retired_result_count, expected_results,
+                        expected_samples.size(), accepted_sample_count,
+                        vif.resultValid, vif.resultReady,
+                        vif.reloadReady, vif.weightsLoaded))
             end
+
+            if (retired_result_count != expected_results)
+                `uvm_error("RESULT_COUNT", $sformatf(
+                    "retired %0d results, expected %0d",
+                    retired_result_count, expected_results))
+            if (result_without_sample_count != 0)
+                `uvm_error("RESULT_DUPLICATION", $sformatf(
+                    "%0d results had no matching accepted sample",
+                    result_without_sample_count))
         endtask
-    endclass
-
-    // Counter-based bins keep the regression runnable without a coverage
-    // feature license; the broad test checks the required bins explicitly.
-    class nn_core_coverage extends uvm_component;
-        `uvm_component_utils(nn_core_coverage)
-
-        virtual nn_core_if #(WIDTH, N) vif;
-        uvm_analysis_imp_matrix #(nn_core_matrix_item, nn_core_coverage) matrix_imp;
-
-        int unsigned matrix_count;
-        int unsigned negative_operand_count;
-        int unsigned repeated_weight_matrix_count;
-        int unsigned weight_bubble_cycles;
-        int unsigned activation_bubble_cycles;
-        int unsigned activation_stall_cycles;
-        int unsigned output_stall_cycles;
-        int unsigned reload_count;
-        int unsigned reset_count;
-
-        int unsigned last_weight_generation;
-        int unsigned weight_rows_in_matrix;
-        int unsigned activation_rows_in_matrix;
-        bit have_last_generation;
-        bit released_once;
-        bit in_reset;
-
-        function new(string name, uvm_component parent);
-            super.new(name, parent);
-            matrix_imp = new("matrix_imp", this);
-            matrix_count = 0;
-            negative_operand_count = 0;
-            repeated_weight_matrix_count = 0;
-            weight_bubble_cycles = 0;
-            activation_bubble_cycles = 0;
-            activation_stall_cycles = 0;
-            output_stall_cycles = 0;
-            reload_count = 0;
-            reset_count = 0;
-            last_weight_generation = 0;
-            weight_rows_in_matrix = 0;
-            activation_rows_in_matrix = 0;
-            have_last_generation = 1'b0;
-            released_once = 1'b0;
-            in_reset = 1'b0;
-        endfunction
-
-        function void build_phase(uvm_phase phase);
-            super.build_phase(phase);
-            if (!uvm_config_db #(virtual nn_core_if #(WIDTH, N))::get(
-                    this, "", "vif", vif))
-                `uvm_fatal("NO_VIF", "nn_core_coverage did not receive nn_core_if")
-        endfunction
-
-        function void write_matrix(nn_core_matrix_item item);
-            bit has_negative;
-            matrix_count++;
-
-            has_negative = 1'b0;
-            for (int row = 0; row < N; row++) begin
-                for (int col = 0; col < N; col++) begin
-                    has_negative |= item.activations[row][col][WIDTH-1];
-                    has_negative |= item.weights[row][col][WIDTH-1];
-                end
-            end
-            if (has_negative)
-                negative_operand_count++;
-
-            if (have_last_generation &&
-                item.weight_generation == last_weight_generation)
-                repeated_weight_matrix_count++;
-            last_weight_generation = item.weight_generation;
-            have_last_generation = 1'b1;
-        endfunction
-
-        task run_phase(uvm_phase phase);
-            forever begin
-                @(vif.monitor_cb);
-                if (!vif.monitor_cb.rst_n) begin
-                    if (!in_reset && released_once)
-                        reset_count++;
-                    in_reset = 1'b1;
-                end else begin
-                    released_once = 1'b1;
-                    in_reset = 1'b0;
-
-                    if (!vif.monitor_cb.weightsLoaded) begin
-                        if (weight_rows_in_matrix != 0 &&
-                            vif.monitor_cb.weightReady &&
-                            !vif.monitor_cb.weightValid)
-                            weight_bubble_cycles++;
-                        if (vif.monitor_cb.weightValid && vif.monitor_cb.weightReady) begin
-                            if (weight_rows_in_matrix == N-1)
-                                weight_rows_in_matrix = 0;
-                            else
-                                weight_rows_in_matrix++;
-                        end
-                    end else begin
-                        weight_rows_in_matrix = 0;
-                    end
-
-                    if (vif.monitor_cb.weightsLoaded) begin
-                        if (activation_rows_in_matrix != 0 &&
-                            vif.monitor_cb.activationReady &&
-                            !vif.monitor_cb.activationValid)
-                            activation_bubble_cycles++;
-                        if (vif.monitor_cb.activationValid &&
-                            !vif.monitor_cb.activationReady)
-                            activation_stall_cycles++;
-                        if (vif.monitor_cb.activationValid && vif.monitor_cb.activationReady) begin
-                            if (activation_rows_in_matrix == N-1)
-                                activation_rows_in_matrix = 0;
-                            else
-                                activation_rows_in_matrix++;
-                        end
-                    end else begin
-                        activation_rows_in_matrix = 0;
-                    end
-
-                    if (vif.monitor_cb.resultValid && !vif.monitor_cb.resultReady)
-                        output_stall_cycles++;
-                    if (vif.monitor_cb.reloadWeights && vif.monitor_cb.reloadReady)
-                        reload_count++;
-                end
-            end
-        endtask
-
-        function void check_broad_coverage();
-            if (matrix_count == 0)
-                `uvm_error("COVERAGE", "no accepted activation matrices were observed")
-            if (negative_operand_count == 0)
-                `uvm_error("COVERAGE", "negative operand bin was not observed")
-            if (repeated_weight_matrix_count == 0)
-                `uvm_error("COVERAGE", "repeated matrix under stationary weights was not observed")
-            if (weight_bubble_cycles == 0)
-                `uvm_error("COVERAGE", "weight input bubble bin was not observed")
-            if (activation_bubble_cycles == 0)
-                `uvm_error("COVERAGE", "activation input bubble bin was not observed")
-            if (activation_stall_cycles == 0)
-                `uvm_error("COVERAGE", "activation input backpressure bin was not observed")
-            if (output_stall_cycles == 0)
-                `uvm_error("COVERAGE", "output backpressure bin was not observed")
-            if (reload_count == 0)
-                `uvm_error("COVERAGE", "weight reload bin was not observed")
-            if (reset_count == 0)
-                `uvm_error("COVERAGE", "injected reset bin was not observed")
-        endfunction
 
         function void report_phase(uvm_phase phase);
-            `uvm_info("COVERAGE", $sformatf(
-                "matrices=%0d negativeOperands=%0d repeatedUnderWeights=%0d",
-                matrix_count,
-                negative_operand_count, repeated_weight_matrix_count), UVM_NONE)
-            `uvm_info("COVERAGE", $sformatf(
-                "weightBubbles=%0d activationBubbles=%0d activationStallCycles=%0d outputStallCycles=%0d reloads=%0d injectedResets=%0d",
-                weight_bubble_cycles, activation_bubble_cycles,
-                activation_stall_cycles, output_stall_cycles,
-                reload_count, reset_count), UVM_NONE)
+            `uvm_info("SCOREBOARD", $sformatf(
+                "acceptedSamples=%0d retiredResults=%0d discardedOnReset=%0d reloads=%0d mismatches=%0d",
+                accepted_sample_count, retired_result_count,
+                samples_discarded_on_reset, reloads_observed,
+                numeric_mismatch_count), UVM_NONE)
         endfunction
     endclass
