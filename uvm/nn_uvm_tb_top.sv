@@ -11,8 +11,7 @@ module nn_uvm_tb_top;
     matrixMultiplierWeightStationary #(
         .WIDTH(WIDTH),
         .N(N),
-        .INPUT_FIFO_DEPTH(2*N),
-        .OUTPUT_FIFO_DEPTH(2*N)
+        .INPUT_FIFO_DEPTH(2*N)
     ) dut (
         .clk(bus.clk),
         .rst_n(bus.rst_n),
@@ -26,12 +25,9 @@ module nn_uvm_tb_top;
         .columnDirection(noColumnDirection),
         .matrixUpdateValid(1'b0),
         .datapathAdvance(),
-        .resultEnqueue(),
-        .resultEnqueueData(),
         .resultData(bus.resultData),
         .resultValid(bus.resultValid),
         .resultReady(bus.resultReady),
-        .resultLast(bus.resultLast),
         .weightsLoaded(bus.weightsLoaded),
         .reloadWeights(bus.reloadWeights),
         .reloadReady(bus.reloadReady)

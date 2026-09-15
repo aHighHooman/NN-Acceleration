@@ -37,6 +37,7 @@ module nnAccelerator #(
 
     localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
+    localparam int OUTPUT_ROW_WIDTH = (N > 1) ? $clog2(N) : 1;
     // The resident reduction vector commits after the same 2N-1 advancing
     // slots as the matrix update wave, from PE(0,0) through PE(N-1,N-1).
     localparam int REDUCTION_UPDATE_DELAY = 2*N-1;
@@ -55,16 +56,17 @@ module nnAccelerator #(
         REDUCTION_WEIGHT_ONE = {{(REDUCTION_WEIGHT_WIDTH-1){1'b0}}, 1'b1};
 
     logic signed [MATRIX_RESULT_WIDTH-1:0] rawResultData[N];
+    logic signed [MATRIX_RESULT_WIDTH-1:0] activatedMatrixResultData[N];
     logic signed [MATRIX_RESULT_WIDTH-1:0] activatedData[N];
-    logic signed [MATRIX_RESULT_WIDTH-1:0] rawResultEnqueueData[N];
-    logic signed [MATRIX_RESULT_WIDTH-1:0] activatedResultEnqueueData[N];
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] residentReductionWeight[N];
     logic signed [PREDICTION_WIDTH-1:0] prediction;
     logic signed [PREDICTION_WIDTH-1:0] enqueuePrediction;
     logic signed [2*N-1:0] reductionWeightSignPushData;
     logic signed [2*N-1:0] reductionWeightSignHead;
-    logic signed [PREDICTION_WIDTH+2*N-1:0] resultReadoutPushData;
-    logic signed [PREDICTION_WIDTH+2*N-1:0] resultReadoutHead;
+    localparam int RESULT_ENTRY_WIDTH = N*MATRIX_RESULT_WIDTH +
+                                        PREDICTION_WIDTH + 2*N;
+    logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoPushData;
+    logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoHead;
     logic signed [COMPARE_WIDTH-1:0] comparePrediction, compareTarget;
     logic signed [2*N-1:0] inputSignPushData, inputSignHead;
     logic trainingEnableHead;
@@ -73,36 +75,38 @@ module nnAccelerator #(
     logic reductionUpdateValidPipe[REDUCTION_UPDATE_DELAY];
     logic signed [2*N-1:0]
         reductionUpdateDirectionPipe[REDUCTION_UPDATE_DELAY];
-    logic matrixDatapathAdvance, matrixResultEnqueue, matrixResultPop;
+    logic matrixDatapathAdvance, matrixResultPush;
     logic matrixReloadReady, reductionUpdateBusy, applyReductionUpdate;
-    logic resultReadoutPush, resultReadoutPop;
+    logic resultFifoPush, resultFifoPop, resultFifoCanAccept;
+    logic resultFifoFull, resultFifoEmpty;
     logic matrixActivationValid, matrixActivationReady;
-    logic matrixResultValid, matrixResultReady, matrixResultLast;
+    logic matrixResultValid, matrixResultReady;
     logic signed [SAMPLE_CONTEXT_WIDTH-1:0] sampleContextPushData;
     logic signed [SAMPLE_CONTEXT_WIDTH-1:0] sampleContextHead;
     logic sampleContextFull, sampleContextEmpty;
     logic samplePush, samplePop, sampleCanAccept;
-    logic readoutHeadValid;
+    logic [OUTPUT_ROW_WIDTH-1:0] outputRowIndex;
 
     // The activation vector, target, input signs, and training-enable bit are
     // one input transaction. Gate the matrix valid as well as the external
     // ready so no part can advance alone when the sample-context FIFO applies
     // backpressure.
-    assign samplePop             = resultValid && resultReady;
     assign sampleCanAccept       = !sampleContextFull || samplePop;
     assign activationReady       = matrixActivationReady && sampleCanAccept;
     assign matrixActivationValid = activationValid && sampleCanAccept;
     assign samplePush            = activationValid && activationReady;
 
-    // Result readout state is a transaction sideband pushed and popped with
-    // each ordinary matrix result.  It never participates in forward-path
-    // flow control; the FIFO counts are structurally identical to the result
-    // stream and are therefore not another reason for a result to wait.
-    assign readoutHeadValid  = matrixResultValid && !sampleContextEmpty;
-    assign resultValid       = readoutHeadValid;
-    assign matrixResultReady = resultReady && !sampleContextEmpty;
-    assign matrixResultPop   = matrixResultValid && matrixResultReady;
-    assign resultLast        = matrixResultLast && resultValid;
+    // The single result FIFO owns the complete architectural result.  Its
+    // capacity is the only forward-path storage decision: a full FIFO may
+    // still accept a new matrix result on the same edge that its head retires.
+    assign resultFifoPop      = resultValid && resultReady;
+    assign resultFifoCanAccept = !resultFifoFull || resultFifoPop;
+    assign matrixResultReady  = resultFifoCanAccept;
+    assign matrixResultPush   = matrixResultValid && matrixResultReady;
+    assign resultFifoPush     = matrixResultPush;
+    assign resultValid        = !resultFifoEmpty && !sampleContextEmpty;
+    assign samplePop          = resultFifoPop;
+    assign resultLast         = resultValid && (outputRowIndex == N-1);
     assign matrixUpdateValid = samplePop && trainingEnableHead;
     assign applyReductionUpdate = matrixDatapathAdvance &&
                                   reductionUpdateValidPipe[REDUCTION_UPDATE_DELAY-1];
@@ -112,7 +116,9 @@ module nnAccelerator #(
         for (int stage = 0; stage < REDUCTION_UPDATE_DELAY; stage++)
             reductionUpdateBusy |= reductionUpdateValidPipe[stage];
     end
-    assign reloadReady = matrixReloadReady && !reductionUpdateBusy;
+    assign reloadReady = matrixReloadReady && resultFifoEmpty &&
+                         sampleContextEmpty && !reductionUpdateBusy &&
+                         (outputRowIndex == 0);
 
     // Compare the rescaled architectural prediction with the aligned FIFO
     // head. Assignment to the wider signed signals sign-extends either side.
@@ -143,13 +149,11 @@ module nnAccelerator #(
         end
     end
 
-    // Both update vectors describe the FIFO-head sample. Matrix-update valid
-    // is a training-enabled result handshake, so no package is emitted for an
-    // inference sample or while an output is stalled. The reduction-weight
-    // sign is captured with the ordinary result when it enters the result
-    // buffer; this keeps a buffered prediction and its learning package tied
-    // together even when a later update has already advanced the resident
-    // vector.
+    // Both update vectors describe the single result-FIFO head. Matrix-update
+    // valid is a training-enabled result handshake, so no package is emitted
+    // for an inference sample or while an output is stalled. The activated
+    // vector, prediction, and resident reduction signs all come from the same
+    // stored transaction.
     always_comb begin
         for (int lane = 0; lane < N; lane++) begin
             rowDirection[lane] = $signed(inputSignHead[2*lane +: 2]);
@@ -182,10 +186,10 @@ module nnAccelerator #(
             reductionUpdateData[2*lane +: 2] = reductionDirection[lane];
     end
 
-    // Capture only the reduction result and the ternary sign of the resident
-    // coefficient with each normal result transaction.  No reduction event is
-    // created for an input bubble, and no standalone update item can get in
-    // front of a ready result.
+    // Capture the ternary sign of the resident reduction coefficient with the
+    // activated vector and prediction created by one matrix-result handshake.
+    // No reduction event is created for an input bubble, and no standalone
+    // update item can get in front of a ready result.
     always_comb begin
         reductionWeightSignPushData = '0;
         for (int lane = 0; lane < N; lane++) begin
@@ -196,9 +200,14 @@ module nnAccelerator #(
             else
                 reductionWeightSignPushData[2*lane +: 2] = 2'sd0;
         end
-        resultReadoutPushData = {
-            enqueuePrediction, reductionWeightSignPushData
-        };
+        resultFifoPushData = '0;
+        for (int lane = 0; lane < N; lane++)
+            resultFifoPushData[lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH] =
+                activatedMatrixResultData[lane];
+        resultFifoPushData[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH] =
+            enqueuePrediction;
+        resultFifoPushData[N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH +: 2*N] =
+            reductionWeightSignPushData;
     end
 
     assign sampleContextPushData = {
@@ -208,10 +217,14 @@ module nnAccelerator #(
     assign inputSignHead = sampleContextHead[2*N:1];
     assign trainingEnableHead = sampleContextHead[0];
 
-    assign prediction = resultReadoutHead[PREDICTION_WIDTH+2*N-1:2*N];
-    assign reductionWeightSignHead = resultReadoutHead[2*N-1:0];
-    assign resultReadoutPush = matrixResultEnqueue;
-    assign resultReadoutPop  = matrixResultPop;
+    always_comb begin
+        for (int lane = 0; lane < N; lane++)
+            activatedData[lane] =
+                resultFifoHead[lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH];
+    end
+    assign prediction = resultFifoHead[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH];
+    assign reductionWeightSignHead =
+        resultFifoHead[N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH +: 2*N];
 
     // FIFO order, rather than a cycle count, carries the complete sample
     // context to the result transaction produced by the corresponding
@@ -226,17 +239,16 @@ module nnAccelerator #(
         .full(sampleContextFull), .empty(sampleContextEmpty), .values()
     );
 
-    // Result readout state is pushed and popped with each matrix result.  It
-    // never participates in forward-path flow control; its capacity matches
-    // the paired output FIFO.
+    // One result entry carries every field needed at retirement.  The raw
+    // matrix vector is not persistent state after this FIFO accepts it.
     signedFifo #(
-        .WIDTH(PREDICTION_WIDTH+2*N),
+        .WIDTH(RESULT_ENTRY_WIDTH),
         .DEPTH(OUTPUT_FIFO_DEPTH)
-    ) resultReadoutFifo (
+    ) resultFifo (
         .clk(clk), .rst_n(rst_n),
-        .push(resultReadoutPush), .pushData(resultReadoutPushData),
-        .pop(resultReadoutPop), .popData(resultReadoutHead),
-        .full(), .empty(), .values()
+        .push(resultFifoPush), .pushData(resultFifoPushData),
+        .pop(resultFifoPop), .popData(resultFifoHead),
+        .full(resultFifoFull), .empty(resultFifoEmpty), .values()
     );
 
     // The accelerator owns the compact reduction update.  Stage zero samples
@@ -289,10 +301,19 @@ module nnAccelerator #(
         end
     end
 
+    // Framing is an accelerator-level retirement property.  It advances only
+    // when the externally visible result transaction retires, independent of
+    // the matrix engine's internal computation lifetime.
+    always_ff @(posedge clk) begin
+        if (!rst_n)
+            outputRowIndex <= '0;
+        else if (resultFifoPop)
+            outputRowIndex <= (outputRowIndex == N-1) ? 0 : outputRowIndex + 1;
+    end
+
     matrixMultiplierWeightStationary #(
         .WIDTH(WIDTH), .N(N),
-        .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH),
-        .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)
+        .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH)
     ) matrixEngine (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
@@ -301,21 +322,17 @@ module nnAccelerator #(
         .rowDirection(rowDirection), .columnDirection(columnDirection),
         .matrixUpdateValid(matrixUpdateValid),
         .datapathAdvance(matrixDatapathAdvance),
-        .resultEnqueue(matrixResultEnqueue),
-        .resultEnqueueData(rawResultEnqueueData),
         .resultValid(matrixResultValid), .resultReady(matrixResultReady),
-        .resultLast(matrixResultLast), .weightsLoaded(weightsLoaded),
+        .weightsLoaded(weightsLoaded),
         .reloadWeights(reloadWeights && reloadReady),
         .reloadReady(matrixReloadReady)
     );
 
-    activationLayer #(.WIDTH(MATRIX_RESULT_WIDTH), .N(N)) resultActivation (
-        .inputData(rawResultData), .passThrough(passThrough), .outputData(activatedData)
-    );
-
-    activationLayer #(.WIDTH(MATRIX_RESULT_WIDTH), .N(N)) enqueueActivation (
-        .inputData(rawResultEnqueueData), .passThrough(passThrough),
-        .outputData(activatedResultEnqueueData)
+    // This is the sole activation operation.  It runs on the aligned raw
+    // matrix result immediately before the result FIFO captures the entry.
+    activationLayer #(.WIDTH(MATRIX_RESULT_WIDTH), .N(N)) matrixResultActivation (
+        .inputData(rawResultData), .passThrough(passThrough),
+        .outputData(activatedMatrixResultData)
     );
 
     weightedVectorReduction #(
@@ -323,8 +340,8 @@ module nnAccelerator #(
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
         .N(N),
         .FRACTION_BITS(FRACTION_BITS)
-    ) weightedReadoutAtEnqueue (
-        .inputData(activatedResultEnqueueData),
+    ) weightedReadoutAtMatrixResult (
+        .inputData(activatedMatrixResultData),
         .reductionWeight(residentReductionWeight),
         .prediction(enqueuePrediction)
     );

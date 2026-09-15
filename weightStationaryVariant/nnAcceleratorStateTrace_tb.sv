@@ -38,7 +38,8 @@ module nnAcceleratorStateTrace_tb;
     integer scanned_pass_through, scanned_reduce_output;
     integer entry, lane, index;
     integer retired, retired_last, retired_prediction, retired_direction, retired_target;
-    integer retired_raw[0:N-1], retired_activated[0:N-1], retired_result[0:N-1];
+    integer retired_activated[0:N-1], retired_result[0:N-1];
+    integer enqueued_raw[0:N-1];
     string stimulus_path, trace_path;
     // Verification-only contract state. Stream quiescence describes only
     // accepted samples, buffered results, and learning updates. In particular,
@@ -49,6 +50,7 @@ module nnAcceleratorStateTrace_tb;
     logic configurationActive;
     logic configuredPassThrough, configuredReduceOutput;
     logic trace_datapath_advance, trace_output_blocked;
+    logic trace_matrix_result_handshake;
     logic trace_reduction_update_busy, trace_pipeline_busy, trace_result_align_busy;
     integer trace_matrix_wave_mask, trace_reduction_pipe_mask;
     integer trace_skew_valid_mask, trace_align_valid_mask;
@@ -76,9 +78,9 @@ module nnAcceleratorStateTrace_tb;
         !dut.matrixEngine.skewBusy &&
         !dut.matrixEngine.pipelineBusy &&
         !dut.matrixEngine.resultAlignBusy &&
-        dut.matrixEngine.outputEmpty &&
+        !dut.matrixEngine.resultValid &&
         dut.sampleContextEmpty &&
-        dut.resultReadoutFifo.empty &&
+        dut.resultFifo.empty &&
         !dut.reductionUpdateBusy;
 
     always_ff @(posedge clk) begin
@@ -108,9 +110,6 @@ module nnAcceleratorStateTrace_tb;
 
     task automatic dump_snapshot(input integer c);
         begin
-            if (dut.matrixEngine.outputVectorFifo.values !==
-                dut.resultReadoutFifo.values)
-                $fatal(1, "output and readout FIFO occupancies diverged at cycle %0d", c);
             $fwrite(trace_fd, "C %0d\n", c);
             $fwrite(trace_fd, "W %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
                 $signed(dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg),
@@ -144,20 +143,15 @@ module nnAcceleratorStateTrace_tb;
                     $fwrite(trace_fd, " %0d", $signed(dut.sampleContextFifo.data[index][2*lane+1 +: 2]));
                 $fwrite(trace_fd, " %0d", dut.sampleContextFifo.data[index][0]);
             end
-            $fwrite(trace_fd, "\nOF %0d", dut.matrixEngine.outputVectorFifo.values);
-            for (entry = 0; entry < dut.matrixEngine.outputVectorFifo.values; entry++) begin
-                index = dut.matrixEngine.outputVectorFifo.readPtr + entry;
+            $fwrite(trace_fd, "\nRF %0d", dut.resultFifo.values);
+            for (entry = 0; entry < dut.resultFifo.values; entry++) begin
+                index = dut.resultFifo.readPtr + entry;
                 if (index >= OUTPUT_FIFO_DEPTH) index = index - OUTPUT_FIFO_DEPTH;
                 for (lane = 0; lane < N; lane++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.outputVectorFifo.data[index][lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH]));
-            end
-            $fwrite(trace_fd, "\nRF %0d", dut.resultReadoutFifo.values);
-            for (entry = 0; entry < dut.resultReadoutFifo.values; entry++) begin
-                index = dut.resultReadoutFifo.readPtr + entry;
-                if (index >= OUTPUT_FIFO_DEPTH) index = index - OUTPUT_FIFO_DEPTH;
-                $fwrite(trace_fd, " %0d", $signed(dut.resultReadoutFifo.data[index][PREDICTION_WIDTH+2*N-1:2*N]));
+                    $fwrite(trace_fd, " %0d", $signed(dut.resultFifo.data[index][lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH]));
+                $fwrite(trace_fd, " %0d", $signed(dut.resultFifo.data[index][N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH]));
                 for (lane = 0; lane < N; lane++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.resultReadoutFifo.data[index][2*lane +: 2]));
+                    $fwrite(trace_fd, " %0d", $signed(dut.resultFifo.data[index][N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH+2*lane +: 2]));
             end
             $fwrite(trace_fd, "\n");
         end
@@ -212,6 +206,18 @@ module nnAcceleratorStateTrace_tb;
             // but before this cycle's rising edge.  The post-edge snapshot
             // alone describes the next edge after FIFO state may have moved.
             #1ps;
+            retired = resultValid && resultReady;
+            retired_last = resultLast;
+            retired_prediction = $signed(dut.prediction);
+            retired_direction = $signed(learningDirection);
+            retired_target = $signed(resultTargetData);
+            for (lane = 0; lane < N; lane++) begin
+                retired_activated[lane] = $signed(dut.activatedData[lane]);
+                retired_result[lane] = $signed(resultData[lane]);
+            end
+            trace_matrix_result_handshake = dut.matrixResultValid && dut.matrixResultReady;
+            for (lane = 0; lane < N; lane++)
+                enqueued_raw[lane] = $signed(dut.rawResultData[lane]);
             trace_datapath_advance = dut.matrixEngine.datapathAdvance;
             trace_output_blocked = dut.matrixEngine.outputBlocked;
             trace_reduction_update_busy = dut.reductionUpdateBusy;
@@ -236,14 +242,6 @@ module nnAcceleratorStateTrace_tb;
                     if (dut.matrixEngine.resultAlignValid[lane][index])
                         trace_align_valid_mask |= (1 << (lane*(N-1) + index));
             @(posedge clk);
-            retired = resultValid && resultReady;
-            retired_last = resultLast; retired_prediction = $signed(dut.prediction);
-            retired_direction = $signed(learningDirection); retired_target = $signed(resultTargetData);
-            for (lane = 0; lane < N; lane++) begin
-                retired_raw[lane] = $signed(dut.rawResultData[lane]);
-                retired_activated[lane] = $signed(dut.activatedData[lane]);
-                retired_result[lane] = $signed(resultData[lane]);
-            end
             #1ps;
             dump_snapshot(c);
             // Verification-only hierarchical evidence.  These are internal
@@ -254,10 +252,12 @@ module nnAcceleratorStateTrace_tb;
                 trace_result_align_busy, trace_matrix_wave_mask,
                 trace_reduction_pipe_mask, trace_skew_valid_mask,
                 trace_align_valid_mask);
+            if (trace_matrix_result_handshake) $fwrite(trace_fd,
+                "ENQ %0d %0d %0d %0d\n", c,
+                enqueued_raw[0], enqueued_raw[1], enqueued_raw[2]);
             if (retired) $fwrite(trace_fd,
-                "RT %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
-                c, retired_raw[0], retired_raw[1], retired_raw[2],
-                retired_activated[0], retired_activated[1], retired_activated[2],
+                "RT %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
+                c, retired_activated[0], retired_activated[1], retired_activated[2],
                 retired_prediction, retired_direction, retired_target,
                 retired_result[0], retired_result[1], retired_result[2], retired_last);
         end

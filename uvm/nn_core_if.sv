@@ -23,7 +23,6 @@ interface nn_core_if #(
     logic signed [RESULT_WIDTH-1:0] resultData [N];
     logic resultValid;
     logic resultReady;
-    logic resultLast;
 
     logic weightsLoaded;
     logic reloadWeights;
@@ -38,7 +37,7 @@ interface nn_core_if #(
         input rst_n;
         input weightData, weightValid, weightReady;
         input activationData, activationValid, activationReady;
-        input resultData, resultValid, resultReady, resultLast;
+        input resultData, resultValid, resultReady;
         input weightsLoaded, reloadWeights, reloadReady;
     endclocking
 
@@ -51,7 +50,7 @@ interface nn_core_if #(
             property p_result_stable_while_waiting;
                 @(posedge clk) disable iff (!rst_n)
                     resultValid && !resultReady |=>
-                    resultValid && $stable(resultData[lane]) && $stable(resultLast);
+                    resultValid && $stable(resultData[lane]);
             endproperty
             assert property (p_result_stable_while_waiting)
                 else $error("NN_UVM_RESULT_STABLE: result lane %0d changed while stalled", lane);

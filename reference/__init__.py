@@ -11,7 +11,7 @@ from .cycle import (
     CycleInputs,
     CycleReference,
     CycleSnapshot,
-    ResultReadout,
+    ResultEntry,
     SampleContext,
 )
 
@@ -24,6 +24,6 @@ __all__ = [
     "CycleInputs",
     "CycleReference",
     "CycleSnapshot",
-    "ResultReadout",
+    "ResultEntry",
     "SampleContext",
 ]

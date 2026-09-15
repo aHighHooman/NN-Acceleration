@@ -35,7 +35,7 @@ module matrixMultiplierWeightStationary_testcase #(
     logic weightValid, weightReady, activationValid, activationReady;
     logic signed [1:0] noRowDirection[N], noColumnDirection[N];
     result_t resultData[N];
-    logic resultValid, resultReady, resultLast;
+    logic resultValid, resultReady;
     logic weightsLoaded, reloadWeights, reloadReady;
     logic streamQuiescent;
 
@@ -46,19 +46,17 @@ module matrixMultiplierWeightStationary_testcase #(
         .activationReady(activationReady),
         .rowDirection(noRowDirection),
         .columnDirection(noColumnDirection), .matrixUpdateValid(1'b0),
-        .datapathAdvance(), .resultEnqueue(), .resultEnqueueData(),
+        .datapathAdvance(),
         .resultData(resultData),
         .resultValid(resultValid), .resultReady(resultReady),
-        .resultLast(resultLast),
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights), .reloadReady(reloadReady)
     );
 
-    // Verification-only stream state deliberately excludes outputRowIndex.
-    // The matrix reload boundary is stricter because it also requires that
-    // frame position to be zero.
+    // The matrix engine has no terminal result storage or frame state.  Its
+    // reload boundary is the drain of its own computation and alignment state.
     assign streamQuiescent = dut.activationEmpty && !dut.skewBusy &&
                              !dut.pipelineBusy && !dut.resultAlignBusy &&
-                             dut.outputEmpty;
+                             !dut.resultValid;
 
     initial begin
         clk = 1'b0;
@@ -121,7 +119,7 @@ module matrixMultiplierWeightStationary_testcase #(
         // Two activation matrices are transmitted back-to-back under one stationary weight matrix.
         send_weights("identity weights", weight_identity, NO_BUBBLES);
         if (N == 3)
-            check_reload_frame_bookkeeping(weight_identity);
+            check_reload_bookkeeping(weight_identity);
         fork
             begin
                 send_activations("basic activations", activation_basic, NO_BUBBLES);
@@ -353,10 +351,6 @@ module matrixMultiplierWeightStationary_testcase #(
                 @(posedge clk);
                 if (resultValid && resultReady) begin
                     for (int col = 0; col < N; col++) actual[row][col] = resultData[col];
-                    if (resultLast !== (row == N-1)) begin
-                        $error("%0dx%0d %s resultLast mismatch on row %0d", N, N, label, row);
-                        errors++;
-                    end
                     accepted = 1'b1;
                 end
             end
@@ -390,14 +384,12 @@ module matrixMultiplierWeightStationary_testcase #(
         @(negedge clk) activationValid = 1'b0;
     endtask
 
-    task wait_for_result_handshake(input bit expected_last, input string label);
+    task wait_for_result_handshake(input string label);
         int guard;
 
         guard = 0;
         while (1) begin
             if (resultValid && resultReady) begin
-                if (resultLast !== expected_last)
-                    $fatal(1, "%0dx%0d %s resultLast mismatch", N, N, label);
                 @(posedge clk);
                 break;
             end
@@ -420,74 +412,38 @@ module matrixMultiplierWeightStationary_testcase #(
         end
     endtask
 
-    task check_reload_frame_bookkeeping(input matrix_t weight_matrix);
-        data_t sample0[N], sample1[N], sample2[N];
+    task check_reload_bookkeeping(input matrix_t weight_matrix);
+        data_t sample0[N];
 
         for (int lane = 0; lane < N; lane++) begin
             sample0[lane] = lane + 1;
-            sample1[lane] = lane + 2;
-            sample2[lane] = lane + 3;
         end
 
-        // Case A: one N=3 row drains completely. Stream configuration may
-        // change at this boundary, but the partial output frame may not reload.
+        // A direct matrix-engine result handshake drains the aligned result;
+        // there is no matrix-owned output frame position or result storage.
         resultReady = 1'b1;
         send_single_activation(sample0);
-        wait_for_result_handshake(1'b0, "one-sample drain");
+        wait_for_result_handshake("one-sample drain");
         wait_for_stream_quiescent("one-sample drain");
-        if (dut.outputRowIndex !== 1 || reloadReady !== 1'b0)
-            $fatal(1, "%0dx%0d one-sample drain frame/reload state mismatch", N, N);
-        @(negedge clk) reloadWeights = 1'b1;
-        @(posedge clk);
-        @(negedge clk) reloadWeights = 1'b0;
-        if (weightsLoaded !== 1'b1 || dut.outputRowIndex !== 1)
-            $fatal(1, "%0dx%0d partial-frame reload was accepted", N, N);
-
-        // Case D: output backpressure holds the frame position and keeps
-        // reload blocked until the actual result handshake.
-        resultReady = 1'b0;
-        send_single_activation(sample1);
-        while (!resultValid) @(negedge clk);
-        repeat (3) begin
-            @(negedge clk);
-            if (dut.outputRowIndex !== 1 || reloadReady !== 1'b0)
-                $fatal(1, "%0dx%0d output position changed under backpressure", N, N);
-        end
-        @(negedge clk) reloadWeights = 1'b1;
-        @(posedge clk);
-        @(negedge clk) reloadWeights = 1'b0;
-        if (weightsLoaded !== 1'b1 || dut.outputRowIndex !== 1)
-            $fatal(1, "%0dx%0d backpressured partial-frame reload was accepted", N, N);
-        resultReady = 1'b1;
-        wait_for_result_handshake(1'b0, "backpressure release");
-        wait_for_stream_quiescent("backpressure release");
-        if (dut.outputRowIndex !== 2 || reloadReady !== 1'b0)
-            $fatal(1, "%0dx%0d post-handshake frame/reload state mismatch", N, N);
-
-        // Cases B/C: the final row wraps the output position, presents the
-        // only last marker, and makes a complete-frame reload legal.
-        send_single_activation(sample2);
-        wait_for_result_handshake(1'b1, "complete N-row frame");
-        wait_for_stream_quiescent("complete N-row frame");
-        if (dut.outputRowIndex !== 0 || reloadReady !== 1'b1)
-            $fatal(1, "%0dx%0d complete-frame reload state mismatch", N, N);
+        if (reloadReady !== 1'b1)
+            $fatal(1, "%0dx%0d drained matrix engine did not become reload-ready", N, N);
         request_weight_reload();
-        send_weights("focused complete-frame reload", weight_matrix, NO_BUBBLES);
-        $display("PASS: 3x3 partial-frame quiescence, handshake-only output position, resultLast, and reload boundary");
+        send_weights("focused direct-result reload", weight_matrix, NO_BUBBLES);
+        $display("PASS: 3x3 direct aligned result handshake, drain, and reload boundary");
     endtask
 
     result_t heldResult[N];
-    logic heldLast, holdingResult;
+    logic holdingResult;
     always_ff @(posedge clk) begin
         if (!rst_n) holdingResult <= 1'b0;
         else if (resultValid && !resultReady) begin
             if (holdingResult) begin
                 for (int i = 0; i < N; i++)
                     assert(resultData[i] == heldResult[i]) else $error("Output changed under backpressure");
-                assert(resultLast == heldLast) else $error("resultLast changed under backpressure");
             end
+            assert(dut.datapathAdvance == 1'b0)
+                else $error("Datapath advanced while aligned result was not ready");
             for (int i = 0; i < N; i++) heldResult[i] <= resultData[i];
-            heldLast <= resultLast;
             holdingResult <= 1'b1;
         end else holdingResult <= 1'b0;
     end

@@ -1,8 +1,7 @@
 module matrixMultiplierWeightStationary #(
     parameter int WIDTH = 16,
     parameter int N = 3,
-    parameter int INPUT_FIFO_DEPTH = 2*N,
-    parameter int OUTPUT_FIFO_DEPTH = 2*N
+    parameter int INPUT_FIFO_DEPTH = 2*N
 )(
     input  logic                         clk,
     input  logic                         rst_n,
@@ -18,26 +17,19 @@ module matrixMultiplierWeightStationary #(
     output logic signed [2*WIDTH+$clog2(N)-1:0] resultData [N],
     output logic                         resultValid,
     input  logic                         resultReady,
-    output logic                         resultLast,
     output logic                         weightsLoaded,
     input  logic                         reloadWeights,
     output logic                         reloadReady,
-    output logic                         datapathAdvance,
-    output logic                         resultEnqueue,
-    output logic signed [2*WIDTH+$clog2(N)-1:0] resultEnqueueData [N]
+    output logic                         datapathAdvance
 );
 
     localparam int WEIGHT_COUNT_WIDTH   = $clog2(N+1);
-    localparam int OUTPUT_ROW_WIDTH     = $clog2(N);
     localparam int RESULT_WIDTH         = $clog2(N) + 2*WIDTH;
     localparam int VECTOR_WIDTH         = N * WIDTH;
-    localparam int RESULT_VECTOR_WIDTH  = N * RESULT_WIDTH;
 
     logic weightPush, consumePendingWeightRow;
     logic activationPush, activationPop;
-    logic outputPop;
     logic [WEIGHT_COUNT_WIDTH-1:0] loadedWeightRows;
-    logic [OUTPUT_ROW_WIDTH-1:0] outputRowIndex;
 
     logic signed [WIDTH-1:0] pendingWeightRow [N];
     logic pendingWeightValid;
@@ -46,10 +38,6 @@ module matrixMultiplierWeightStationary #(
     logic signed [VECTOR_WIDTH-1:0] activationVectorHead;
     logic signed [WIDTH-1:0] queuedActivation[N];
     logic activationFull, activationEmpty;
-    logic signed [RESULT_VECTOR_WIDTH-1:0] outputVectorPushData;
-    logic signed [RESULT_VECTOR_WIDTH-1:0] outputVectorHead;
-    logic signed [RESULT_WIDTH-1:0] outputVectorLaneData[N];
-    logic outputFull, outputEmpty;
     localparam int RESULT_ALIGN_STORAGE = (N > 1) ? N-1 : 1;
     logic signed [RESULT_WIDTH-1:0]
         resultAlignData[N][RESULT_ALIGN_STORAGE];
@@ -66,11 +54,8 @@ module matrixMultiplierWeightStationary #(
 
     always_comb begin
         activationVectorPushData = '0;
-        outputVectorPushData     = '0;
         for (int lane = 0; lane < N; lane++) begin
             activationVectorPushData[lane*WIDTH +: WIDTH] = activationData[lane];
-            outputVectorPushData[lane*RESULT_WIDTH +: RESULT_WIDTH] =
-                resultAlignedData[lane];
         end
     end
 
@@ -78,14 +63,12 @@ module matrixMultiplierWeightStationary #(
         for (int lane = 0; lane < N; lane++) begin
             queuedActivation[lane] =
                 activationVectorHead[lane*WIDTH +: WIDTH];
-            outputVectorLaneData[lane] =
-                outputVectorHead[lane*RESULT_WIDTH +: RESULT_WIDTH];
         end
     end
 
     // The systolic columns finish one cycle apart.  Delay the earlier columns
-    // by the missing suffix of that fixed latency so the normal result FIFO
-    // accepts complete vectors atomically.  These registers are ordinary
+    // by the missing suffix of that fixed latency so the result interface
+    // presents complete vectors atomically.  These registers are ordinary
     // datapath state and use the same advance enable as the array.
     generate
         for (genvar alignLane = 0; alignLane < N; alignLane++) begin : result_alignment
@@ -129,10 +112,11 @@ module matrixMultiplierWeightStationary #(
         end
     end
 
-    // The aligned result vector is the only transaction that can be blocked
-    // by the output FIFO.  signedFifo permits a simultaneous pop when full,
-    // matching the old lockstep lane FIFO behavior.
-    assign outputBlocked    = resultAlignedAllValid && outputFull && !outputPop;
+    // The aligned result is the matrix engine's terminal interface.  The
+    // accelerator owns the result FIFO and presents its capacity as
+    // resultReady.  If a complete vector is waiting and that interface is not
+    // ready, every shared datapath register freezes exactly as before.
+    assign outputBlocked    = resultAlignedAllValid && !resultReady;
 
     // A pending row can be replaced on the same edge on which it is consumed,
     // except when that consumption completes the current N-row matrix.
@@ -144,34 +128,19 @@ module matrixMultiplierWeightStationary #(
     assign weightPush       = weightValid && weightReady;
     assign activationReady  = weightsLoaded && !activationFull;
     assign activationPush   = activationValid && activationReady;
-    assign outputPop        = resultValid && resultReady;
-    assign resultValid      = !outputEmpty;
-    assign resultLast       = resultValid && (outputRowIndex == N-1);
+    assign resultValid      = resultAlignedAllValid;
     assign arrayAdvance     = !weightsLoaded ? consumePendingWeightRow : !outputBlocked;
     assign datapathAdvance = arrayAdvance;
-    assign resultEnqueue = arrayAdvance && resultAlignedAllValid;
-    // Expose the complete result vector at the same edge on which the normal
-    // output FIFOs accept it. The accelerator uses this only to capture the
-    // reduction metadata alongside the ordinary result; it is not a second
-    // flow-control path.
-    genvar enqueueLane;
-    generate
-        for (enqueueLane = 0; enqueueLane < N; enqueueLane = enqueueLane + 1) begin : enqueue_result_data
-            assign resultEnqueueData[enqueueLane] = resultAlignedData[enqueueLane];
-        end
-    endgenerate
     assign activationPop    = weightsLoaded && !activationEmpty && arrayAdvance;
-    // Stream quiescence is represented by the distributed empty/busy state.
-    // Reload readiness is stricter: a complete N-row output frame must also
-    // have retired, leaving the output frame position at row zero.
+    // The matrix engine reports only its own computation state.  Result
+    // storage and output framing belong to nnAccelerator.
     assign reloadReady      = weightsLoaded && activationEmpty && !skewBusy &&
-                              !pipelineBusy && !resultAlignBusy && outputEmpty &&
-                              (outputRowIndex == 0);
+                              !pipelineBusy && !resultAlignBusy && !resultValid;
 
     genvar resultLane;
     generate
         for (resultLane = 0; resultLane < N; resultLane = resultLane + 1) begin : output_lanes
-            assign resultData[resultLane] = outputVectorLaneData[resultLane];
+            assign resultData[resultLane] = resultAlignedData[resultLane];
         end
     endgenerate
 
@@ -180,14 +149,6 @@ module matrixMultiplierWeightStationary #(
         .pushData(activationVectorPushData), .pop(activationPop),
         .popData(activationVectorHead), .full(activationFull),
         .empty(activationEmpty), .values()
-    );
-
-    signedFifo #(.WIDTH(RESULT_VECTOR_WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)) outputVectorFifo (
-        .clk(clk), .rst_n(rst_n),
-        .push(arrayAdvance && resultAlignedAllValid),
-        .pushData(outputVectorPushData), .pop(outputPop),
-        .popData(outputVectorHead), .full(outputFull), .empty(outputEmpty),
-        .values()
     );
 
     genvar laneIndex;
@@ -202,7 +163,6 @@ module matrixMultiplierWeightStationary #(
         if (!rst_n) begin
             weightsLoaded        <= 0;
             loadedWeightRows     <= 0;
-            outputRowIndex       <= 0;
             pendingWeightValid   <= 0;
 
             for (int lane = 0; lane < N; lane++) begin
@@ -234,10 +194,6 @@ module matrixMultiplierWeightStationary #(
                 end else begin
                     loadedWeightRows <= loadedWeightRows + 1;
                 end
-            end
-
-            if (outputPop) begin
-                outputRowIndex <= (outputRowIndex == N-1) ? 0 : outputRowIndex + 1;
             end
 
             if (reloadWeights && reloadReady) begin

@@ -188,7 +188,7 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     backpressure_cycles.extend(_idle_cycle(ready=True) for _ in range(32))
     add_scenario("output_backpressure", backpressure_cycles)
 
-    # 6L: train one result before the output FIFO fills, then hold the real
+    # 6L: train one result before the result FIFO fills, then hold the real
     # datapath while its matrix wave and reduction-delay package are live.
     # The fifth result is training-enabled and was enqueued with R=(1,1,1).
     # The first retired package changes resident R to zero before that result
@@ -224,7 +224,7 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
             ready=True,
         )
     )
-    # Two held cycles occur after the output FIFO becomes full.  The second
+    # Two held cycles occur after the result FIFO becomes full.  The second
     # activation is accepted on the first advancing edge after the stall.
     phase6l_cycles.extend(_idle_cycle(ready=False) for _ in range(4))
     phase6l_cycles.append(
@@ -370,8 +370,11 @@ def _parse_counted(fields: list[str], width: int) -> tuple[tuple[int, ...], ...]
     return tuple(values[i * width:(i + 1) * width] for i in range(count))
 
 
-def read_trace(path: Path) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+def read_trace(
+    path: Path,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
     snapshots: list[dict[str, object]] = []
+    enqueues: list[dict[str, object]] = []
     retirements: list[dict[str, object]] = []
     current: dict[str, object] | None = None
     for line_number, line in enumerate(path.read_text(encoding="ascii").splitlines(), 1):
@@ -381,13 +384,30 @@ def read_trace(path: Path) -> tuple[list[dict[str, object]], list[dict[str, obje
         if f[0] == "C":
             current = {"cycle": int(f[1])}
             snapshots.append(current)
+        elif f[0] == "ENQ":
+            if len(f) != N + 2:
+                raise ValueError(f"bad ENQ record at trace line {line_number}")
+            enqueues.append({
+                "cycle": int(f[1]),
+                "raw": tuple(map(int, f[2:])),
+            })
         elif f[0] == "RT":
-            if len(f) != 15:
+            if len(f) != 2*N + 6:
                 raise ValueError(f"bad RT record at trace line {line_number}")
-            retirements.append({"cycle": int(f[1]), "raw": tuple(map(int, f[2:5])),
-                "activated": tuple(map(int, f[5:8])), "prediction": int(f[8]),
-                "direction": int(f[9]), "target": int(f[10]),
-                "result": tuple(map(int, f[11:14])), "last": int(f[14])})
+            activated_start = 2
+            prediction_index = activated_start + N
+            direction_index = prediction_index + 1
+            target_index = direction_index + 1
+            result_start = target_index + 1
+            retirements.append({
+                "cycle": int(f[1]),
+                "activated": tuple(map(int, f[activated_start:prediction_index])),
+                "prediction": int(f[prediction_index]),
+                "direction": int(f[direction_index]),
+                "target": int(f[target_index]),
+                "result": tuple(map(int, f[result_start:result_start+N])),
+                "last": int(f[result_start+N]),
+            })
         elif current is None:
             raise ValueError(f"trace data before C at line {line_number}")
         elif f[0] == "W":
@@ -399,14 +419,17 @@ def read_trace(path: Path) -> tuple[list[dict[str, object]], list[dict[str, obje
             if len(entries) > 1:
                 raise ValueError(f"bad PW trace payload at line {line_number}")
             current["pending_weight_row"] = entries[0] if entries else None
-        elif f[0] in ("AF", "OF"):
-            current[{"AF": "activation_fifo", "OF": "output_fifo"}[f[0]]] = _parse_counted(f, N)
+        elif f[0] == "AF":
+            current["activation_fifo"] = _parse_counted(f, N)
         elif f[0] == "SF":
             entries = _parse_counted(f, N + 2)
             current["sample_context_fifo"] = tuple((e[0], tuple(e[1:1+N]), bool(e[-1])) for e in entries)
         elif f[0] == "RF":
-            entries = _parse_counted(f, N + 1)
-            current["result_readout_fifo"] = tuple((e[0], tuple(e[1:])) for e in entries)
+            entries = _parse_counted(f, 2*N + 1)
+            current["result_fifo"] = tuple(
+                (tuple(entry[:N]), entry[N], tuple(entry[N+1:]))
+                for entry in entries
+            )
         elif f[0] == "P":
             if len(f) != 11:
                 raise ValueError(f"bad P record at trace line {line_number}")
@@ -415,7 +438,7 @@ def read_trace(path: Path) -> tuple[list[dict[str, object]], list[dict[str, obje
             current["datapath_progress"] = tuple(int(value) for value in f[2:])
         else:
             raise ValueError(f"unknown trace record {f[0]} at line {line_number}")
-    return snapshots, retirements
+    return snapshots, enqueues, retirements
 
 
 def _fail(cycle: int, field: str, expected: object, actual: object) -> None:
@@ -439,13 +462,20 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
                          target_width=TARGET_WIDTH, reduction_weight_width=REDUCTION_WEIGHT_WIDTH)
     cycle_model = CycleReference(config)
     expected = []
+    expected_enqueues: list[dict[str, object]] = []
     for driven_cycle in inputs:
         cycle_model.reconfigure(
             pass_through=driven_cycle.pass_through,
             reduce_output=driven_cycle.reduce_output,
         )
-        expected.append(cycle_model.step(driven_cycle.inputs))
-    actual, retirements = read_trace(trace_path)
+        snapshot = cycle_model.step(driven_cycle.inputs)
+        expected.append(snapshot)
+        if cycle_model._last_enqueued_raw_result is not None:
+            expected_enqueues.append({
+                "cycle": snapshot.cycle,
+                "raw": cycle_model._last_enqueued_raw_result,
+            })
+    actual, enqueues, retirements = read_trace(trace_path)
     if len(actual) != len(expected):
         raise AssertionError(f"trace has {len(actual)} snapshots; expected {len(expected)}")
 
@@ -466,7 +496,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         for lane in range(N):
             if exp.R[lane] != actual_R[lane]:
                 _fail(cycle, f"R[{lane}]", exp.R[lane], actual_R[lane])
-        for field in ("pending_weight_row", "activation_fifo", "output_fifo"):
+        for field in ("pending_weight_row", "activation_fifo"):
             left = getattr(exp, field); right = act.get(field)
             if isinstance(left, tuple) and isinstance(right, tuple):
                 _compare_sequence(cycle, field, left, right)
@@ -474,18 +504,26 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
                 _fail(cycle, field, left, right)
         exp_context = tuple((e.target, e.input_signs, e.training_enable) for e in exp.sample_context_fifo)
         _compare_sequence(cycle, "sampleContextFifo", exp_context, act.get("sample_context_fifo", ()))
-        exp_readout = tuple((e.prediction, e.reduction_weight_signs) for e in exp.result_readout_fifo)
-        actual_readout = act.get("result_readout_fifo", ())
-        _compare_sequence(cycle, "resultReadoutFifo", exp_readout, actual_readout)
-        actual_output = act.get("output_fifo", ())
-        if len(exp.output_fifo) != len(exp.result_readout_fifo):
-            _fail(cycle, "reference output/readout FIFO occupancy pairing",
-                  len(exp.output_fifo), len(exp.result_readout_fifo))
-        if len(actual_output) != len(actual_readout):
-            _fail(cycle, "output/readout FIFO occupancy pairing", len(actual_output), len(actual_readout))
+        exp_results = tuple(
+            (entry.activated_result, entry.prediction, entry.reduction_weight_signs)
+            for entry in exp.result_fifo
+        )
+        _compare_sequence(cycle, "resultFifo", exp_results, act.get("result_fifo", ()))
         progress = act.get("datapath_progress")
         if not isinstance(progress, tuple) or len(progress) != 9:
             _fail(cycle, "datapath progress trace", "nine fields", progress)
+
+    if len(enqueues) != len(expected_enqueues):
+        raise AssertionError(
+            f"trace has {len(enqueues)} matrix-result enqueues; expected {len(expected_enqueues)}"
+        )
+    for expected_enqueue, actual_enqueue in zip(expected_enqueues, enqueues):
+        cycle = int(expected_enqueue["cycle"])
+        if actual_enqueue.get("cycle") != cycle:
+            _fail(cycle, "matrix-result enqueue cycle", cycle, actual_enqueue.get("cycle"))
+        if actual_enqueue.get("raw") != expected_enqueue["raw"]:
+            _fail(cycle, "raw matrix result at matrix-result handshake",
+                  expected_enqueue["raw"], actual_enqueue.get("raw"))
 
     functional_comparisons = 0
     for comparison in comparison_inputs.functional_comparisons:
@@ -494,16 +532,22 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
             pass_through=comparison.pass_through, reduce_output=comparison.reduce_output),
             comparison.W, comparison.R)
         records = model.run(comparison.samples)
+        enqueued = [r for r in enqueues
+                    if comparison.start_cycle <= int(r["cycle"]) <= comparison.end_cycle]
         retired = [r for r in retirements
                    if comparison.start_cycle <= int(r["cycle"]) <= comparison.end_cycle]
-        if len(retired) != len(records):
+        if len(enqueued) != len(records) or len(retired) != len(records):
             raise AssertionError(
-                f"{comparison.name}: retired {len(retired)} results; expected {len(records)}"
+                f"{comparison.name}: enqueued {len(enqueued)}, retired {len(retired)}; "
+                f"expected {len(records)} each"
             )
-        for index, (record, rtl) in enumerate(zip(records, retired)):
+        for index, (record, enqueued_rtl, rtl) in enumerate(zip(records, enqueued, retired)):
             cycle = int(rtl["cycle"])
-            checks = (("raw matrix result", record.raw_matrix_result, rtl["raw"]),
-                      ("activated result", record.activated_result, rtl["activated"]),
+            enqueue_cycle = int(enqueued_rtl["cycle"])
+            if record.raw_matrix_result != enqueued_rtl["raw"]:
+                _fail(enqueue_cycle, f"{comparison.name} sample {index} raw matrix result",
+                      record.raw_matrix_result, enqueued_rtl["raw"])
+            checks = (("activated result", record.activated_result, rtl["activated"]),
                       ("prediction", record.prediction, rtl["prediction"]),
                       ("learning direction", record.learning_direction, rtl["direction"]),
                       ("target", record.target, rtl["target"]))
@@ -553,7 +597,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
     e0 = inference.start_cycle + len(
         _reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
     )
-    if expected[e0 + 6].output_fifo or len(expected[e0 + 7].output_fifo) != 1:
+    if expected[e0 + 6].result_fifo or len(expected[e0 + 7].result_fifo) != 1:
         raise AssertionError("continuous inference did not demonstrate E0 -> E7 enqueue timing")
     inference_retirements = [int(r["cycle"]) for r in retirements
                              if inference.start_cycle <= int(r["cycle"]) <= inference.end_cycle]
@@ -565,25 +609,23 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         if scenario.name == "output_backpressure"
     )
     states = [expected[i] for i in range(backpressure.start_cycle, backpressure.end_cycle + 1)]
-    held = any(len(states[i].output_fifo) == config.output_fifo_depth and
+    held = any(len(states[i].result_fifo) == config.output_fifo_depth and
                states[i].W == states[i-1].W and states[i].R == states[i-1].R and
                states[i].pending_weight_row == states[i-1].pending_weight_row and
                states[i].activation_fifo == states[i-1].activation_fifo and
                states[i].sample_context_fifo == states[i-1].sample_context_fifo and
-               states[i].output_fifo == states[i-1].output_fifo and
-               states[i].result_readout_fifo == states[i-1].result_readout_fifo
+               states[i].result_fifo == states[i-1].result_fifo
                for i in range(1, len(states)))
     if not held:
         raise AssertionError("output_backpressure did not produce a held architectural snapshot")
     simultaneous_full_pop_push = any(
         backpressure.start_cycle < cycle <= backpressure.end_cycle
-        and len(expected[cycle - 1].output_fifo) == config.output_fifo_depth
+        and len(expected[cycle - 1].result_fifo) == config.output_fifo_depth
         and inputs[cycle].inputs.result_ready
-        and expected[cycle - 1].output_fifo
-        and expected[cycle - 1].result_readout_fifo
+        and expected[cycle - 1].result_fifo
         and expected[cycle - 1].sample_context_fifo
-        and len(expected[cycle].output_fifo) == config.output_fifo_depth
-        and expected[cycle].output_fifo != expected[cycle - 1].output_fifo
+        and len(expected[cycle].result_fifo) == config.output_fifo_depth
+        and expected[cycle].result_fifo != expected[cycle - 1].result_fifo
         for cycle in range(backpressure.start_cycle + 1, backpressure.end_cycle + 1)
     )
     if not simultaneous_full_pop_push:
@@ -627,13 +669,13 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         during = phase6l_states[cycle]
         architectural_fields = (
             "W", "R", "pending_weight_row", "activation_fifo", "sample_context_fifo",
-            "output_fifo", "result_readout_fifo",
+            "result_fifo",
         )
         if any(getattr(before, field) != getattr(during, field) for field in architectural_fields):
             raise AssertionError(
                 f"phase6L architectural state moved during the held stall at cycle {cycle}"
             )
-        if len(during.output_fifo) != config.output_fifo_depth:
+        if len(during.result_fifo) != config.output_fifo_depth:
             raise AssertionError(
                 f"phase6L stall at cycle {cycle} was not caused by a full output buffer"
             )
@@ -668,7 +710,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
     buffered_result_index = 4
     buffered_retirement = phase6l_retirements[buffered_result_index]
     buffered_before_retire = phase6l_states[buffered_retirement - 1]
-    stored_signs = buffered_before_retire.result_readout_fifo[0].reduction_weight_signs
+    stored_signs = buffered_before_retire.result_fifo[0].reduction_weight_signs
     resident_signs = tuple(1 if value > 0 else -1 if value < 0 else 0
                            for value in buffered_before_retire.R)
     if stored_signs != (1, 1, 1) or resident_signs != (0, 0, 0):
