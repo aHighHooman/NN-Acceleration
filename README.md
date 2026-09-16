@@ -20,8 +20,8 @@ flowchart LR
 
     subgraph CORE["Accelerator clock domain (`clk`)"]
         W_FIFO["weight-vector FIFO<br/>depth N"]
-        I_FIFO["input-vector FIFO<br/>depth INPUT_FIFO_DEPTH"]
-        S_FIFO["sampleContextFifo<br/>target + input signs + training"]
+        I_FIFO["one-deep activation skid"]
+        S_FIFO["sampleContextFifo<br/>depth IN_FLIGHT_DEPTH"]
         SKEW["Input skew network"]
         ARRAY["N x N weight-stationary PE array"]
         ALIGN["Complete-result alignment"]
@@ -41,10 +41,12 @@ flowchart LR
     RETIRE --> R_UPDATE
 ```
 
-The core has three architectural FIFOs: the input-vector FIFO,
-`sampleContextFifo`, and the accelerator-owned `resultFifo`. Each result FIFO
-entry is one transaction containing the activated vector, its prediction, and
-the resident reduction-weight signs used to produce that prediction.
+The core has two architectural FIFOs, `sampleContextFifo` and the
+accelerator-owned `resultFifo`, plus a fixed one-entry activation skid inside
+the matrix engine. `IN_FLIGHT_DEPTH` is the admission-control capacity for
+accepted samples that have not yet retired. Each result FIFO entry is one
+transaction containing the activated vector, its prediction, and the resident
+reduction-weight signs used to produce that prediction.
 
 Each processing element stores one weight and performs a signed multiply-accumulate while forwarding the input and partial sum:
 
@@ -125,7 +127,7 @@ continues to use their live, configuration-lifetime values.
 - A PE multiply and the weighted reduction both use their resident weights present before an update edge. Accepting the last old-state result applies the reduction direction directly to the sole resident reduction vector with signed one-LSB saturation; the next sample then uses both the updated matrix and updated reduction weights. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
 - In continuous no-stall traffic, a sample's scalar prediction is available after `2*N-1` cycles, its learning direction is formed combinationally in that cycle, and PE(0,0) applies the update on the following edge. The sample on that edge still uses the old weight; the next sample is the first affected, so update `U_S` first affects sample `S + 2*N + 1` (distance 7 for `N=3`).
 - The matrix and reduction update mechanisms are separate from result storage: a full `resultFifo` freezes the aligned matrix datapath and both update paths together until a result retires. No update-only readout events, full reduction-vector snapshots, version counters, or catch-up cycles exist in the current architecture; only each result's activated vector, prediction, and required ternary signs are stored.
-- `sampleContextFifo` stores target, original-input signs, and per-sample `trainingEnable`; its head advances only when the corresponding result entry retires. The current SPI adapter supports normal inference. If `trainingEnable` is asserted through that adapter, `targetData` is supplied as zero, so learning is toward target zero; arbitrary supervised targets are not transported by the present SPI interface.
+- `sampleContextFifo` stores target, original-input signs, and per-sample `trainingEnable`; its head advances only when the corresponding result entry retires. It is the sole admission-capacity parameter: `IN_FLIGHT_DEPTH` bounds accepted-but-unretired samples, while the matrix engine's activation skid is fixed at one entry. The current SPI adapter supports normal inference. If `trainingEnable` is asserted through that adapter, `targetData` is supplied as zero, so learning is toward target zero; arbitrary supervised targets are not transported by the present SPI interface.
 - Assert `reloadWeights` only while `reloadReady` is high.
 - Stream quiescence and matrix reload readiness are distinct. Stream
   quiescence means that no accepted sample, result, or update work remains, so
@@ -153,7 +155,7 @@ continues to use their live, configuration-lifetime values.
 | `FRACTION_BITS` | `4` | Fractional bits in input values, matrix weights, predictions, and targets |
 | `TARGET_WIDTH` | `WIDTH` | Signed target width; narrower targets are sign-extended for prediction comparison |
 | `REDUCTION_WEIGHT_WIDTH` | `8` | Signed weighted-readout coefficient width; the default Q1.7 format has one sign bit and seven fractional bits |
-| `INPUT_FIFO_DEPTH` | `2*N` | Input-vector FIFO depth |
+| `IN_FLIGHT_DEPTH` | `2*N+2` | Maximum accepted-but-unretired samples; depth of `sampleContextFifo` |
 | `OUTPUT_FIFO_DEPTH` | `2*N` | Depth of the accelerator-owned `resultFifo` |
 
 ## Verification

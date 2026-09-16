@@ -13,7 +13,7 @@ module nn_uvm_tb_top;
         .FRACTION_BITS(FRACTION_BITS),
         .TARGET_WIDTH(TARGET_WIDTH),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
-        .INPUT_FIFO_DEPTH(2*N),
+        .IN_FLIGHT_DEPTH(2*N+2),
         .OUTPUT_FIFO_DEPTH(2*N)
     ) dut (
         .clk(bus.clk),

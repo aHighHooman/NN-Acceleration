@@ -12,7 +12,8 @@ module signedFifo #(
     output logic                    empty
 );
 
-    localparam int PTR_WIDTH = $clog2(DEPTH);
+    // A one-entry skid FIFO still needs a legal one-bit pointer vector.
+    localparam int PTR_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1;
 
     logic signed [WIDTH-1:0]       data                        [0:DEPTH-1];
     logic        [PTR_WIDTH-1:0]   readPtr, writePtr;

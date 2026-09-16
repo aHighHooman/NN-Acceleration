@@ -23,6 +23,7 @@ WIDTH = 8
 TARGET_WIDTH = 8
 REDUCTION_WEIGHT_WIDTH = 8
 FRACTION_BITS = 0
+IN_FLIGHT_DEPTH = 2 * N + 2
 INITIAL_WEIGHT_MATRIX = ((1, 2, 3), (4, 5, 6), (7, 8, 9))
 RELOADED_WEIGHT_MATRIX = ((-3, 2, 1), (5, -4, 2), (1, 3, -2))
 INITIAL_REDUCTION_WEIGHTS = (16, 24, 32)
@@ -189,8 +190,9 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     bubble_cycles.extend(_idle_cycles(28))
     add_scenario("input_bubbles", bubble_cycles)
 
-    # 5: eight accepted contexts and six buffered outputs force a true array
-    # stall while ready remains low; release then drains in original order.
+    # 5: the default IN_FLIGHT_DEPTH (eight) accepted contexts and six
+    # buffered outputs force a true array stall while ready remains low;
+    # release then drains in original order.
     backpressure_cycles = _reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
     backpressure_cycles.extend(_input_cycle((i + 1, 1, -1), 0, False, ready=False) for i in range(12))
     backpressure_cycles.extend(_idle_cycles(16, ready=False))
@@ -430,7 +432,9 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
     if len(inputs) != len(comparison_inputs.cycles):
         raise AssertionError("stimulus file length does not match the deterministic scenario definitions")
     config = CycleConfig(n=N, width=WIDTH, fraction_bits=FRACTION_BITS,
-                         target_width=TARGET_WIDTH, reduction_weight_width=REDUCTION_WEIGHT_WIDTH)
+                         target_width=TARGET_WIDTH,
+                         reduction_weight_width=REDUCTION_WEIGHT_WIDTH,
+                         in_flight_depth=IN_FLIGHT_DEPTH)
     cycle_model = CycleReference(config)
     expected = []
     expected_enqueues: list[dict[str, object]] = []

@@ -1,7 +1,6 @@
 module matrixMultiplierWeightStationary #(
     parameter int WIDTH = 16,
-    parameter int N = 3,
-    parameter int INPUT_FIFO_DEPTH = 2*N
+    parameter int N = 3
 )(
     input  logic                         clk,
     input  logic                         rst_n,
@@ -26,6 +25,7 @@ module matrixMultiplierWeightStationary #(
     localparam int WEIGHT_COUNT_WIDTH   = $clog2(N+1);
     localparam int RESULT_WIDTH         = $clog2(N) + 2*WIDTH;
     localparam int VECTOR_WIDTH         = N * WIDTH;
+    localparam int ACTIVATION_SKID_DEPTH = 1;
 
     logic weightPush, consumePendingWeightRow;
     logic inputPush, inputPop;
@@ -126,7 +126,10 @@ module matrixMultiplierWeightStationary #(
     assign weightReady      = !weightsLoaded &&
                               (!pendingWeightValid || !consumingFinalWeightRow);
     assign weightPush       = weightValid && weightReady;
-    assign inputReady  = weightsLoaded && !inputFull;
+    // The matrix engine has one input-activation skid entry.  A pop and a
+    // replacement push may happen on the same advancing edge, preserving the
+    // one-vector-per-cycle steady-state throughput of the array.
+    assign inputReady  = weightsLoaded && (!inputFull || inputPop);
     assign inputPush   = inputValid && inputReady;
     assign resultValid      = resultAlignedAllValid;
     assign arrayAdvance     = !weightsLoaded ? consumePendingWeightRow : !outputBlocked;
@@ -143,7 +146,7 @@ module matrixMultiplierWeightStationary #(
         end
     endgenerate
 
-    signedFifo #(.WIDTH(VECTOR_WIDTH), .DEPTH(INPUT_FIFO_DEPTH)) inputVectorFifo (
+    signedFifo #(.WIDTH(VECTOR_WIDTH), .DEPTH(ACTIVATION_SKID_DEPTH)) inputVectorFifo (
         .clk(clk), .rst_n(rst_n), .push(inputPush),
         .pushData(inputVectorPushData), .pop(inputPop),
         .popData(inputVectorHead), .full(inputFull),

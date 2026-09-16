@@ -8,12 +8,12 @@ module nnAcceleratorStateTrace_tb;
     localparam int TARGET_WIDTH = 8;
     localparam int REDUCTION_WEIGHT_WIDTH = 8;
     localparam int FRACTION_BITS = 0;
-    localparam int INPUT_FIFO_DEPTH = 2*N;
+    localparam int IN_FLIGHT_DEPTH = 2*N+2;
+    localparam int ACTIVATION_SKID_DEPTH = 1;
     localparam int OUTPUT_FIFO_DEPTH = 2*N;
     localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
     localparam int SAMPLE_CONTEXT_WIDTH = TARGET_WIDTH + 2*N + 1;
-    localparam int SAMPLE_CONTEXT_DEPTH = (INPUT_FIFO_DEPTH > 2*N+2) ? INPUT_FIFO_DEPTH : 2*N+2;
 
     logic clk = 0;
     logic rst_n, weightValid, inputValid, trainingEnable, resultReady;
@@ -54,7 +54,7 @@ module nnAcceleratorStateTrace_tb;
 
     nnAccelerator #(.WIDTH(WIDTH), .N(N), .FRACTION_BITS(FRACTION_BITS),
         .TARGET_WIDTH(TARGET_WIDTH), .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
-        .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH), .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)) dut (
+        .IN_FLIGHT_DEPTH(IN_FLIGHT_DEPTH), .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)) dut (
         .clk(clk), .rst_n(rst_n), .weightData(weightData), .weightValid(weightValid),
         .weightReady(weightReady), .inputData(inputData), .targetData(targetData),
         .trainingEnable(trainingEnable), .inputValid(inputValid),
@@ -123,14 +123,14 @@ module nnAcceleratorStateTrace_tb;
             $fwrite(trace_fd, "\nIF %0d", dut.matrixEngine.inputVectorFifo.values);
             for (entry = 0; entry < dut.matrixEngine.inputVectorFifo.values; entry++) begin
                 index = dut.matrixEngine.inputVectorFifo.readPtr + entry;
-                if (index >= INPUT_FIFO_DEPTH) index = index - INPUT_FIFO_DEPTH;
+                if (index >= ACTIVATION_SKID_DEPTH) index = index - ACTIVATION_SKID_DEPTH;
                 for (lane = 0; lane < N; lane++)
                     $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.inputVectorFifo.data[index][lane*WIDTH +: WIDTH]));
             end
             $fwrite(trace_fd, "\nSF %0d", dut.sampleContextFifo.values);
             for (entry = 0; entry < dut.sampleContextFifo.values; entry++) begin
                 index = dut.sampleContextFifo.readPtr + entry;
-                if (index >= SAMPLE_CONTEXT_DEPTH) index = index - SAMPLE_CONTEXT_DEPTH;
+                if (index >= IN_FLIGHT_DEPTH) index = index - IN_FLIGHT_DEPTH;
                 $fwrite(trace_fd, " %0d", $signed(dut.sampleContextFifo.data[index][SAMPLE_CONTEXT_WIDTH-1 -: TARGET_WIDTH]));
                 for (lane = 0; lane < N; lane++)
                     $fwrite(trace_fd, " %0d", $signed(dut.sampleContextFifo.data[index][2*lane+1 +: 2]));

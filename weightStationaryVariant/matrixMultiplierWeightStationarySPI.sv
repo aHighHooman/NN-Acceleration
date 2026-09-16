@@ -3,7 +3,7 @@ module matrixMultiplierWeightStationarySPI #(
     parameter int N = 3,
     parameter int FRACTION_BITS = 4,
     parameter int REDUCTION_WEIGHT_WIDTH = 8,
-    parameter int INPUT_FIFO_DEPTH = 2*N,
+    parameter int IN_FLIGHT_DEPTH = 2*N + 2,
     parameter int OUTPUT_FIFO_DEPTH = 2*N
 )(
     input  logic                    clk,
@@ -156,7 +156,7 @@ module matrixMultiplierWeightStationarySPI #(
         .WIDTH(WIDTH), .N(N),
         .FRACTION_BITS(FRACTION_BITS),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
-        .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH),
+        .IN_FLIGHT_DEPTH(IN_FLIGHT_DEPTH),
         .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)
     ) accelerator (
         .clk(clk), .rst_n(rst_n),

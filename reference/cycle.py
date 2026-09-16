@@ -67,7 +67,7 @@ class CycleConfig:
     fraction_bits: int = 4
     target_width: int | None = None
     reduction_weight_width: int = 8
-    input_fifo_depth: int | None = None
+    in_flight_depth: int | None = None
     output_fifo_depth: int | None = None
     pass_through: bool = True
     reduce_output: bool = False
@@ -89,10 +89,11 @@ class CycleConfig:
             or self.fraction_bits < 0
         ):
             raise ValueError("fraction_bits must be a non-negative integer")
-        for name in ("input_fifo_depth", "output_fifo_depth"):
+        for name in ("in_flight_depth", "output_fifo_depth"):
             value = getattr(self, name)
             if value is None:
-                object.__setattr__(self, name, 2 * self.n)
+                default = 2 * self.n + 2 if name == "in_flight_depth" else 2 * self.n
+                object.__setattr__(self, name, default)
             elif not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
 
@@ -106,7 +107,13 @@ class CycleConfig:
 
     @property
     def sample_context_depth(self) -> int:
-        return max(self.input_fifo_depth, 2 * self.n + 2)  # type: ignore[arg-type]
+        return self.in_flight_depth  # type: ignore[return-value]
+
+    @property
+    def activation_skid_depth(self) -> int:
+        """The matrix engine's fixed one-entry input-activation skid."""
+
+        return 1
 
 
 @dataclass(frozen=True)
@@ -628,6 +635,8 @@ class CycleReference:
     def _snapshot(self) -> CycleSnapshot:
         if len(self._result_fifo) > self.config.output_fifo_depth:
             raise AssertionError("result FIFO exceeded its configured depth")
+        if len(self._input_fifo) > self.config.activation_skid_depth:
+            raise AssertionError("activation skid exceeded its fixed depth")
         return CycleSnapshot(
             cycle=self._cycle,
             W=_matrix_tuple(self._W),
@@ -682,12 +691,6 @@ class CycleReference:
             )
         result_retired = bool(result_valid and cycle_inputs.result_ready)
 
-        context_full = len(self._sample_context_fifo) >= self.config.sample_context_depth
-        sample_can_accept = not context_full or result_retired
-        input_full = len(self._input_fifo) >= self.config.input_fifo_depth
-        input_ready = self._weights_loaded and not input_full and sample_can_accept
-        input_accepted = bool(cycle_inputs.input_valid and input_ready)
-
         pending_weight_consumed = bool(
             not self._weights_loaded and self._pending_weight_row is not None
         )
@@ -723,6 +726,11 @@ class CycleReference:
         )
 
         input_pop = bool(self._weights_loaded and self._input_fifo and datapath_advance)
+        context_full = len(self._sample_context_fifo) >= self.config.sample_context_depth
+        sample_can_accept = not context_full or result_retired
+        input_full = len(self._input_fifo) >= self.config.activation_skid_depth
+        input_ready = self._weights_loaded and (not input_full or input_pop) and sample_can_accept
+        input_accepted = bool(cycle_inputs.input_valid and input_ready)
         accepted_sample: _Sample | None = None
         if input_accepted:
             accepted_sample = _Sample(

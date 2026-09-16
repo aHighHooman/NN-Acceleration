@@ -162,6 +162,27 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertEqual(model._enqueued_sample_indices, list(range(9)))
         self.assertEqual(model._retired_sample_indices, list(range(9)))
 
+    def test_in_flight_depth_is_admission_capacity_and_skid_is_fixed(self) -> None:
+        model = CycleReference(
+            self.config(in_flight_depth=3),
+            self.initial_W(),
+            [16, 24, 32],
+        )
+
+        snapshots = [
+            model.step(self.drive(x=(index + 1, 0, 0), training=False, ready=False))
+            for index in range(12)
+        ]
+
+        self.assertEqual(model.config.sample_context_depth, 3)
+        self.assertEqual(model.config.activation_skid_depth, 1)
+        self.assertEqual(len(model._accepted_cycles), 3)
+        self.assertLessEqual(max(len(snapshot.input_fifo) for snapshot in snapshots), 1)
+        self.assertLessEqual(
+            max(len(snapshot.sample_context_fifo) for snapshot in snapshots),
+            model.config.sample_context_depth,
+        )
+
     def test_absolute_n3_latency_is_e0_e7_e8(self) -> None:
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
         samples = [(1, 2, 3), (2, 0, -1), (-1, 1, 2)]

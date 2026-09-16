@@ -4,7 +4,7 @@ module nnAccelerator #(
     parameter int FRACTION_BITS = 4,
     parameter int TARGET_WIDTH = WIDTH,
     parameter int REDUCTION_WEIGHT_WIDTH = 8,
-    parameter int INPUT_FIFO_DEPTH = 2*N,
+    parameter int IN_FLIGHT_DEPTH = 2*N + 2,
     parameter int OUTPUT_FIFO_DEPTH = 2*N
 )(
     input  logic                              clk,
@@ -34,10 +34,6 @@ module nnAccelerator #(
     // The resident reduction vector commits after the same 2N-1 advancing
     // slots as the matrix update wave, from PE(0,0) through PE(N-1,N-1).
     localparam int REDUCTION_UPDATE_DELAY = 2*N-1;
-    // Sample context remains resident until its corresponding result is
-    // consumed, so its lifetime is longer than the matrix input FIFO's.
-    localparam int SAMPLE_CONTEXT_DEPTH =
-        (INPUT_FIFO_DEPTH > (2*N + 2)) ? INPUT_FIFO_DEPTH : (2*N + 2);
     localparam int SAMPLE_CONTEXT_WIDTH = TARGET_WIDTH + 2*N + 1;
     localparam int COMPARE_WIDTH = (PREDICTION_WIDTH > TARGET_WIDTH)
                                    ? PREDICTION_WIDTH : TARGET_WIDTH;
@@ -231,7 +227,7 @@ module nnAccelerator #(
     // input vector.
     signedFifo #(
         .WIDTH(SAMPLE_CONTEXT_WIDTH),
-        .DEPTH(SAMPLE_CONTEXT_DEPTH)
+        .DEPTH(IN_FLIGHT_DEPTH)
     ) sampleContextFifo (
         .clk(clk), .rst_n(rst_n),
         .push(samplePush), .pushData(sampleContextPushData),
@@ -302,8 +298,7 @@ module nnAccelerator #(
     end
 
     matrixMultiplierWeightStationary #(
-        .WIDTH(WIDTH), .N(N),
-        .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH)
+        .WIDTH(WIDTH), .N(N)
     ) matrixEngine (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
