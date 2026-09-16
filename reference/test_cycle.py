@@ -43,8 +43,8 @@ class CycleReferenceTests(unittest.TestCase):
         ready: bool = True,
     ) -> CycleInputs:
         return CycleInputs(
-            activation_valid=valid,
-            activation_data=x,
+            input_valid=valid,
+            input_data=x,
             target_data=target,
             training_enable=training,
             result_ready=ready,
@@ -56,7 +56,7 @@ class CycleReferenceTests(unittest.TestCase):
             snapshot.W,
             snapshot.R,
             snapshot.pending_weight_row,
-            snapshot.activation_fifo,
+            snapshot.input_fifo,
             snapshot.sample_context_fifo,
             snapshot.result_fifo,
         )
@@ -75,7 +75,7 @@ class CycleReferenceTests(unittest.TestCase):
                 "W",
                 "R",
                 "pending_weight_row",
-                "activation_fifo",
+                "input_fifo",
                 "sample_context_fifo",
                 "result_fifo",
             ],
@@ -83,10 +83,22 @@ class CycleReferenceTests(unittest.TestCase):
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
         snapshot = model.step(self.drive(training=False))
         self.assertEqual(snapshot.cycle, 0)
-        self.assertEqual(snapshot.activation_fifo, ((1, 2, 3),))
+        self.assertEqual(snapshot.input_fifo, ((1, 2, 3),))
         self.assertEqual(snapshot.sample_context_fifo[0].input_signs, (1, 1, 1))
         self.assertEqual(snapshot.sample_context_fifo[0].target, 127)
         self.assertEqual(snapshot.result_fifo, ())
+
+    def test_reduction_weights_are_resident_independently_of_w(self) -> None:
+        # R loads over its own port, so an unloaded W must not zero it.
+        model = CycleReference(self.config(), W=None, R=[16, 24, 32])
+        self.assertFalse(model.weights_loaded)
+        self.assertEqual(model.R, [16, 24, 32])
+        model.reset()
+        self.assertEqual(model.R, [16, 24, 32])
+        # A hardware reset clears both.
+        model.step(CycleInputs(reset_n=False))
+        self.assertEqual(model.R, [0, 0, 0])
+        self.assertEqual(model.W, [[0] * 3 for _ in range(3)])
 
     def test_configuration_change_requires_quiescence(self) -> None:
         self.assertNotIn("pass_through", {field.name for field in fields(CycleInputs)})
@@ -240,7 +252,7 @@ class CycleReferenceTests(unittest.TestCase):
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
         first = model.step(self.drive(x=(1, -2, 0), target=17, training=False))
         self.assertIsNone(first.pending_weight_row)
-        self.assertEqual(first.activation_fifo, ((1, -2, 0),))
+        self.assertEqual(first.input_fifo, ((1, -2, 0),))
         self.assertEqual(
             first.sample_context_fifo[0].input_signs,
             (1, -1, 0),
@@ -249,7 +261,7 @@ class CycleReferenceTests(unittest.TestCase):
         for x in ((2, 3, 0), (-1, 0, 4), (3, -3, 1)):
             model.step(self.drive(x=x, target=0, training=False))
         fill = model.snapshots[-1]
-        self.assertEqual(len(fill.activation_fifo), 1)
+        self.assertEqual(len(fill.input_fifo), 1)
         self.assertEqual(len(fill.sample_context_fifo), 4)
 
         for x in ((4, 1, 0), (0, 2, 2), (-2, 1, 3), (1, 1, -1)):
@@ -266,7 +278,7 @@ class CycleReferenceTests(unittest.TestCase):
 
         model.flush()
         drained = model.snapshots[-1]
-        self.assertEqual(drained.activation_fifo, ())
+        self.assertEqual(drained.input_fifo, ())
         self.assertEqual(drained.sample_context_fifo, ())
         self.assertEqual(drained.result_fifo, ())
 
@@ -420,55 +432,91 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertTrue(all(-8 <= value <= 7 for row in model.W for value in row))
         self.assertTrue(all(-8 <= value <= 7 for value in model.R))
 
-    def test_functional_and_cycle_models_agree_without_stalls(self) -> None:
-        config = self.config()
-        functional_config = ReferenceConfig(
-            n=config.n,
-            width=config.width,
-            fraction_bits=config.fraction_bits,
-            target_width=config.target_width,
-            reduction_weight_width=config.reduction_weight_width,
-            pass_through=config.pass_through,
-        )
-        W = self.initial_W()
-        R = [16, 24, 32]
-        samples = [
-            Sample((1, 2, 3), 127, True),
-            Sample((-2, 3, 1), -20, False),
-            Sample((3, -1, 2), 40, True),
-            Sample((0, 2, -3), 0, True),
-            Sample((-1, -2, -3), -60, True),
-            Sample((4, 1, 0), 12, False),
-            Sample((2, 2, 1), 100, True),
-            Sample((-3, 0, 2), -40, True),
-            Sample((1, -4, 3), 25, True),
-            Sample((2, -2, -1), 7, False),
-        ]
-        functional = FunctionalReference(functional_config, W, R)
-        functional_records = functional.run(samples)
-        cycle = CycleReference(config, W, R)
-        for sample in samples:
-            cycle.step(
-                self.drive(
-                    x=sample.x,
-                    target=sample.target,
-                    training=sample.training_enable,
-                )
-            )
-        cycle.flush()
+    def test_closed_form_update_visibility_matches_wave_propagation(self) -> None:
+        """Cross-check the one claim the references derive independently:
+        which weight generation each sample sees.  Functional states it in
+        closed form (2*N+1); cycle produces it by wave propagation."""
 
-        self.assertEqual(len(cycle._sample_results), len(functional_records))
-        for expected, actual in zip(functional_records, cycle._sample_results):
-            self.assertEqual(actual.raw_matrix_result, expected.raw_matrix_result)
-            self.assertEqual(actual.activated_result, expected.activated_result)
-            self.assertEqual(actual.prediction, expected.prediction)
-            self.assertEqual(actual.learning_direction, expected.learning_direction)
-            self.assertEqual(actual.W_used, expected.W_used)
-            self.assertEqual(actual.R_used, expected.R_used)
-            self.assertEqual(actual.matrix_update_directions, expected.matrix_update_directions)
-            self.assertEqual(actual.reduction_update_directions, expected.reduction_update_directions)
-        self.assertEqual(cycle.W, functional.final_W)
-        self.assertEqual(cycle.R, functional.final_R)
+        for n in (2, 3, 4):
+            with self.subTest(n=n):
+                config = self.config(n=n)
+                functional_config = ReferenceConfig(
+                    n=n,
+                    width=config.width,
+                    fraction_bits=config.fraction_bits,
+                    target_width=config.target_width,
+                    reduction_weight_width=config.reduction_weight_width,
+                    pass_through=config.pass_through,
+                )
+                W = [[1 + row * n + column for column in range(n)] for row in range(n)]
+                R = [16 + 8 * lane for lane in range(n)]
+                # Inference samples emit no package, so the stride varies.
+                raw_samples = [
+                    ((1, 2, 3), 127, True),
+                    ((-2, 3, 1), -20, False),
+                    ((3, -1, 2), 40, True),
+                    ((0, 2, -3), 0, True),
+                    ((-1, -2, -3), -60, True),
+                    ((4, 1, 0), 12, False),
+                    ((2, 2, 1), 100, True),
+                    ((-3, 0, 2), -40, True),
+                    ((1, -4, 3), 25, True),
+                    ((2, -2, -1), 7, False),
+                ]
+                samples = [
+                    Sample(
+                        tuple(x[lane % len(x)] for lane in range(n)),
+                        target,
+                        training,
+                    )
+                    for x, target, training in raw_samples
+                ]
+
+                functional = FunctionalReference(functional_config, W, R)
+                functional_records = functional.run(samples)
+                cycle = CycleReference(config, W, R)
+                for sample in samples:
+                    cycle.step(
+                        self.drive(
+                            x=sample.x,
+                            target=sample.target,
+                            training=sample.training_enable,
+                        )
+                    )
+                cycle.flush()
+
+                self.assertEqual(len(cycle._sample_results), len(functional_records))
+
+                # The load-bearing comparison.
+                self.assertEqual(
+                    [record.W_used for record in cycle._sample_results],
+                    [record.W_used for record in functional_records],
+                )
+                self.assertEqual(
+                    [record.R_used for record in cycle._sample_results],
+                    [record.R_used for record in functional_records],
+                )
+                self.assertEqual(cycle.W, functional.final_W)
+                self.assertEqual(cycle.R, functional.final_R)
+
+                # Guard against a vacuous check.
+                observed_generations = {
+                    record.W_used for record in cycle._sample_results
+                }
+                self.assertGreater(len(observed_generations), 1)
+
+                # The emergent delay must equal the closed form.
+                delay = functional_config.update_visibility_delay
+                self.assertEqual(delay, 2 * n + 1)
+                self.assertEqual(functional_records[0].update_visible_at, delay)
+                self.assertEqual(
+                    cycle._sample_results[delay - 1].W_used,
+                    cycle._sample_results[0].W_used,
+                )
+                self.assertNotEqual(
+                    cycle._sample_results[delay].W_used,
+                    cycle._sample_results[0].W_used,
+                )
 
 
 if __name__ == "__main__":

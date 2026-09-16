@@ -14,25 +14,25 @@ module matrixMultiplierWeightStationarySPI_tb;
     typedef logic signed [PREDICTION_WIDTH-1:0] result_t;
 
     logic clk, sclk, rst_n;
-    logic weightReady, activationReady, weightsLoaded;
+    logic weightReady, inputReady, weightsLoaded;
     logic reloadReady;
     logic cs_n[N], miso[N], misoValid[N];
     logic weightCs_n[N], weightMosi[N];
-    logic activationCs_n[N], activationMosi[N];
+    logic inputCs_n[N], inputMosi[N];
     logic signed [7:0] reductionWeight[N];
 
     matrixMultiplierWeightStationarySPI #(
         .WIDTH(WIDTH), .N(N), .FRACTION_BITS(FRACTION_BITS)
     ) dut (
         .clk(clk), .rst_n(rst_n),
-        .weightReady(weightReady), .activationReady(activationReady),
+        .weightReady(weightReady), .inputReady(inputReady),
         .passThrough(1'b1), .reduceOutput(1'b0), .trainingEnable(1'b0),
         .reductionWeight(reductionWeight), .loadReductionWeights(1'b0),
         .weightsLoaded(weightsLoaded), .reloadWeights(1'b0),
         .reloadReady(reloadReady),
         .sclk(sclk), .cs_n(cs_n), .miso(miso), .misoValid(misoValid),
         .weightCs_n(weightCs_n), .weightMosi(weightMosi),
-        .activationCs_n(activationCs_n), .activationMosi(activationMosi)
+        .inputCs_n(inputCs_n), .inputMosi(inputMosi)
     );
 
     initial begin
@@ -55,9 +55,9 @@ module matrixMultiplierWeightStationarySPI_tb;
             reductionWeight[lane] = '0;
             cs_n[lane] = 1'b1;
             weightCs_n[lane] = 1'b1;
-            activationCs_n[lane] = 1'b1;
+            inputCs_n[lane] = 1'b1;
             weightMosi[lane] = 1'b0;
-            activationMosi[lane] = 1'b0;
+            inputMosi[lane] = 1'b0;
         end
 
         repeat (3) @(posedge sclk);
@@ -78,10 +78,10 @@ module matrixMultiplierWeightStationarySPI_tb;
         // remain ordered and stable behind the SPI output shifter.
         vector[0] = 2;
         vector[1] = -3;
-        send_activation_vector(vector);
+        send_input_vector(vector);
         vector[0] = 4;
         vector[1] = 5;
-        send_activation_vector(vector);
+        send_input_vector(vector);
 
         check_output_backpressure(4*SCALE, 5*SCALE);
         expect_serialized_row("identity smoke row 0", 2*SCALE, -3*SCALE);
@@ -111,19 +111,19 @@ module matrixMultiplierWeightStationarySPI_tb;
             weightCs_n[lane] = 1'b1;
     endtask
 
-    task send_activation_vector(input data_t vector[N]);
-        wait(activationReady);
+    task send_input_vector(input data_t vector[N]);
+        wait(inputReady);
         @(negedge sclk);
         for (int lane = 0; lane < N; lane++)
-            activationCs_n[lane] = 1'b0;
+            inputCs_n[lane] = 1'b0;
         for (int bitIndex = WIDTH-1; bitIndex >= 0; bitIndex--) begin
             for (int lane = 0; lane < N; lane++)
-                activationMosi[lane] = vector[lane][bitIndex];
+                inputMosi[lane] = vector[lane][bitIndex];
             @(posedge sclk);
             @(negedge sclk);
         end
         for (int lane = 0; lane < N; lane++)
-            activationCs_n[lane] = 1'b1;
+            inputCs_n[lane] = 1'b1;
     endtask
 
     task check_output_backpressure(input result_t expected0,

@@ -16,22 +16,19 @@ module nnAcceleratorStateTrace_tb;
     localparam int SAMPLE_CONTEXT_DEPTH = (INPUT_FIFO_DEPTH > 2*N+2) ? INPUT_FIFO_DEPTH : 2*N+2;
 
     logic clk = 0;
-    logic rst_n, weightValid, activationValid, trainingEnable, resultReady;
+    logic rst_n, weightValid, inputValid, trainingEnable, resultReady;
     logic loadReductionWeights, reloadWeights, passThrough, reduceOutput;
-    logic signed [WIDTH-1:0] weightData[N], activationData[N];
+    logic signed [WIDTH-1:0] weightData[N], inputData[N];
     logic signed [TARGET_WIDTH-1:0] targetData;
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N];
-    logic weightReady, activationReady, resultValid, weightsLoaded, reloadReady;
+    logic weightReady, inputReady, resultValid, weightsLoaded, reloadReady;
     logic signed [PREDICTION_WIDTH-1:0] resultData[N];
-    logic signed [TARGET_WIDTH-1:0] resultTargetData;
-    logic signed [1:0] learningDirection, rowDirection[N], columnDirection[N];
-    logic matrixUpdateValid;
 
     integer stimulus_fd, trace_fd, status, cycle_count, input_cycle;
     integer scanned_reset_n, scanned_weight_valid;
     integer scanned_weight_lane0, scanned_weight_lane1, scanned_weight_lane2;
-    integer scanned_activation_valid;
-    integer scanned_activation_lane0, scanned_activation_lane1, scanned_activation_lane2;
+    integer scanned_input_valid;
+    integer scanned_input_lane0, scanned_input_lane1, scanned_input_lane2;
     integer scanned_target, scanned_training_enable, scanned_result_ready;
     integer scanned_reduction_lane0, scanned_reduction_lane1, scanned_reduction_lane2;
     integer scanned_load_reduction_weights, scanned_reload_weights;
@@ -59,20 +56,18 @@ module nnAcceleratorStateTrace_tb;
         .TARGET_WIDTH(TARGET_WIDTH), .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
         .INPUT_FIFO_DEPTH(INPUT_FIFO_DEPTH), .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)) dut (
         .clk(clk), .rst_n(rst_n), .weightData(weightData), .weightValid(weightValid),
-        .weightReady(weightReady), .activationData(activationData), .targetData(targetData),
-        .trainingEnable(trainingEnable), .activationValid(activationValid),
-        .activationReady(activationReady), .reductionWeight(reductionWeight),
+        .weightReady(weightReady), .inputData(inputData), .targetData(targetData),
+        .trainingEnable(trainingEnable), .inputValid(inputValid),
+        .inputReady(inputReady), .reductionWeight(reductionWeight),
         .loadReductionWeights(loadReductionWeights), .reduceOutput(reduceOutput),
-        .resultData(resultData), .resultTargetData(resultTargetData),
-        .learningDirection(learningDirection), .rowDirection(rowDirection),
-        .columnDirection(columnDirection), .matrixUpdateValid(matrixUpdateValid),
+        .resultData(resultData),
         .resultValid(resultValid), .resultReady(resultReady),
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights),
         .reloadReady(reloadReady), .passThrough(passThrough)
     );
 
     assign streamQuiescent =
-        dut.matrixEngine.activationEmpty &&
+        dut.matrixEngine.inputEmpty &&
         !dut.matrixEngine.skewBusy &&
         !dut.matrixEngine.pipelineBusy &&
         !dut.matrixEngine.resultAlignBusy &&
@@ -94,7 +89,7 @@ module nnAcceleratorStateTrace_tb;
                     $fatal(1, "reduceOutput changed while accelerator work was outstanding");
             end
 
-            if (activationValid && activationReady) begin
+            if (inputValid && inputReady) begin
                 if (!configurationActive || streamQuiescent) begin
                     configuredPassThrough <= passThrough;
                     configuredReduceOutput <= reduceOutput;
@@ -125,12 +120,12 @@ module nnAcceleratorStateTrace_tb;
             if (dut.matrixEngine.pendingWeightValid)
                 for (lane = 0; lane < N; lane++)
                     $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.pendingWeightRow[lane]));
-            $fwrite(trace_fd, "\nAF %0d", dut.matrixEngine.activationVectorFifo.values);
-            for (entry = 0; entry < dut.matrixEngine.activationVectorFifo.values; entry++) begin
-                index = dut.matrixEngine.activationVectorFifo.readPtr + entry;
+            $fwrite(trace_fd, "\nIF %0d", dut.matrixEngine.inputVectorFifo.values);
+            for (entry = 0; entry < dut.matrixEngine.inputVectorFifo.values; entry++) begin
+                index = dut.matrixEngine.inputVectorFifo.readPtr + entry;
                 if (index >= INPUT_FIFO_DEPTH) index = index - INPUT_FIFO_DEPTH;
                 for (lane = 0; lane < N; lane++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.activationVectorFifo.data[index][lane*WIDTH +: WIDTH]));
+                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.inputVectorFifo.data[index][lane*WIDTH +: WIDTH]));
             end
             $fwrite(trace_fd, "\nSF %0d", dut.sampleContextFifo.values);
             for (entry = 0; entry < dut.sampleContextFifo.values; entry++) begin
@@ -163,10 +158,10 @@ module nnAcceleratorStateTrace_tb;
         if (!stimulus_fd || !trace_fd) $fatal(1, "cannot open stimulus or trace file");
         status = $fscanf(stimulus_fd, "%d\n", cycle_count);
         if (status != 1) $fatal(1, "bad stimulus header");
-        rst_n = 0; weightValid = 0; activationValid = 0; trainingEnable = 0;
+        rst_n = 0; weightValid = 0; inputValid = 0; trainingEnable = 0;
         resultReady = 0; loadReductionWeights = 0; reloadWeights = 0;
         passThrough = 1; reduceOutput = 0; targetData = 0;
-        for (lane = 0; lane < N; lane++) begin weightData[lane] = 0; activationData[lane] = 0; reductionWeight[lane] = 0; end
+        for (lane = 0; lane < N; lane++) begin weightData[lane] = 0; inputData[lane] = 0; reductionWeight[lane] = 0; end
 
         for (integer c = 0; c < cycle_count; c++) begin
             @(negedge clk);
@@ -174,8 +169,8 @@ module nnAcceleratorStateTrace_tb;
                 "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
                 input_cycle, scanned_reset_n, scanned_weight_valid,
                 scanned_weight_lane0, scanned_weight_lane1, scanned_weight_lane2,
-                scanned_activation_valid, scanned_activation_lane0,
-                scanned_activation_lane1, scanned_activation_lane2, scanned_target,
+                scanned_input_valid, scanned_input_lane0,
+                scanned_input_lane1, scanned_input_lane2, scanned_target,
                 scanned_training_enable, scanned_result_ready,
                 scanned_reduction_lane0, scanned_reduction_lane1,
                 scanned_reduction_lane2, scanned_load_reduction_weights,
@@ -186,10 +181,10 @@ module nnAcceleratorStateTrace_tb;
             weightData[0] = scanned_weight_lane0;
             weightData[1] = scanned_weight_lane1;
             weightData[2] = scanned_weight_lane2;
-            activationValid = scanned_activation_valid;
-            activationData[0] = scanned_activation_lane0;
-            activationData[1] = scanned_activation_lane1;
-            activationData[2] = scanned_activation_lane2;
+            inputValid = scanned_input_valid;
+            inputData[0] = scanned_input_lane0;
+            inputData[1] = scanned_input_lane1;
+            inputData[2] = scanned_input_lane2;
             targetData = scanned_target;
             trainingEnable = scanned_training_enable;
             resultReady = scanned_result_ready;
@@ -206,8 +201,8 @@ module nnAcceleratorStateTrace_tb;
             #1ps;
             retired = resultValid && resultReady;
             retired_prediction = $signed(dut.prediction);
-            retired_direction = $signed(learningDirection);
-            retired_target = $signed(resultTargetData);
+            retired_direction = $signed(dut.learningDirection);
+            retired_target = $signed(dut.resultTargetData);
             for (lane = 0; lane < N; lane++) begin
                 retired_activated[lane] = $signed(dut.activatedData[lane]);
                 retired_result[lane] = $signed(resultData[lane]);
@@ -215,7 +210,7 @@ module nnAcceleratorStateTrace_tb;
             trace_matrix_result_handshake = dut.matrixResultValid && dut.matrixResultReady;
             for (lane = 0; lane < N; lane++)
                 enqueued_raw[lane] = $signed(dut.rawResultData[lane]);
-            trace_datapath_advance = dut.matrixEngine.datapathAdvance;
+            trace_datapath_advance = dut.matrixEngine.arrayAdvance;
             trace_output_blocked = dut.matrixEngine.outputBlocked;
             trace_reduction_update_busy = dut.reductionUpdateBusy;
             trace_pipeline_busy = dut.matrixEngine.pipelineBusy;

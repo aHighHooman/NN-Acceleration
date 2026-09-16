@@ -14,8 +14,7 @@ module systolicArrayWeightStationary #(
     input  logic signed [WIDTH-1:0]     col [N],
     output logic signed [2*WIDTH+$clog2(N)-1:0] result [N],
     output logic                        resultValid [N],
-    output logic                        pipelineBusy,
-    output logic                        updateComplete
+    output logic                        pipelineBusy
 );
 
     localparam int FINAL_RESULT_WIDTH = 2*WIDTH + $clog2(N);
@@ -34,17 +33,9 @@ module systolicArrayWeightStationary #(
 
     // Diagonal zero consumes the live package on its acceptance edge.  The
     // remaining 2N-2 diagonals consume the registered package on successive
-    // advancing edges.  Completion therefore coincides with the final PE
+    // advancing edges, so the last stage of updateValidPipe is the final PE
     // update rather than an otherwise unused extra pipeline stage.
-    generate
-        if (N == 1) begin : single_pe_completion
-            assign updateComplete = advance && updateValid;
-        end else begin : wave_completion
-            assign updateComplete = advance &&
-                                    updateValidPipe[UPDATE_PIPE_STAGES-1];
-        end
-    endgenerate
-
+    //
     // Update packages advance with exactly the same enable as the data array.
     // Keeping both complete vectors in every stage permits one new package on
     // every advancing cycle while each stage addresses one anti-diagonal.

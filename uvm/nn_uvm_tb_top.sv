@@ -21,20 +21,15 @@ module nn_uvm_tb_top;
         .weightData(bus.weightData),
         .weightValid(bus.weightValid),
         .weightReady(bus.weightReady),
-        .activationData(bus.activationData),
+        .inputData(bus.inputData),
         .targetData(bus.targetData),
         .trainingEnable(bus.trainingEnable),
-        .activationValid(bus.activationValid),
-        .activationReady(bus.activationReady),
+        .inputValid(bus.inputValid),
+        .inputReady(bus.inputReady),
         .reductionWeight(bus.reductionWeight),
         .loadReductionWeights(bus.loadReductionWeights),
         .reduceOutput(bus.reduceOutput),
         .resultData(bus.resultData),
-        .resultTargetData(),
-        .learningDirection(),
-        .rowDirection(),
-        .columnDirection(),
-        .matrixUpdateValid(),
         .resultValid(bus.resultValid),
         .resultReady(bus.resultReady),
         .weightsLoaded(bus.weightsLoaded),
@@ -51,7 +46,7 @@ module nn_uvm_tb_top;
     initial begin
         bus.rst_n = 1'b0;
         bus.weightValid = 1'b0;
-        bus.activationValid = 1'b0;
+        bus.inputValid = 1'b0;
         bus.targetData = '0;
         bus.trainingEnable = 1'b0;
         bus.loadReductionWeights = 1'b0;
@@ -61,7 +56,7 @@ module nn_uvm_tb_top;
         bus.reloadWeights = 1'b0;
         for (int lane = 0; lane < N; lane++) begin
             bus.weightData[lane] = '0;
-            bus.activationData[lane] = '0;
+            bus.inputData[lane] = '0;
             bus.reductionWeight[lane] = '0;
         end
 

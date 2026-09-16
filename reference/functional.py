@@ -4,6 +4,10 @@ The model consumes one accepted sample per stream position.  It tracks only
 the architectural matrix and reduction state, plus a sample-indexed queue of
 complete learning packages.  It deliberately does not model PE registers,
 skew, valid/ready, FIFOs, or any other cycle-level implementation state.
+
+Both references share ``arithmetic.py``, so their arithmetic agreeing proves
+little.  What this file owns independently is the closed-form update
+visibility delay of ``2 * N + 1`` sample positions.
 """
 
 from __future__ import annotations
@@ -11,13 +15,11 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
 
 from .arithmetic import (
     activate,
     apply_matrix_update,
     apply_reduction_update,
-    activation_gates,
     learning_direction,
     matrix_multiply,
     matrix_result_width,
@@ -99,12 +101,8 @@ class Sample:
 
 @dataclass(frozen=True)
 class SampleRecord:
-    """All architectural values associated with one simulated sample.
-
-    ``row_direction`` and ``column_direction`` retain the RTL's combinational
-    candidate signals.  The effective update-direction fields are zero when
-    ``training_enable`` is false because no package is emitted for inference.
-    """
+    """Architectural values for one simulated sample.  Direction fields are
+    zero for inference; ``update_visible_at`` carries the latency claim."""
 
     sample_index: int
     input_vector: tuple[int, ...]
@@ -116,67 +114,10 @@ class SampleRecord:
     activated_result: tuple[int, ...]
     prediction: int
     learning_direction: int
-    row_direction: tuple[int, ...]
-    column_direction: tuple[int, ...]
     matrix_update_directions: tuple[tuple[int, ...], ...]
     reduction_update_directions: tuple[int, ...]
-    activation_gate: tuple[bool, ...]
     update_generated: bool
     update_visible_at: int | None
-
-    @property
-    def candidate_matrix_update_directions(self) -> tuple[tuple[int, ...], ...]:
-        """Directions that would be packaged if training were enabled.
-
-        The effective direction fields are zero for an inference sample.  The
-        candidate property keeps the RTL's combinational row/column direction
-        calculation inspectable without treating it as an emitted update.
-        """
-
-        if self.update_generated:
-            return self.matrix_update_directions
-        row = self.row_direction
-        column = self.column_direction
-        return tuple(
-            tuple(row_value * column_value for column_value in column)
-            for row_value in row
-        )
-
-    @property
-    def candidate_reduction_update_directions(self) -> tuple[int, ...]:
-        """Directions that would be packaged if training were enabled."""
-
-        if self.update_generated:
-            return self.reduction_update_directions
-        return tuple(
-            self.learning_direction * (1 if value > 0 else -1 if value < 0 else 0)
-            for value in self.activated_result
-        )
-
-    def as_dict(self) -> dict[str, Any]:
-        """Return JSON-friendly copies of the record fields."""
-
-        return {
-            "sample_index": self.sample_index,
-            "input_vector": list(self.input_vector),
-            "target": self.target,
-            "training_enable": self.training_enable,
-            "W_used": [list(row) for row in self.W_used],
-            "R_used": list(self.R_used),
-            "raw_matrix_result": list(self.raw_matrix_result),
-            "activated_result": list(self.activated_result),
-            "prediction": self.prediction,
-            "learning_direction": self.learning_direction,
-            "row_direction": list(self.row_direction),
-            "column_direction": list(self.column_direction),
-            "matrix_update_directions": [
-                list(row) for row in self.matrix_update_directions
-            ],
-            "reduction_update_directions": list(self.reduction_update_directions),
-            "activation_gate": list(self.activation_gate),
-            "update_generated": self.update_generated,
-            "update_visible_at": self.update_visible_at,
-        }
 
 
 @dataclass(frozen=True)
@@ -255,10 +196,6 @@ class FunctionalReference:
     def next_sample_index(self) -> int:
         return self._next_sample_index
 
-    @property
-    def pending_update_count(self) -> int:
-        return sum(len(packages) for packages in self._pending_updates.values())
-
     def _apply_updates_visible_at(self, sample_index: int) -> None:
         packages = self._pending_updates.pop(sample_index, ())
         for package in packages:
@@ -306,8 +243,9 @@ class FunctionalReference:
             self.config.prediction_width,
         )
 
-        row_direction, column_direction, candidate_matrix_direction = (
-            matrix_update_directions(
+        update_generated = bool(sample.training_enable)
+        if update_generated:
+            _, _, issued_matrix_direction = matrix_update_directions(
                 input_vector,
                 activated_result,
                 R_used,
@@ -316,19 +254,12 @@ class FunctionalReference:
                 self.config.reduction_weight_width,
                 self.config.pass_through,
             )
-        )
-        candidate_reduction_direction = reduction_update_directions(
-            activated_result,
-            direction,
-        )
-        gates = tuple(activation_gates(activated_result, self.config.pass_through))
-
-        update_generated = bool(sample.training_enable)
-        if update_generated:
             matrix_direction = tuple(
-                tuple(row) for row in candidate_matrix_direction
+                tuple(row) for row in issued_matrix_direction
             )
-            reduction_direction = tuple(candidate_reduction_direction)
+            reduction_direction = tuple(
+                reduction_update_directions(activated_result, direction)
+            )
             update_visible_at = sample_index + self.config.update_visibility_delay
             self._pending_updates[update_visible_at].append(
                 _UpdatePackage(
@@ -353,11 +284,8 @@ class FunctionalReference:
             activated_result=activated_result,
             prediction=prediction,
             learning_direction=direction,
-            row_direction=tuple(row_direction),
-            column_direction=tuple(column_direction),
             matrix_update_directions=matrix_direction,
             reduction_update_directions=reduction_direction,
-            activation_gate=gates,
             update_generated=update_generated,
             update_visible_at=update_visible_at,
         )

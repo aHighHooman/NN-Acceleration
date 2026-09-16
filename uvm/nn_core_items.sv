@@ -6,12 +6,12 @@
     // driver consumes the policy fields; the passive monitor fills the
     // configuration snapshot before publishing the accepted sample.
     class nn_core_sample_item extends uvm_sequence_item;
-        data_t activation[N];
+        data_t input_vector[N];
         target_t target;
         bit training_enable;
-        bit activation_bubble;
+        bit input_bubble;
         int unsigned result_stall_percent;
-        bit hold_result_until_activation_backpressure;
+        bit hold_result_until_input_backpressure;
         bit reset_after_accept;
 
         data_t weights[N][N];
@@ -29,8 +29,8 @@
         function string convert2string();
             return $sformatf(
                 "training=%0b bubble=%0b resultStall=%0d holdForInputPressure=%0b resetAfterAccept=%0b",
-                training_enable, activation_bubble, result_stall_percent,
-                hold_result_until_activation_backpressure, reset_after_accept);
+                training_enable, input_bubble, result_stall_percent,
+                hold_result_until_input_backpressure, reset_after_accept);
         endfunction
     endclass
 

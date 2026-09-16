@@ -89,16 +89,16 @@
         function void fill_sample(nn_core_sample_item item, int mode);
             for (int lane = 0; lane < N; lane++) begin
                 if (mode == 0)
-                    item.activation[lane] = (lane == 0) ? 2 :
+                    item.input_vector[lane] = (lane == 0) ? 2 :
                         ((lane == 1) ? -3 : lane + 1);
                 else if (mode == 1)
-                    item.activation[lane] = '0;
+                    item.input_vector[lane] = '0;
                 else
-                    item.activation[lane] = data_t'(next_random());
+                    item.input_vector[lane] = data_t'(next_random());
             end
             if (mode == 2) begin
-                item.activation[0] = -5;
-                if (N > 1) item.activation[1] = 7;
+                item.input_vector[0] = -5;
+                if (N > 1) item.input_vector[1] = 7;
             end
             item.target = (mode == 0) ? target_t'(1) : '0;
         endfunction
@@ -134,9 +134,9 @@
             nn_core_sample_item item;
             item = nn_core_sample_item::type_id::create("sample");
             fill_sample(item, mode);
-            item.activation_bubble = bubble;
+            item.input_bubble = bubble;
             item.result_stall_percent = stall;
-            item.hold_result_until_activation_backpressure = hold;
+            item.hold_result_until_input_backpressure = hold;
             send_sample(item);
         endtask
     endclass
@@ -178,7 +178,7 @@
             fill_sample(item, 2);
             item.target = target_t'(3);
             item.training_enable = 1'b1;
-            item.activation_bubble = 1'b1;
+            item.input_bubble = 1'b1;
             item.result_stall_percent = 30;
             send_sample(item);
 
@@ -276,12 +276,12 @@
 
             if (env.driver.weight_bubbles_injected == 0)
                 `uvm_error("SCENARIO", "weight-load bubble was not injected")
-            if (env.driver.activation_bubbles_injected == 0)
-                `uvm_error("SCENARIO", "activation bubble was not injected")
+            if (env.driver.input_bubbles_injected == 0)
+                `uvm_error("SCENARIO", "input bubble was not injected")
             if (env.result_monitor.output_stall_cycles == 0)
                 `uvm_error("SCENARIO", "output backpressure was not observed")
-            if (env.input_monitor.activation_backpressure_cycles == 0)
-                `uvm_error("SCENARIO", "activation backpressure was not observed")
+            if (env.input_monitor.input_backpressure_cycles == 0)
+                `uvm_error("SCENARIO", "input backpressure was not observed")
             if (env.input_monitor.reload_count < 1)
                 `uvm_error("SCENARIO", "reload/recovery was not observed")
             if (env.input_monitor.reset_count < 1)

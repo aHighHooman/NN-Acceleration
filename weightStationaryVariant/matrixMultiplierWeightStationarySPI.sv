@@ -9,7 +9,7 @@ module matrixMultiplierWeightStationarySPI #(
     input  logic                    clk,
     input  logic                    rst_n,
     output logic                    weightReady,
-    output logic                    activationReady,
+    output logic                    inputReady,
     input  logic                    passThrough,
     input  logic                    reduceOutput,
     input  logic                    trainingEnable,
@@ -24,23 +24,23 @@ module matrixMultiplierWeightStationarySPI #(
     output logic                    misoValid [N],
     input  logic                    weightCs_n [N],
     input  logic                    weightMosi [N],
-    input  logic                    activationCs_n [N],
-    input  logic                    activationMosi [N]
+    input  logic                    inputCs_n [N],
+    input  logic                    inputMosi [N]
 );
 
     localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
 
-    logic signed [WIDTH-1:0] weightData[N], activationData[N];
-    logic weightValid, activationValid;
-    logic weightFifoReady, activationFifoReady;
-    logic weightDataValid[N], activationDataValid[N];
-    logic allWeightDataValid, allActivationDataValid, allWeightSpiReady, allActivationSpiReady;
+    logic signed [WIDTH-1:0] weightData[N], inputData[N];
+    logic weightValid, inputValid;
+    logic weightFifoReady, inputFifoReady;
+    logic weightDataValid[N], inputDataValid[N];
+    logic allWeightDataValid, allInputDataValid, allWeightSpiReady, allInputSpiReady;
     logic weightValidSync, weightValidSyncDelay, weightSent;
-    logic activationValidSync, activationValidSyncDelay, activationSent;
+    logic inputValidSync, inputValidSyncDelay, inputSent;
     logic weightAccepted, weightAcceptedSync, weightAcceptedSyncDelay, weightAcceptedSeen;
-    logic activationAccepted, activationAcceptedSync;
-    logic activationAcceptedSyncDelay, activationAcceptedSeen;
+    logic inputAccepted, inputAcceptedSync;
+    logic inputAcceptedSyncDelay, inputAcceptedSeen;
     logic signed [PREDICTION_WIDTH-1:0] resultData[N], spiData[N];
     logic resultValid, resultReady;
     logic spiReady[N], allSpiReady;
@@ -49,23 +49,23 @@ module matrixMultiplierWeightStationarySPI #(
 
     assign resultReady      = resultValid && (request == acknowledgeSyncDelay);
     assign weightValid      = weightValidSyncDelay && !weightSent;
-    assign activationValid  = activationValidSyncDelay && !activationSent;
+    assign inputValid      = inputValidSyncDelay && !inputSent;
     assign weightReady      = weightFifoReady && allWeightSpiReady;
-    assign activationReady  = activationFifoReady && allActivationSpiReady;
+    assign inputReady      = inputFifoReady && allInputSpiReady;
 
     always_comb begin
         allSpiReady             = 1;
         allWeightDataValid      = 1;
-        allActivationDataValid  = 1;
+        allInputDataValid       = 1;
         allWeightSpiReady       = 1;
-        allActivationSpiReady   = 1;
+        allInputSpiReady        = 1;
 
         for (int i = 0; i < N; i++) begin
             allSpiReady             &= spiReady[i];
             allWeightDataValid      &= weightDataValid[i];
-            allActivationDataValid  &= activationDataValid[i];
+            allInputDataValid       &= inputDataValid[i];
             allWeightSpiReady       &= !weightDataValid[i];
-            allActivationSpiReady   &= !activationDataValid[i];
+            allInputSpiReady        &= !inputDataValid[i];
         end
 
     end
@@ -77,12 +77,12 @@ module matrixMultiplierWeightStationarySPI #(
             acknowledgeSyncDelay        <= 0;
             weightValidSync             <= 0;
             weightValidSyncDelay        <= 0;
-            activationValidSync         <= 0;
-            activationValidSyncDelay    <= 0;
+            inputValidSync             <= 0;
+            inputValidSyncDelay        <= 0;
             weightAccepted              <= 0;
-            activationAccepted          <= 0;
+            inputAccepted              <= 0;
             weightSent                  <= 0;
-            activationSent              <= 0;
+            inputSent                  <= 0;
 
             for (int i = 0; i < N; i++) begin
                 spiData[i] <= 0;
@@ -92,8 +92,8 @@ module matrixMultiplierWeightStationarySPI #(
             acknowledgeSyncDelay     <= acknowledgeSync;
             weightValidSync          <= allWeightDataValid;
             weightValidSyncDelay     <= weightValidSync;
-            activationValidSync      <= allActivationDataValid;
-            activationValidSyncDelay <= activationValidSync;
+            inputValidSync          <= allInputDataValid;
+            inputValidSyncDelay     <= inputValidSync;
 
             if (resultReady) begin
                 request <= ~request;
@@ -110,11 +110,11 @@ module matrixMultiplierWeightStationarySPI #(
                 weightSent      <= 0;
             end
 
-            if (activationValid && activationFifoReady) begin
-                activationAccepted  <= ~activationAccepted;
-                activationSent      <= 1;
-            end else if (!activationValidSyncDelay) begin
-                activationSent      <= 0;
+            if (inputValid && inputFifoReady) begin
+                inputAccepted  <= ~inputAccepted;
+                inputSent      <= 1;
+            end else if (!inputValidSyncDelay) begin
+                inputSent      <= 0;
             end
         end
     end
@@ -127,16 +127,16 @@ module matrixMultiplierWeightStationarySPI #(
             weightAcceptedSync              <= 0;
             weightAcceptedSyncDelay         <= 0;
             weightAcceptedSeen              <= 0;
-            activationAcceptedSync          <= 0;
-            activationAcceptedSyncDelay     <= 0;
-            activationAcceptedSeen          <= 0;
+            inputAcceptedSync          <= 0;
+            inputAcceptedSyncDelay     <= 0;
+            inputAcceptedSeen          <= 0;
         end else begin
             requestSync                     <= request;
             requestSyncDelay                <= requestSync;
             weightAcceptedSync              <= weightAccepted;
             weightAcceptedSyncDelay         <= weightAcceptedSync;
-            activationAcceptedSync          <= activationAccepted;
-            activationAcceptedSyncDelay     <= activationAcceptedSync;
+            inputAcceptedSync          <= inputAccepted;
+            inputAcceptedSyncDelay     <= inputAcceptedSync;
 
             if (requestSyncDelay != acknowledge && allSpiReady) begin
                 acknowledge <= requestSyncDelay;
@@ -146,8 +146,8 @@ module matrixMultiplierWeightStationarySPI #(
                 weightAcceptedSeen <= weightAcceptedSyncDelay;
             end
 
-            if (activationAcceptedSyncDelay != activationAcceptedSeen) begin
-                activationAcceptedSeen <= activationAcceptedSyncDelay;
+            if (inputAcceptedSyncDelay != inputAcceptedSeen) begin
+                inputAcceptedSeen <= inputAcceptedSyncDelay;
             end
         end
     end
@@ -161,11 +161,9 @@ module matrixMultiplierWeightStationarySPI #(
     ) accelerator (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightFifoReady),
-        .activationData(activationData), .targetData('0),
-        .trainingEnable(trainingEnable), .activationValid(activationValid),
-        .activationReady(activationFifoReady), .resultData(resultData),
-        .resultTargetData(), .learningDirection(),
-        .rowDirection(), .columnDirection(), .matrixUpdateValid(),
+        .inputData(inputData), .targetData('0),
+        .trainingEnable(trainingEnable), .inputValid(inputValid),
+        .inputReady(inputFifoReady), .resultData(resultData),
         .resultValid(resultValid), .resultReady(resultReady), .passThrough(passThrough),
         .reduceOutput(reduceOutput), .reductionWeight(reductionWeight),
         .loadReductionWeights(loadReductionWeights),
@@ -189,11 +187,11 @@ module matrixMultiplierWeightStationarySPI #(
                 .data_out(weightData[spiIndex]), .data_valid(weightDataValid[spiIndex]),
                 .ready(weightAcceptedSyncDelay != weightAcceptedSeen)
             );
-            SPI_Slave_Input_Module #(.WIDTH(WIDTH)) activationSpi (
-                .rst_n(rst_n), .mosi(activationMosi[spiIndex]),
-                .cs_n(activationCs_n[spiIndex]), .sclk(sclk),
-                .data_out(activationData[spiIndex]), .data_valid(activationDataValid[spiIndex]),
-                .ready(activationAcceptedSyncDelay != activationAcceptedSeen)
+            SPI_Slave_Input_Module #(.WIDTH(WIDTH)) inputSpi (
+                .rst_n(rst_n), .mosi(inputMosi[spiIndex]),
+                .cs_n(inputCs_n[spiIndex]), .sclk(sclk),
+                .data_out(inputData[spiIndex]), .data_valid(inputDataValid[spiIndex]),
+                .ready(inputAcceptedSyncDelay != inputAcceptedSeen)
             );
         end
     endgenerate

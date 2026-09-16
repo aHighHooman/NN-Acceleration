@@ -12,20 +12,15 @@ module nnAccelerator #(
     input  logic signed [WIDTH-1:0]           weightData [N],
     input  logic                              weightValid,
     output logic                              weightReady,
-    input  logic signed [WIDTH-1:0]           activationData [N],
+    input  logic signed [WIDTH-1:0]           inputData [N],
     input  logic signed [TARGET_WIDTH-1:0]    targetData,
     input  logic                              trainingEnable,
-    input  logic                              activationValid,
-    output logic                              activationReady,
+    input  logic                              inputValid,
+    output logic                              inputReady,
     input  logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight [N],
     input  logic                              loadReductionWeights,
     input  logic                              reduceOutput,
     output logic signed [2*WIDTH+2*$clog2(N)-1:0] resultData [N],
-    output logic signed [TARGET_WIDTH-1:0]    resultTargetData,
-    output logic signed [1:0]                 learningDirection,
-    output logic signed [1:0]                 rowDirection [N],
-    output logic signed [1:0]                 columnDirection [N],
-    output logic                              matrixUpdateValid,
     output logic                              resultValid,
     input  logic                              resultReady,
     output logic                              weightsLoaded,
@@ -40,7 +35,7 @@ module nnAccelerator #(
     // slots as the matrix update wave, from PE(0,0) through PE(N-1,N-1).
     localparam int REDUCTION_UPDATE_DELAY = 2*N-1;
     // Sample context remains resident until its corresponding result is
-    // consumed, so its lifetime is longer than the matrix activation FIFO's.
+    // consumed, so its lifetime is longer than the matrix input FIFO's.
     localparam int SAMPLE_CONTEXT_DEPTH =
         (INPUT_FIFO_DEPTH > (2*N + 2)) ? INPUT_FIFO_DEPTH : (2*N + 2);
     localparam int SAMPLE_CONTEXT_WIDTH = TARGET_WIDTH + 2*N + 1;
@@ -65,33 +60,43 @@ module nnAccelerator #(
                                         PREDICTION_WIDTH + 2*N;
     logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoPushData;
     logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoHead;
+    // The retired sample's target and its comparison against the prediction.
+    // Both are consumed by the update package below; the accelerator's
+    // interface is the result stream itself.
+    logic signed [TARGET_WIDTH-1:0] resultTargetData;
+    logic signed [1:0] learningDirection;
     logic signed [COMPARE_WIDTH-1:0] comparePrediction, compareTarget;
     logic signed [2*N-1:0] inputSignPushData, inputSignHead;
     logic trainingEnableHead;
+    // The matrix and reduction update packages are formed here and consumed
+    // by matrixEngine below.  They are internal wiring, not an accelerator
+    // interface.
+    logic signed [1:0] rowDirection[N], columnDirection[N];
+    logic matrixUpdateValid;
     logic signed [1:0] reductionDirection[N];
     logic signed [2*N-1:0] reductionUpdateData;
     logic reductionUpdateValidPipe[REDUCTION_UPDATE_DELAY];
     logic signed [2*N-1:0]
         reductionUpdateDirectionPipe[REDUCTION_UPDATE_DELAY];
-    logic matrixDatapathAdvance, matrixResultPush;
+    logic arrayAdvance, matrixResultPush;
     logic matrixReloadReady, reductionUpdateBusy, applyReductionUpdate;
     logic resultFifoPush, resultFifoPop, resultFifoCanAccept;
     logic resultFifoFull, resultFifoEmpty;
-    logic matrixActivationValid, matrixActivationReady;
+    logic matrixInputValid, matrixInputReady;
     logic matrixResultValid, matrixResultReady;
     logic signed [SAMPLE_CONTEXT_WIDTH-1:0] sampleContextPushData;
     logic signed [SAMPLE_CONTEXT_WIDTH-1:0] sampleContextHead;
     logic sampleContextFull, sampleContextEmpty;
     logic samplePush, samplePop, sampleCanAccept;
 
-    // The activation vector, target, input signs, and training-enable bit are
+    // The input vector, target, input signs, and training-enable bit are
     // one input transaction. Gate the matrix valid as well as the external
     // ready so no part can advance alone when the sample-context FIFO applies
     // backpressure.
     assign sampleCanAccept       = !sampleContextFull || samplePop;
-    assign activationReady       = matrixActivationReady && sampleCanAccept;
-    assign matrixActivationValid = activationValid && sampleCanAccept;
-    assign samplePush            = activationValid && activationReady;
+    assign inputReady       = matrixInputReady && sampleCanAccept;
+    assign matrixInputValid = inputValid && sampleCanAccept;
+    assign samplePush       = inputValid && inputReady;
 
     // The single result FIFO owns the complete architectural result.  Its
     // capacity is the only forward-path storage decision: a full FIFO may
@@ -104,7 +109,7 @@ module nnAccelerator #(
     assign resultValid        = !resultFifoEmpty && !sampleContextEmpty;
     assign samplePop          = resultFifoPop;
     assign matrixUpdateValid = samplePop && trainingEnableHead;
-    assign applyReductionUpdate = matrixDatapathAdvance &&
+    assign applyReductionUpdate = arrayAdvance &&
                                   reductionUpdateValidPipe[REDUCTION_UPDATE_DELAY-1];
 
     always_comb begin
@@ -135,9 +140,9 @@ module nnAccelerator #(
     always_comb begin
         inputSignPushData = '0;
         for (int lane = 0; lane < N; lane++) begin
-            if (activationData[lane] == '0)
+            if (inputData[lane] == '0)
                 inputSignPushData[2*lane +: 2] = 2'sd0;
-            else if (activationData[lane][WIDTH-1])
+            else if (inputData[lane][WIDTH-1])
                 inputSignPushData[2*lane +: 2] = -2'sd1;
             else
                 inputSignPushData[2*lane +: 2] = 2'sd1;
@@ -223,7 +228,7 @@ module nnAccelerator #(
 
     // FIFO order, rather than a cycle count, carries the complete sample
     // context to the result transaction produced by the corresponding
-    // activation vector.
+    // input vector.
     signedFifo #(
         .WIDTH(SAMPLE_CONTEXT_WIDTH),
         .DEPTH(SAMPLE_CONTEXT_DEPTH)
@@ -231,7 +236,7 @@ module nnAccelerator #(
         .clk(clk), .rst_n(rst_n),
         .push(samplePush), .pushData(sampleContextPushData),
         .pop(samplePop), .popData(sampleContextHead),
-        .full(sampleContextFull), .empty(sampleContextEmpty), .values()
+        .full(sampleContextFull), .empty(sampleContextEmpty)
     );
 
     // One result entry carries every field needed at retirement.  The raw
@@ -243,7 +248,7 @@ module nnAccelerator #(
         .clk(clk), .rst_n(rst_n),
         .push(resultFifoPush), .pushData(resultFifoPushData),
         .pop(resultFifoPop), .popData(resultFifoHead),
-        .full(resultFifoFull), .empty(resultFifoEmpty), .values()
+        .full(resultFifoFull), .empty(resultFifoEmpty)
     );
 
     // The accelerator owns the compact reduction update.  Stage zero samples
@@ -262,7 +267,7 @@ module nnAccelerator #(
             for (int lane = 0; lane < N; lane++)
                 residentReductionWeight[lane] <= reductionWeight[lane];
         end else begin
-            if (matrixDatapathAdvance) begin
+            if (arrayAdvance) begin
                 for (int stage = REDUCTION_UPDATE_DELAY-1; stage > 0; stage--) begin
                     reductionUpdateValidPipe[stage] <=
                         reductionUpdateValidPipe[stage-1];
@@ -302,11 +307,11 @@ module nnAccelerator #(
     ) matrixEngine (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
-        .activationData(activationData), .activationValid(matrixActivationValid),
-        .activationReady(matrixActivationReady), .resultData(rawResultData),
+        .inputData(inputData), .inputValid(matrixInputValid),
+        .inputReady(matrixInputReady), .resultData(rawResultData),
         .rowDirection(rowDirection), .columnDirection(columnDirection),
         .matrixUpdateValid(matrixUpdateValid),
-        .datapathAdvance(matrixDatapathAdvance),
+        .arrayAdvance(arrayAdvance),
         .resultValid(matrixResultValid), .resultReady(matrixResultReady),
         .weightsLoaded(weightsLoaded),
         .reloadWeights(reloadWeights && reloadReady),

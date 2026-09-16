@@ -77,7 +77,7 @@
             for (int col = 0; col < N; col++) begin
                 sum = 0;
                 for (int row = 0; row < N; row++)
-                    sum += $signed(sample.activation[row]) *
+                    sum += $signed(sample.input_vector[row]) *
                            $signed(sample.weights[row][col]);
                 raw_value[col] = narrow_matrix(sum);
                 if (sample.pass_through || raw_value[col] >= 0)

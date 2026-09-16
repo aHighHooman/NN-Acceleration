@@ -8,9 +8,9 @@ module matrixMultiplierWeightStationary #(
     input  logic signed [WIDTH-1:0]      weightData [N],
     input  logic                         weightValid,
     output logic                         weightReady,
-    input  logic signed [WIDTH-1:0]      activationData [N],
-    input  logic                         activationValid,
-    output logic                         activationReady,
+    input  logic signed [WIDTH-1:0]      inputData [N],
+    input  logic                         inputValid,
+    output logic                         inputReady,
     input  logic signed [1:0]            rowDirection [N],
     input  logic signed [1:0]            columnDirection [N],
     input  logic                         matrixUpdateValid,
@@ -20,7 +20,7 @@ module matrixMultiplierWeightStationary #(
     output logic                         weightsLoaded,
     input  logic                         reloadWeights,
     output logic                         reloadReady,
-    output logic                         datapathAdvance
+    output logic                         arrayAdvance
 );
 
     localparam int WEIGHT_COUNT_WIDTH   = $clog2(N+1);
@@ -28,16 +28,16 @@ module matrixMultiplierWeightStationary #(
     localparam int VECTOR_WIDTH         = N * WIDTH;
 
     logic weightPush, consumePendingWeightRow;
-    logic activationPush, activationPop;
+    logic inputPush, inputPop;
     logic [WEIGHT_COUNT_WIDTH-1:0] loadedWeightRows;
 
     logic signed [WIDTH-1:0] pendingWeightRow [N];
     logic pendingWeightValid;
     logic consumingFinalWeightRow;
-    logic signed [VECTOR_WIDTH-1:0] activationVectorPushData;
-    logic signed [VECTOR_WIDTH-1:0] activationVectorHead;
-    logic signed [WIDTH-1:0] queuedActivation[N];
-    logic activationFull, activationEmpty;
+    logic signed [VECTOR_WIDTH-1:0] inputVectorPushData;
+    logic signed [VECTOR_WIDTH-1:0] inputVectorHead;
+    logic signed [WIDTH-1:0] queuedInput[N];
+    logic inputFull, inputEmpty;
     localparam int RESULT_ALIGN_STORAGE = (N > 1) ? N-1 : 1;
     logic signed [RESULT_WIDTH-1:0]
         resultAlignData[N][RESULT_ALIGN_STORAGE];
@@ -46,23 +46,23 @@ module matrixMultiplierWeightStationary #(
     logic resultAlignedValid[N], resultAlignedAllValid, resultAlignBusy;
     logic signed [WIDTH-1:0] skewData[N][N];
     logic skewValid[N][N];
-    logic signed [WIDTH-1:0] skewedActivation[N];
-    logic skewedActivationValid[N];
+    logic signed [WIDTH-1:0] skewedInput[N];
+    logic skewedInputValid[N];
     logic signed [RESULT_WIDTH-1:0] arrayResult[N];
     logic arrayResultValid[N];
-    logic pipelineBusy, skewBusy, arrayAdvance, outputBlocked;
+    logic pipelineBusy, skewBusy, outputBlocked;
 
     always_comb begin
-        activationVectorPushData = '0;
+        inputVectorPushData = '0;
         for (int lane = 0; lane < N; lane++) begin
-            activationVectorPushData[lane*WIDTH +: WIDTH] = activationData[lane];
+            inputVectorPushData[lane*WIDTH +: WIDTH] = inputData[lane];
         end
     end
 
     always_comb begin
         for (int lane = 0; lane < N; lane++) begin
-            queuedActivation[lane] =
-                activationVectorHead[lane*WIDTH +: WIDTH];
+            queuedInput[lane] =
+                inputVectorHead[lane*WIDTH +: WIDTH];
         end
     end
 
@@ -126,15 +126,14 @@ module matrixMultiplierWeightStationary #(
     assign weightReady      = !weightsLoaded &&
                               (!pendingWeightValid || !consumingFinalWeightRow);
     assign weightPush       = weightValid && weightReady;
-    assign activationReady  = weightsLoaded && !activationFull;
-    assign activationPush   = activationValid && activationReady;
+    assign inputReady  = weightsLoaded && !inputFull;
+    assign inputPush   = inputValid && inputReady;
     assign resultValid      = resultAlignedAllValid;
     assign arrayAdvance     = !weightsLoaded ? consumePendingWeightRow : !outputBlocked;
-    assign datapathAdvance = arrayAdvance;
-    assign activationPop    = weightsLoaded && !activationEmpty && arrayAdvance;
+    assign inputPop    = weightsLoaded && !inputEmpty && arrayAdvance;
     // The matrix engine reports only its own computation state.  Result
     // storage belongs to nnAccelerator.
-    assign reloadReady      = weightsLoaded && activationEmpty && !skewBusy &&
+    assign reloadReady      = weightsLoaded && inputEmpty && !skewBusy &&
                               !pipelineBusy && !resultAlignBusy && !resultValid;
 
     genvar resultLane;
@@ -144,18 +143,18 @@ module matrixMultiplierWeightStationary #(
         end
     endgenerate
 
-    signedFifo #(.WIDTH(VECTOR_WIDTH), .DEPTH(INPUT_FIFO_DEPTH)) activationVectorFifo (
-        .clk(clk), .rst_n(rst_n), .push(activationPush),
-        .pushData(activationVectorPushData), .pop(activationPop),
-        .popData(activationVectorHead), .full(activationFull),
-        .empty(activationEmpty), .values()
+    signedFifo #(.WIDTH(VECTOR_WIDTH), .DEPTH(INPUT_FIFO_DEPTH)) inputVectorFifo (
+        .clk(clk), .rst_n(rst_n), .push(inputPush),
+        .pushData(inputVectorPushData), .pop(inputPop),
+        .popData(inputVectorHead), .full(inputFull),
+        .empty(inputEmpty)
     );
 
     genvar laneIndex;
     generate
         for (laneIndex = 0; laneIndex < N; laneIndex = laneIndex + 1) begin : skew_outputs
-            assign skewedActivation[laneIndex]      = skewData[laneIndex][laneIndex];
-            assign skewedActivationValid[laneIndex] = skewValid[laneIndex][laneIndex];
+            assign skewedInput[laneIndex]      = skewData[laneIndex][laneIndex];
+            assign skewedInputValid[laneIndex] = skewValid[laneIndex][laneIndex];
         end
     endgenerate
 
@@ -216,8 +215,8 @@ module matrixMultiplierWeightStationary #(
                     end
                 end
                 for (int lane = 0; lane < N; lane++) begin
-                    skewData[lane][0]  <= queuedActivation[lane];
-                    skewValid[lane][0] <= activationPop;
+                    skewData[lane][0]  <= queuedInput[lane];
+                    skewValid[lane][0] <= inputPop;
 
                     for (int d = 1; d <= lane; d++) begin
                         skewData[lane][d]  <= skewData[lane][d-1];
@@ -232,10 +231,9 @@ module matrixMultiplierWeightStationary #(
         .clk(clk), .rst_n(rst_n), .advance(arrayAdvance), .loadWeight(consumePendingWeightRow),
         .rowDirection(rowDirection), .columnDirection(columnDirection),
         .updateValid(matrixUpdateValid),
-        .row(skewedActivation), .rowValid(skewedActivationValid),
+        .row(skewedInput), .rowValid(skewedInputValid),
         .col(pendingWeightRow), .result(arrayResult),
         .resultValid(arrayResultValid),
-        .updateComplete(),
         .pipelineBusy(pipelineBusy)
     );
 

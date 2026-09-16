@@ -17,8 +17,8 @@ module matrixMultiplierWeightStationary_testcase #(
     typedef result_t result_matrix_t[N][N];
 
     logic clk, rst_n;
-    data_t weightData[N], activationData[N];
-    logic weightValid, weightReady, activationValid, activationReady;
+    data_t weightData[N], inputData[N];
+    logic weightValid, weightReady, inputValid, inputReady;
     logic signed [1:0] noRowDirection[N], noColumnDirection[N];
     result_t resultData[N];
     logic resultValid, resultReady;
@@ -27,10 +27,10 @@ module matrixMultiplierWeightStationary_testcase #(
     matrixMultiplierWeightStationary #(.WIDTH(WIDTH), .N(N)) dut (
         .clk(clk), .rst_n(rst_n),
         .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
-        .activationData(activationData), .activationValid(activationValid),
-        .activationReady(activationReady),
+        .inputData(inputData), .inputValid(inputValid),
+        .inputReady(inputReady),
         .rowDirection(noRowDirection), .columnDirection(noColumnDirection),
-        .matrixUpdateValid(1'b0), .datapathAdvance(),
+        .matrixUpdateValid(1'b0), .arrayAdvance(),
         .resultData(resultData), .resultValid(resultValid), .resultReady(resultReady),
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights),
         .reloadReady(reloadReady)
@@ -42,10 +42,10 @@ module matrixMultiplierWeightStationary_testcase #(
     end
 
     initial begin
-        matrix_t identity_weights, basic_activations;
-        matrix_t signed_weights, signed_activations;
-        matrix_t positive_weights, positive_activations;
-        matrix_t negative_weights, negative_activations;
+        matrix_t identity_weights, basic_inputs;
+        matrix_t signed_weights, signed_inputs;
+        matrix_t positive_weights, positive_inputs;
+        matrix_t negative_weights, negative_inputs;
         data_t min_data, max_data;
         data_t held_sample[N];
 
@@ -54,14 +54,14 @@ module matrixMultiplierWeightStationary_testcase #(
         for (int row = 0; row < N; row++) begin
             for (int col = 0; col < N; col++) begin
                 identity_weights[row][col] = (row == col) ? 1 : 0;
-                basic_activations[row][col] = row * N + col + 1;
-                signed_activations[row][col] = (row == col) ? -3 :
+                basic_inputs[row][col] = row * N + col + 1;
+                signed_inputs[row][col] = (row == col) ? -3 :
                                                data_t'(row + 2*col + 1);
                 signed_weights[row][col] = (row == col) ? 2 :
                                            (((row + col) % 2) ? -1 : 1);
-                positive_activations[row][col] = min_data;
+                positive_inputs[row][col] = min_data;
                 positive_weights[row][col] = min_data;
-                negative_activations[row][col] = min_data;
+                negative_inputs[row][col] = min_data;
                 negative_weights[row][col] = max_data;
             end
             held_sample[row] = row + 1;
@@ -70,12 +70,12 @@ module matrixMultiplierWeightStationary_testcase #(
         done = 1'b0;
         rst_n = 1'b0;
         weightValid = 1'b0;
-        activationValid = 1'b0;
+        inputValid = 1'b0;
         resultReady = 1'b0;
         reloadWeights = 1'b0;
         for (int lane = 0; lane < N; lane++) begin
             weightData[lane] = '0;
-            activationData[lane] = '0;
+            inputData[lane] = '0;
             noRowDirection[lane] = 2'sd0;
             noColumnDirection[lane] = 2'sd0;
         end
@@ -90,10 +90,10 @@ module matrixMultiplierWeightStationary_testcase #(
 
         // Deterministic matrix multiplication and signed arithmetic.
         send_matrix_and_check("basic identity multiplication",
-                              basic_activations, identity_weights);
+                              basic_inputs, identity_weights);
         request_weight_reload();
         send_weights("signed weights", signed_weights);
-        send_matrix_and_check("signed multiplication", signed_activations,
+        send_matrix_and_check("signed multiplication", signed_inputs,
                               signed_weights);
 
         // The edge cases require the full accumulation width, not a
@@ -101,11 +101,11 @@ module matrixMultiplierWeightStationary_testcase #(
         request_weight_reload();
         send_weights("positive accumulation-edge weights", positive_weights);
         send_matrix_and_check("positive accumulation width",
-                              positive_activations, positive_weights);
+                              positive_inputs, positive_weights);
         request_weight_reload();
         send_weights("negative accumulation-edge weights", negative_weights);
         send_matrix_and_check("negative accumulation width",
-                              negative_activations, negative_weights);
+                              negative_inputs, negative_weights);
 
         $display("PASS: %0dx%0d deterministic arithmetic, signed edges, and result backpressure",
                  N, N);
@@ -126,21 +126,21 @@ module matrixMultiplierWeightStationary_testcase #(
         wait(weightsLoaded);
     endtask
 
-    task send_activations(input matrix_t activation_matrix);
+    task send_inputs(input matrix_t input_matrix);
         for (int row = 0; row < N; row++) begin
             @(negedge clk);
-            while (!activationReady) @(negedge clk);
+            while (!inputReady) @(negedge clk);
             for (int lane = 0; lane < N; lane++)
-                activationData[lane] = activation_matrix[row][lane];
-            activationValid = 1'b1;
+                inputData[lane] = input_matrix[row][lane];
+            inputValid = 1'b1;
             @(posedge clk);
         end
-        @(negedge clk) activationValid = 1'b0;
+        @(negedge clk) inputValid = 1'b0;
     endtask
 
     task send_matrix_and_check(
         input string label,
-        input matrix_t activation_matrix,
+        input matrix_t input_matrix,
         input matrix_t weight_matrix
     );
         result_matrix_t expected, actual;
@@ -151,14 +151,14 @@ module matrixMultiplierWeightStationary_testcase #(
                 longint signed sum;
                 sum = 0;
                 for (int k = 0; k < N; k++)
-                    sum += $signed(activation_matrix[row][k]) *
+                    sum += $signed(input_matrix[row][k]) *
                            $signed(weight_matrix[k][col]);
                 expected[row][col] = result_t'(sum);
             end
 
         resultReady = 1'b1;
         fork
-            send_activations(activation_matrix);
+            send_inputs(input_matrix);
             begin
                 for (int row = 0; row < N; row++) begin
                     bit accepted;
@@ -205,7 +205,7 @@ module matrixMultiplierWeightStationary_testcase #(
         end
 
         resultReady = 1'b0;
-        send_single_activation(sample);
+        send_single_input(sample);
         guard = 0;
         while (!resultValid) begin
             @(negedge clk);
@@ -235,14 +235,14 @@ module matrixMultiplierWeightStationary_testcase #(
         $display("PASS: %0dx%0d direct result backpressure stability", N, N);
     endtask
 
-    task send_single_activation(input data_t sample[N]);
+    task send_single_input(input data_t sample[N]);
         @(negedge clk);
-        while (!activationReady) @(negedge clk);
+        while (!inputReady) @(negedge clk);
         for (int lane = 0; lane < N; lane++)
-            activationData[lane] = sample[lane];
-        activationValid = 1'b1;
+            inputData[lane] = sample[lane];
+        inputValid = 1'b1;
         @(posedge clk);
-        @(negedge clk) activationValid = 1'b0;
+        @(negedge clk) inputValid = 1'b0;
     endtask
 
     task request_weight_reload();

@@ -141,8 +141,14 @@ module systolicWeightUpdateWave_testcase(
     logic rowValid[N];
     logic signed [1:0] rowDirection[N], columnDirection[N];
     logic signed [RESULT_WIDTH-1:0] result[N];
-    logic resultValid[N], updateComplete, pipelineBusy;
+    logic resultValid[N], pipelineBusy;
     integer acceptedUpdateCount, completedUpdateCount;
+
+    // A package completes on the advancing edge that applies its final
+    // anti-diagonal, which is the last stage of the array's update pipe.
+    localparam int LAST_UPDATE_STAGE = 2*N - 3;
+    logic updateComplete;
+    assign updateComplete = advance && dut.updateValidPipe[LAST_UPDATE_STAGE];
 
     systolicArrayWeightStationary #(.WIDTH(WIDTH), .N(N)) dut (
         .clk(clk), .rst_n(rst_n), .advance(advance),
@@ -151,7 +157,6 @@ module systolicWeightUpdateWave_testcase(
         .updateValid(updateValid),
         .row(row), .rowValid(rowValid), .col(col),
         .result(result), .resultValid(resultValid),
-        .updateComplete(updateComplete),
         .pipelineBusy(pipelineBusy)
     );
 

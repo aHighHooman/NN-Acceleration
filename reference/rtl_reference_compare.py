@@ -103,15 +103,28 @@ def _reset_and_load_weights(weight_matrix: Sequence[Sequence[int]],
     return result
 
 
-def _activation_cycle(x: Sequence[int], target: int, training: bool, *, ready: bool = True,
-                      pass_through: bool = True, reduce_output: bool = False) -> DrivenCycle:
+def _input_cycle(x: Sequence[int], target: int, training: bool, *, ready: bool = True,
+                 pass_through: bool = True, reduce_output: bool = False) -> DrivenCycle:
     return _driven(CycleInputs(
-        activation_valid=True,
-        activation_data=tuple(x),
+        input_valid=True,
+        input_data=tuple(x),
         target_data=target,
         training_enable=training,
         result_ready=ready,
     ), pass_through=pass_through, reduce_output=reduce_output)
+
+
+def _idle_cycles(count: int, **options: bool) -> list[DrivenCycle]:
+    return [_idle_cycle(**options) for _ in range(count)]
+
+
+def _sample_cycles(samples: Iterable[Sample], **options: bool) -> list[DrivenCycle]:
+    """One input cycle per sample, carrying each sample's own training flag."""
+
+    return [
+        _input_cycle(s.x, s.target, s.training_enable, **options)
+        for s in samples
+    ]
 
 
 def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
@@ -145,17 +158,15 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     )
     add_scenario("continuous_inference", [
         *_reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS),
-        *[_activation_cycle(sample.x, sample.target, False)
-          for sample in continuous_inference_samples],
-        *[_idle_cycle() for _ in range(24)]], continuous_inference_samples)
+        *_sample_cycles(continuous_inference_samples),
+        *_idle_cycles(24)], continuous_inference_samples)
 
     # 2: the first three training updates become visible to samples 7, 8, 9.
     continuous_training_samples = tuple(Sample((1, 2, 3), 127, True) for _ in range(10))
     add_scenario("continuous_training", [
         *_reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS),
-        *[_activation_cycle(sample.x, sample.target, True)
-          for sample in continuous_training_samples],
-        *[_idle_cycle() for _ in range(28)]], continuous_training_samples)
+        *_sample_cycles(continuous_training_samples),
+        *_idle_cycles(28)], continuous_training_samples)
 
     # 3: inference transactions remain interleaved but emit no update package.
     mixed_values = ((1, 2, 3), (-2, 3, 1), (3, -1, 2), (0, 2, -3),
@@ -165,9 +176,8 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
                                    for i, x in enumerate(mixed_values))
     add_scenario("mixed_training_inference", [
         *_reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS),
-        *[_activation_cycle(sample.x, sample.target, sample.training_enable)
-          for sample in mixed_training_samples],
-        *[_idle_cycle() for _ in range(28)]], mixed_training_samples)
+        *_sample_cycles(mixed_training_samples),
+        *_idle_cycles(28)], mixed_training_samples)
 
     # 4: bubbles are explicit invalid pre-edge bundles; update waves continue.
     bubble_cycles = _reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
@@ -175,16 +185,16 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
         if index in (1, 2, 5, 9, 10):
             bubble_cycles.append(_idle_cycle())
         else:
-            bubble_cycles.append(_activation_cycle((1 + index % 2, 2, 3), 127, True))
-    bubble_cycles.extend(_idle_cycle() for _ in range(28))
+            bubble_cycles.append(_input_cycle((1 + index % 2, 2, 3), 127, True))
+    bubble_cycles.extend(_idle_cycles(28))
     add_scenario("input_bubbles", bubble_cycles)
 
     # 5: eight accepted contexts and six buffered outputs force a true array
     # stall while ready remains low; release then drains in original order.
     backpressure_cycles = _reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
-    backpressure_cycles.extend(_activation_cycle((i + 1, 1, -1), 0, False, ready=False) for i in range(12))
-    backpressure_cycles.extend(_idle_cycle(ready=False) for _ in range(16))
-    backpressure_cycles.extend(_idle_cycle(ready=True) for _ in range(32))
+    backpressure_cycles.extend(_input_cycle((i + 1, 1, -1), 0, False, ready=False) for i in range(12))
+    backpressure_cycles.extend(_idle_cycles(16, ready=False))
+    backpressure_cycles.extend(_idle_cycles(32, ready=True))
     add_scenario("output_backpressure", backpressure_cycles)
 
     # 6L: train one result before the result FIFO fills, then hold the real
@@ -210,31 +220,14 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     # The first eight samples are accepted continuously.  The three idle
     # cycles leave four results buffered, then one ready cycle retires the
     # first result and injects the first learning package.
-    phase6l_cycles.extend(
-        _activation_cycle(sample.x, sample.target, sample.training_enable, ready=False)
-        for sample in phase6l_samples[:8]
-    )
-    phase6l_cycles.extend(_idle_cycle(ready=False) for _ in range(3))
-    phase6l_cycles.append(
-        _activation_cycle(
-            phase6l_samples[8].x,
-            phase6l_samples[8].target,
-            phase6l_samples[8].training_enable,
-            ready=True,
-        )
-    )
+    phase6l_cycles.extend(_sample_cycles(phase6l_samples[:8], ready=False))
+    phase6l_cycles.extend(_idle_cycles(3, ready=False))
+    phase6l_cycles.extend(_sample_cycles(phase6l_samples[8:9], ready=True))
     # Two held cycles occur after the result FIFO becomes full.  The second
-    # activation is accepted on the first advancing edge after the stall.
-    phase6l_cycles.extend(_idle_cycle(ready=False) for _ in range(4))
-    phase6l_cycles.append(
-        _activation_cycle(
-            phase6l_samples[9].x,
-            phase6l_samples[9].target,
-            phase6l_samples[9].training_enable,
-            ready=True,
-        )
-    )
-    phase6l_cycles.extend(_idle_cycle(ready=True) for _ in range(32))
+    # input is accepted on the first advancing edge after the stall.
+    phase6l_cycles.extend(_idle_cycles(4, ready=False))
+    phase6l_cycles.extend(_sample_cycles(phase6l_samples[9:10], ready=True))
+    phase6l_cycles.extend(_idle_cycles(32, ready=True))
     add_scenario(
         "phase6L_training_backpressure",
         phase6l_cycles,
@@ -248,22 +241,16 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     post_reload_samples = tuple(Sample(x, target, False) for x, target in (
         ((2, -1, 3), 15), ((-1, 4, 2), -20), ((3, 0, -2), 7), ((1, 1, 1), 0)))
     reload_cycles = _reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
-    reload_cycles.extend(
-        _activation_cycle(sample.x, sample.target, False)
-        for sample in pre_reload_samples
-    )
-    reload_cycles.extend(_idle_cycle() for _ in range(20))
+    reload_cycles.extend(_sample_cycles(pre_reload_samples))
+    reload_cycles.extend(_idle_cycles(20))
     reload_cycles.append(_driven(CycleInputs(reload_weights=True, result_ready=True)))
     for row in reversed(RELOADED_WEIGHT_MATRIX):
         reload_cycles.append(_driven(CycleInputs(
             weight_valid=True, weight_data=tuple(row), result_ready=True)))
     reload_cycles.append(_idle_cycle())
     post_start_offset = len(reload_cycles)
-    reload_cycles.extend(
-        _activation_cycle(sample.x, sample.target, False)
-        for sample in post_reload_samples
-    )
-    reload_cycles.extend(_idle_cycle() for _ in range(24))
+    reload_cycles.extend(_sample_cycles(post_reload_samples))
+    reload_cycles.extend(_idle_cycles(24))
     start = len(cycles)
     add_scenario("loading_reload", reload_cycles)
     functional_comparisons.append(FunctionalComparison(
@@ -285,23 +272,15 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
         pass_through=True, reduce_output=True)
     pass_start = transition_start
     transition_cycles.extend(
-        _activation_cycle(sample.x, sample.target, False,
-                          pass_through=True, reduce_output=True)
-        for sample in pass_samples
-    )
+        _sample_cycles(pass_samples, pass_through=True, reduce_output=True))
     transition_cycles.extend(
-        _idle_cycle(pass_through=True, reduce_output=True) for _ in range(24)
-    )
+        _idle_cycles(24, pass_through=True, reduce_output=True))
     pass_end = transition_start + len(transition_cycles) - 1
     relu_start = pass_end + 1
     transition_cycles.extend(
-        _activation_cycle(sample.x, sample.target, False,
-                          pass_through=False, reduce_output=False)
-        for sample in relu_samples
-    )
+        _sample_cycles(relu_samples, pass_through=False, reduce_output=False))
     transition_cycles.extend(
-        _idle_cycle(pass_through=False, reduce_output=False) for _ in range(24)
-    )
+        _idle_cycles(24, pass_through=False, reduce_output=False))
     cycles.extend(transition_cycles)
     scenarios.append(Scenario("quiescent_configuration_transition", transition_start, len(cycles) - 1))
     functional_comparisons.extend((
@@ -327,11 +306,11 @@ def write_stimulus(path: Path, comparison_inputs: ComparisonInputs) -> None:
         for cycle, item in enumerate(comparison_inputs.cycles):
             inputs = item.inputs
             weight = inputs.weight_data or (0,) * N
-            activation = inputs.activation_data or (0,) * N
+            input_data = inputs.input_data or (0,) * N
             reduction = inputs.reduction_weight or (0,) * N
             values = (
                 cycle, int(inputs.reset_n), int(inputs.weight_valid), *weight,
-                int(inputs.activation_valid), *activation, inputs.target_data,
+                int(inputs.input_valid), *input_data, inputs.target_data,
                 int(inputs.training_enable), int(inputs.result_ready), *reduction,
                 int(inputs.load_reduction_weights), int(inputs.reload_weights),
                 int(item.pass_through),
@@ -351,8 +330,8 @@ def read_stimulus(path: Path) -> tuple[DrivenCycle, ...]:
         if len(v) != 20 or v[0] != expected_cycle:
             raise ValueError(f"malformed stimulus line for cycle {expected_cycle}")
         result.append(DrivenCycle(CycleInputs(reset_n=bool(v[1]), weight_valid=bool(v[2]),
-            weight_data=tuple(v[3:6]), activation_valid=bool(v[6]),
-            activation_data=tuple(v[7:10]), target_data=v[10], training_enable=bool(v[11]),
+            weight_data=tuple(v[3:6]), input_valid=bool(v[6]),
+            input_data=tuple(v[7:10]), target_data=v[10], training_enable=bool(v[11]),
             result_ready=bool(v[12]), reduction_weight=tuple(v[13:16]),
             load_reduction_weights=bool(v[16]), reload_weights=bool(v[17])),
             pass_through=bool(v[18]), reduce_output=bool(v[19])))
@@ -391,18 +370,14 @@ def read_trace(
         elif f[0] == "RT":
             if len(f) != 2*N + 5:
                 raise ValueError(f"bad RT record at trace line {line_number}")
-            activated_start = 2
-            prediction_index = activated_start + N
-            direction_index = prediction_index + 1
-            target_index = direction_index + 1
-            result_start = target_index + 1
+            v = [int(field) for field in f[1:]]
             retirements.append({
-                "cycle": int(f[1]),
-                "activated": tuple(map(int, f[activated_start:prediction_index])),
-                "prediction": int(f[prediction_index]),
-                "direction": int(f[direction_index]),
-                "target": int(f[target_index]),
-                "result": tuple(map(int, f[result_start:result_start+N])),
+                "cycle": v[0],
+                "activated": tuple(v[1:1 + N]),
+                "prediction": v[1 + N],
+                "direction": v[2 + N],
+                "target": v[3 + N],
+                "result": tuple(v[4 + N:4 + 2 * N]),
             })
         elif current is None:
             raise ValueError(f"trace data before C at line {line_number}")
@@ -415,8 +390,8 @@ def read_trace(
             if len(entries) > 1:
                 raise ValueError(f"bad PW trace payload at line {line_number}")
             current["pending_weight_row"] = entries[0] if entries else None
-        elif f[0] == "AF":
-            current["activation_fifo"] = _parse_counted(f, N)
+        elif f[0] == "IF":
+            current["input_fifo"] = _parse_counted(f, N)
         elif f[0] == "SF":
             entries = _parse_counted(f, N + 2)
             current["sample_context_fifo"] = tuple((e[0], tuple(e[1:1+N]), bool(e[-1])) for e in entries)
@@ -479,32 +454,24 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         cycle = exp.cycle
         if act.get("cycle") != cycle:
             _fail(cycle, "cycle number", cycle, act.get("cycle"))
-        actual_W = act.get("W", ())
-        if not isinstance(actual_W, tuple) or len(actual_W) != N:
-            _fail(cycle, "W row count", N, len(actual_W) if isinstance(actual_W, tuple) else actual_W)
-        for row in range(N):
-            for column in range(N):
-                if exp.W[row][column] != actual_W[row][column]:
-                    _fail(cycle, f"W[{row}][{column}]", exp.W[row][column], actual_W[row][column])
-        actual_R = act.get("R", ())
-        if not isinstance(actual_R, tuple) or len(actual_R) != N:
-            _fail(cycle, "R length", N, len(actual_R) if isinstance(actual_R, tuple) else actual_R)
-        for lane in range(N):
-            if exp.R[lane] != actual_R[lane]:
-                _fail(cycle, f"R[{lane}]", exp.R[lane], actual_R[lane])
-        for field in ("pending_weight_row", "activation_fifo"):
-            left = getattr(exp, field); right = act.get(field)
+        for name, left, right in (
+            ("W", exp.W, act.get("W", ())),
+            ("R", tuple(exp.R), act.get("R", ())),
+            ("pending_weight_row", exp.pending_weight_row, act.get("pending_weight_row")),
+            ("input_fifo", exp.input_fifo, act.get("input_fifo")),
+            ("sampleContextFifo",
+             tuple((e.target, e.input_signs, e.training_enable)
+                   for e in exp.sample_context_fifo),
+             act.get("sample_context_fifo", ())),
+            ("resultFifo",
+             tuple((e.activated_result, e.prediction, e.reduction_weight_signs)
+                   for e in exp.result_fifo),
+             act.get("result_fifo", ())),
+        ):
             if isinstance(left, tuple) and isinstance(right, tuple):
-                _compare_sequence(cycle, field, left, right)
+                _compare_sequence(cycle, name, left, right)
             elif left != right:
-                _fail(cycle, field, left, right)
-        exp_context = tuple((e.target, e.input_signs, e.training_enable) for e in exp.sample_context_fifo)
-        _compare_sequence(cycle, "sampleContextFifo", exp_context, act.get("sample_context_fifo", ()))
-        exp_results = tuple(
-            (entry.activated_result, entry.prediction, entry.reduction_weight_signs)
-            for entry in exp.result_fifo
-        )
-        _compare_sequence(cycle, "resultFifo", exp_results, act.get("result_fifo", ()))
+                _fail(cycle, name, left, right)
         progress = act.get("datapath_progress")
         if not isinstance(progress, tuple) or len(progress) != 9:
             _fail(cycle, "datapath progress trace", "nine fields", progress)
@@ -523,45 +490,50 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
 
     functional_comparisons = 0
     for comparison in comparison_inputs.functional_comparisons:
-        model = FunctionalReference(ReferenceConfig(n=N, width=WIDTH, fraction_bits=FRACTION_BITS,
-            target_width=TARGET_WIDTH, reduction_weight_width=REDUCTION_WEIGHT_WIDTH,
-            pass_through=comparison.pass_through, reduce_output=comparison.reduce_output),
-            comparison.W, comparison.R)
+        model = FunctionalReference(
+            ReferenceConfig(
+                n=N, width=WIDTH, fraction_bits=FRACTION_BITS, target_width=TARGET_WIDTH,
+                reduction_weight_width=REDUCTION_WEIGHT_WIDTH,
+                pass_through=comparison.pass_through,
+                reduce_output=comparison.reduce_output,
+            ),
+            comparison.W, comparison.R,
+        )
         records = model.run(comparison.samples)
-        enqueued = [r for r in enqueues
-                    if comparison.start_cycle <= int(r["cycle"]) <= comparison.end_cycle]
-        retired = [r for r in retirements
-                   if comparison.start_cycle <= int(r["cycle"]) <= comparison.end_cycle]
+        window = [
+            [r for r in rows
+             if comparison.start_cycle <= int(r["cycle"]) <= comparison.end_cycle]
+            for rows in (enqueues, retirements)
+        ]
+        enqueued, retired = window
         if len(enqueued) != len(records) or len(retired) != len(records):
             raise AssertionError(
                 f"{comparison.name}: enqueued {len(enqueued)}, retired {len(retired)}; "
                 f"expected {len(records)} each"
             )
-        for index, (record, enqueued_rtl, rtl) in enumerate(zip(records, enqueued, retired)):
+        for index, (record, enq, rtl) in enumerate(zip(records, enqueued, retired)):
             cycle = int(rtl["cycle"])
-            enqueue_cycle = int(enqueued_rtl["cycle"])
-            if record.raw_matrix_result != enqueued_rtl["raw"]:
-                _fail(enqueue_cycle, f"{comparison.name} sample {index} raw matrix result",
-                      record.raw_matrix_result, enqueued_rtl["raw"])
-            checks = (("activated result", record.activated_result, rtl["activated"]),
-                      ("prediction", record.prediction, rtl["prediction"]),
-                      ("learning direction", record.learning_direction, rtl["direction"]),
-                      ("target", record.target, rtl["target"]))
-            for label, left, right in checks:
+            expected_output = ((record.prediction, 0, 0)
+                               if comparison.reduce_output else record.activated_result)
+            for at, label, left, right in (
+                (int(enq["cycle"]), "raw matrix result", record.raw_matrix_result, enq["raw"]),
+                (cycle, "activated result", record.activated_result, rtl["activated"]),
+                (cycle, "prediction", record.prediction, rtl["prediction"]),
+                (cycle, "learning direction", record.learning_direction, rtl["direction"]),
+                (cycle, "target", record.target, rtl["target"]),
+                (cycle, "external result", expected_output, rtl["result"]),
+            ):
                 functional_comparisons += 1
                 if left != right:
-                    _fail(cycle, f"{comparison.name} sample {index} {label}", left, right)
-            expected_output = ((record.prediction, 0, 0)
-                               if model.config.reduce_output else record.activated_result)
-            functional_comparisons += 1
-            if expected_output != rtl["result"]:
-                _fail(cycle, f"{comparison.name} sample {index} external result", expected_output, rtl["result"])
+                    _fail(at, f"{comparison.name} sample {index} {label}", left, right)
         final = actual[comparison.end_cycle]
-        functional_comparisons += 2
-        if tuple(tuple(row) for row in model.final_W) != final["W"]:
-            _fail(comparison.end_cycle, f"{comparison.name} final W", model.final_W, final["W"])
-        if tuple(model.final_R) != final["R"]:
-            _fail(comparison.end_cycle, f"{comparison.name} final R", model.final_R, final["R"])
+        for label, left, right in (
+            ("final W", tuple(tuple(row) for row in model.final_W), final["W"]),
+            ("final R", tuple(model.final_R), final["R"]),
+        ):
+            functional_comparisons += 1
+            if left != right:
+                _fail(comparison.end_cycle, f"{comparison.name} {label}", left, right)
 
     # Scenario-specific evidence required beyond field-by-field comparison.
     training_comparison = next(
@@ -603,7 +575,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
     held = any(len(states[i].result_fifo) == config.output_fifo_depth and
                states[i].W == states[i-1].W and states[i].R == states[i-1].R and
                states[i].pending_weight_row == states[i-1].pending_weight_row and
-               states[i].activation_fifo == states[i-1].activation_fifo and
+               states[i].input_fifo == states[i-1].input_fifo and
                states[i].sample_context_fifo == states[i-1].sample_context_fifo and
                states[i].result_fifo == states[i-1].result_fifo
                for i in range(1, len(states)))
@@ -659,7 +631,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         before = phase6l_states[cycle - 1]
         during = phase6l_states[cycle]
         architectural_fields = (
-            "W", "R", "pending_weight_row", "activation_fifo", "sample_context_fifo",
+            "W", "R", "pending_weight_row", "input_fifo", "sample_context_fifo",
             "result_fifo",
         )
         if any(getattr(before, field) != getattr(during, field) for field in architectural_fields):

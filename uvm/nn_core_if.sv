@@ -18,11 +18,11 @@ interface nn_core_if #(
     logic weightValid;
     logic weightReady;
 
-    logic signed [WIDTH-1:0] activationData [N];
+    logic signed [WIDTH-1:0] inputData [N];
     logic signed [TARGET_WIDTH-1:0] targetData;
     logic trainingEnable;
-    logic activationValid;
-    logic activationReady;
+    logic inputValid;
+    logic inputReady;
 
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight [N];
     logic loadReductionWeights;
@@ -45,8 +45,8 @@ interface nn_core_if #(
         default input #1step;
         input rst_n;
         input weightData, weightValid, weightReady;
-        input activationData, targetData, trainingEnable;
-        input activationValid, activationReady;
+        input inputData, targetData, trainingEnable;
+        input inputValid, inputReady;
         input reductionWeight, loadReductionWeights, passThrough, reduceOutput;
         input resultData, resultValid, resultReady;
         input weightsLoaded, reloadWeights, reloadReady;

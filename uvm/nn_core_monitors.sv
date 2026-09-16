@@ -18,7 +18,7 @@
         bit released_once;
 
         int unsigned samples_observed;
-        int unsigned activation_backpressure_cycles;
+        int unsigned input_backpressure_cycles;
         int unsigned reload_count;
         int unsigned reset_count;
 
@@ -30,7 +30,7 @@
             in_reset = 1'b0;
             released_once = 1'b0;
             samples_observed = 0;
-            activation_backpressure_cycles = 0;
+            input_backpressure_cycles = 0;
             reload_count = 0;
             reset_count = 0;
             clear_configuration();
@@ -106,17 +106,17 @@
                         pending_weight_rows++;
                 end
 
-                if (vif.monitor_cb.activationValid &&
-                    !vif.monitor_cb.activationReady)
-                    activation_backpressure_cycles++;
+                if (vif.monitor_cb.inputValid &&
+                    !vif.monitor_cb.inputReady)
+                    input_backpressure_cycles++;
 
-                if (vif.monitor_cb.activationValid &&
-                    vif.monitor_cb.activationReady) begin
+                if (vif.monitor_cb.inputValid &&
+                    vif.monitor_cb.inputReady) begin
                     nn_core_sample_item sample;
                     sample = nn_core_sample_item::type_id::create(
                         "accepted_sample");
                     for (int lane = 0; lane < N; lane++) begin
-                        sample.activation[lane] = vif.monitor_cb.activationData[lane];
+                        sample.input_vector[lane] = vif.monitor_cb.inputData[lane];
                         sample.reduction_weights[lane] =
                             resident_reduction_weights[lane];
                     end

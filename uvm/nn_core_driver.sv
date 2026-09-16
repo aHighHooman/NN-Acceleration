@@ -17,7 +17,7 @@
         // Scenario counters are deliberately local to the driver.  They are
         // used by the test's explicit assertions, not a coverage subsystem.
         int unsigned weight_bubbles_injected;
-        int unsigned activation_bubbles_injected;
+        int unsigned input_bubbles_injected;
 
         function new(string name, uvm_component parent);
             super.new(name, parent);
@@ -28,7 +28,7 @@
             reset_active = 1'b0;
             hold_result_for_input_pressure = 1'b0;
             weight_bubbles_injected = 0;
-            activation_bubbles_injected = 0;
+            input_bubbles_injected = 0;
         endfunction
 
         function void build_phase(uvm_phase phase);
@@ -78,7 +78,7 @@
         task drive_sample(nn_core_sample_item item);
             active_result_stall_percent = (item.result_stall_percent > 100) ?
                                           100 : item.result_stall_percent;
-            if (item.hold_result_until_activation_backpressure)
+            if (item.hold_result_until_input_backpressure)
                 hold_result_for_input_pressure = 1'b1;
 
             `uvm_info("DRV", {"Driving sample ", item.convert2string()}, UVM_MEDIUM)
@@ -86,7 +86,7 @@
                 `uvm_fatal("WEIGHT_STATE",
                            "sample arrived without a loaded weight configuration")
 
-            drive_activation_vector(item);
+            drive_input_vector(item);
             if (item.reset_after_accept)
                 reset_dut();
         endtask
@@ -124,7 +124,7 @@
                 end else if (hold_result_for_input_pressure) begin
                     // Hold the result FIFO until the public input path shows
                     // backpressure, proving the two ready/valid paths meet.
-                    if (vif.activationValid && !vif.activationReady) begin
+                    if (vif.inputValid && !vif.inputReady) begin
                         vif.resultReady = 1'b1;
                         hold_result_for_input_pressure = 1'b0;
                         stall_run = 0;
@@ -156,7 +156,7 @@
             @(negedge vif.clk);
             vif.rst_n = 1'b0;
             vif.weightValid = 1'b0;
-            vif.activationValid = 1'b0;
+            vif.inputValid = 1'b0;
             vif.targetData = '0;
             vif.trainingEnable = 1'b0;
             vif.loadReductionWeights = 1'b0;
@@ -166,7 +166,7 @@
             vif.resultReady = 1'b0;
             for (int lane = 0; lane < N; lane++) begin
                 vif.weightData[lane] = '0;
-                vif.activationData[lane] = '0;
+                vif.inputData[lane] = '0;
                 vif.reductionWeight[lane] = '0;
             end
             repeat (3) @(posedge vif.clk);
@@ -218,19 +218,19 @@
             @(negedge vif.clk) vif.weightValid = 1'b0;
         endtask
 
-        task drive_activation_vector(nn_core_sample_item item);
-            if (item.activation_bubble) begin
-                vif.activationValid = 1'b0;
-                activation_bubbles_injected++;
+        task drive_input_vector(nn_core_sample_item item);
+            if (item.input_bubble) begin
+                vif.inputValid = 1'b0;
+                input_bubbles_injected++;
                 repeat (1 + (next_random() % 2)) @(negedge vif.clk);
             end
             for (int lane = 0; lane < N; lane++)
-                vif.activationData[lane] = item.activation[lane];
+                vif.inputData[lane] = item.input_vector[lane];
             vif.targetData = item.target;
             vif.trainingEnable = item.training_enable;
-            vif.activationValid = 1'b1;
+            vif.inputValid = 1'b1;
             do @(posedge vif.clk);
-            while (vif.activationValid !== 1'b1 || vif.activationReady !== 1'b1);
-            @(negedge vif.clk) vif.activationValid = 1'b0;
+            while (vif.inputValid !== 1'b1 || vif.inputReady !== 1'b1);
+            @(negedge vif.clk) vif.inputValid = 1'b0;
         endtask
     endclass

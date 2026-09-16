@@ -9,15 +9,15 @@ module signedFifo #(
     input  logic                    pop,
     output logic signed [WIDTH-1:0] popData,
     output logic                    full,
-    output logic                    empty,
-    output logic [$clog2(DEPTH+1)-1:0] values
+    output logic                    empty
 );
 
     localparam int PTR_WIDTH = $clog2(DEPTH);
 
-    logic signed [WIDTH-1:0]     data                        [0:DEPTH-1];
-    logic        [PTR_WIDTH-1:0] readPtr, writePtr;
-    logic                        pushAccepted, popAccepted;
+    logic signed [WIDTH-1:0]       data                        [0:DEPTH-1];
+    logic        [PTR_WIDTH-1:0]   readPtr, writePtr;
+    logic [$clog2(DEPTH+1)-1:0]    values;
+    logic                          pushAccepted, popAccepted;
 
     assign empty        = (values == 0);
     assign full         = (values == DEPTH);
