@@ -1,6 +1,6 @@
 # Parameterized Weight-Stationary Neural-Network Accelerator
 
-This repository contains a signed, parameterized SystemVerilog matrix multiplier built around an `N x N` weight-stationary systolic array. Weights remain inside the processing elements while activation rows stream through the array. FIFO-backed ready/valid interfaces absorb stalls, and the top-level wrapper moves vectors across parallel SPI lanes.
+This repository contains a signed, parameterized SystemVerilog matrix multiplier built around an `N x N` weight-stationary systolic array. Weights remain inside the processing elements while input rows stream through the array. FIFO-backed ready/valid interfaces absorb stalls, and the top-level wrapper moves vectors across parallel SPI lanes.
 
 ## Architecture
 
@@ -8,21 +8,21 @@ This repository contains a signed, parameterized SystemVerilog matrix multiplier
 flowchart LR
     subgraph SPI["SPI clock domain (`sclk`)"]
         W_RX["N weight SPI receivers"]
-        A_RX["N activation SPI receivers"]
+        I_RX["N input SPI receivers"]
         R_TX["N result SPI transmitters"]
     end
 
     subgraph CDC["Toggle-based clock-domain handshakes"]
         W_CDC["Weight vector transfer"]
-        A_CDC["Activation vector transfer"]
+        I_CDC["Input vector transfer"]
         R_CDC["Result vector transfer"]
     end
 
     subgraph CORE["Accelerator clock domain (`clk`)"]
         W_FIFO["weight-vector FIFO<br/>depth N"]
-        A_FIFO["activation-vector FIFO<br/>depth INPUT_FIFO_DEPTH"]
+        I_FIFO["input-vector FIFO<br/>depth INPUT_FIFO_DEPTH"]
         S_FIFO["sampleContextFifo<br/>target + input signs + training"]
-        SKEW["Activation skew network"]
+        SKEW["Input skew network"]
         ARRAY["N x N weight-stationary PE array"]
         ALIGN["Complete-result alignment"]
         ACT["Activation layer"]
@@ -33,31 +33,31 @@ flowchart LR
     end
 
     W_RX --> W_CDC --> W_FIFO --> ARRAY
-    A_RX --> A_CDC --> A_FIFO --> SKEW --> ARRAY
-    A_RX --> A_CDC --> S_FIFO
+    I_RX --> I_CDC --> I_FIFO --> SKEW --> ARRAY
+    I_RX --> I_CDC --> S_FIFO
     ARRAY --> ALIGN --> ACT --> RESULT_FIFO --> RETIRE --> R_CDC --> R_TX
     S_FIFO --> RETIRE
     RETIRE --> M_UPDATE --> ARRAY
     RETIRE --> R_UPDATE
 ```
 
-The core has three architectural FIFOs: the activation-vector FIFO,
+The core has three architectural FIFOs: the input-vector FIFO,
 `sampleContextFifo`, and the accelerator-owned `resultFifo`. Each result FIFO
 entry is one transaction containing the activated vector, its prediction, and
 the resident reduction-weight signs used to produce that prediction.
 
-Each processing element stores one weight and performs a signed multiply-accumulate while forwarding the activation and partial sum:
+Each processing element stores one weight and performs a signed multiply-accumulate while forwarding the input and partial sum:
 
 ```mermaid
 flowchart LR
-    LEFT["activation + valid"] --> PE["PE<br/>weight register<br/>signed multiply-add"]
+    LEFT["input + valid"] --> PE["PE<br/>weight register<br/>signed multiply-add"]
     TOP["partial sum + valid"] --> PE
     LOAD["loadWeight"] --> PE
-    PE --> RIGHT["forwarded activation + valid"]
+    PE --> RIGHT["forwarded input + valid"]
     PE --> BOTTOM["updated partial sum + valid"]
 ```
 
-The controller loads weights from the bottom matrix row to the top matrix row. During compute, activation rows enter in normal order and are delayed by lane so that matching products meet on the same diagonal wavefront.
+The controller loads weights from the bottom matrix row to the top matrix row. During compute, input rows enter in normal order and are delayed by lane so that matching products meet on the same diagonal wavefront.
 
 ```mermaid
 sequenceDiagram
@@ -71,8 +71,8 @@ sequenceDiagram
     end
     Core-->>Host: weightsLoaded = 1
 
-    loop each accepted activation vector, normal order
-        Host->>SPI: Send one N-element activation vector
+    loop each accepted input vector, normal order
+        Host->>SPI: Send one N-element input vector
         SPI->>Core: Queue vector
     end
 
@@ -86,9 +86,9 @@ sequenceDiagram
 
 ### Transaction state and stream configuration
 
-`activationData`, `targetData`, and `trainingEnable` are per-sample
+`inputData`, `targetData`, and `trainingEnable` are per-sample
 transaction state. They are accepted atomically on
-`activationValid && activationReady`; the existing datapath and transaction
+`inputValid && inputReady`; the existing datapath and transaction
 state keeps them aligned with the corresponding result.
 
 `passThrough` and `reduceOutput` are accelerator stream configuration, not
@@ -102,11 +102,11 @@ either mode while work is outstanding is illegal. The mode bits do not travel
 through `sampleContextFifo` or `resultFifo`, and the RTL intentionally
 continues to use their live, configuration-lifetime values.
 
-- Activation inputs and matrix weights are signed `WIDTH`-bit fixed-point values with `FRACTION_BITS` fractional bits. A stored integer represents `stored_integer / 2^FRACTION_BITS`.
+- Input values and matrix weights are signed `WIDTH`-bit fixed-point values with `FRACTION_BITS` fractional bits. A stored integer represents `stored_integer / 2^FRACTION_BITS`.
 - One vector uses `N` parallel, MSB-first SPI lanes sharing `sclk`. Each lane has its own chip-select and data signal.
 - Send weight rows in reverse order: row `N-1` through row `0`.
-- Wait for `weightsLoaded` before sending activations.
-- Send activation vectors in normal order. If they are being used as an
+- Wait for `weightsLoaded` before sending inputs.
+- Send input vectors in normal order. If they are being used as an
   `N`-row matrix, vector `0` through vector `N-1` correspond to matrix rows
   `0` through `N-1`.
 - Each result transfer corresponds to one activated output vector. In vector mode lane `j` carries element `j`; in reduction mode lane 0 carries that vector's scalar prediction and the remaining lanes carry zero.
@@ -119,9 +119,9 @@ continues to use their live, configuration-lifetime values.
 - Results form an ordered stream of independent sample transactions. Each `resultValid && resultReady` handshake retires exactly one result and its matching sample context; there is no group-boundary marker or modulo-`N` result position.
 - `reductionWeight[N]` is the initialization vector for resident reduction-weight registers. Pulsing `loadReductionWeights` copies the complete vector atomically. Loading has priority over learning, so configuration software must use it only while the sample and update pipelines are quiescent.
 - Result retirement pops one `resultFifo` entry and one sample-context entry together. If the retired sample's buffered `trainingEnable` is high, retirement launches one packed matrix-update package and one reduction-update package. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not launch an update.
-- The same training-enabled completion asserts `matrixUpdateValid` with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the reduction-weight signs stored with that result and the pass-through/ReLU activation gate.
+- The same training-enabled completion forms one internal package: a `matrixUpdateValid` strobe with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the reduction-weight signs stored with that result and the pass-through/ReLU activation gate. The package is wiring between `nnAccelerator` and its matrix engine, not an accelerator output.
 - Each valid package updates PE(0,0) directly on its acceptance edge, then `2*N-2` registered stages carry it across the remaining PE anti-diagonals. Diagonal `d` updates every PE where `row + column == d` by the ternary outer product, with signed one-LSB saturation. The update pipeline and datapath share `arrayAdvance`, so both freeze together under backpressure and successive packages may overlap.
-- The local `systolicArrayWeightStationary.updateComplete` event still asserts once for each package on the advancing edge that applies its final anti-diagonal. `reductionUpdateValidPipe` and `reductionUpdateDirectionPipe` receive the same retired-result package in `nnAccelerator` and advance under the matrix engine's `datapathAdvance`. The final valid stage applies the reduction update after the unchanged `2*N-1` delay.
+- A package's final anti-diagonal is applied on the advancing edge that retires the last stage of `systolicArrayWeightStationary.updateValidPipe`; the array exposes no separate completion event. `reductionUpdateValidPipe` and `reductionUpdateDirectionPipe` receive the same retired-result package in `nnAccelerator` and advance under the matrix engine's `arrayAdvance`. The final valid stage applies the reduction update after the unchanged `2*N-1` delay.
 - A PE multiply and the weighted reduction both use their resident weights present before an update edge. Accepting the last old-state result applies the reduction direction directly to the sole resident reduction vector with signed one-LSB saturation; the next sample then uses both the updated matrix and updated reduction weights. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
 - In continuous no-stall traffic, a sample's scalar prediction is available after `2*N-1` cycles, its learning direction is formed combinationally in that cycle, and PE(0,0) applies the update on the following edge. The sample on that edge still uses the old weight; the next sample is the first affected, so update `U_S` first affects sample `S + 2*N + 1` (distance 7 for `N=3`).
 - The matrix and reduction update mechanisms are separate from result storage: a full `resultFifo` freezes the aligned matrix datapath and both update paths together until a result retires. No update-only readout events, full reduction-vector snapshots, version counters, or catch-up cycles exist in the current architecture; only each result's activated vector, prediction, and required ternary signs are stored.
@@ -135,14 +135,14 @@ continues to use their live, configuration-lifetime values.
   idle. The number of previously retired samples has no effect, so a fully
   drained stream can reload after one sample or any other sample count.
 - `N` still determines the vector width, systolic-array dimension, and square
-  matrix geometry. Sending `N` consecutive activation vectors still produces
+  matrix geometry. Sending `N` consecutive input vectors still produces
   the corresponding `N` rows of `XW` when desired, but those results are not
   intrinsically grouped by the accelerator.
 - The skew storage may remain physically rectangular, but its live geometry is
   triangular: lane `i` propagates through stages `0..i` and consumes stage `i`.
   Stages beyond that consuming stage are never shifted or considered by
   `skewBusy`.
-- `weightReady` and `activationReady` indicate when a complete parallel SPI vector may be started.
+- `weightReady` and `inputReady` indicate when a complete parallel SPI vector may be started.
 
 ## Parameters
 
@@ -150,10 +150,10 @@ continues to use their live, configuration-lifetime values.
 | --- | ---: | --- |
 | `WIDTH` | `16` | Signed input and weight width |
 | `N` | `3` | Square matrix and systolic-array dimension; currently tested for 2-4 |
-| `FRACTION_BITS` | `4` | Fractional bits in activation inputs, matrix weights, predictions, and targets |
+| `FRACTION_BITS` | `4` | Fractional bits in input values, matrix weights, predictions, and targets |
 | `TARGET_WIDTH` | `WIDTH` | Signed target width; narrower targets are sign-extended for prediction comparison |
 | `REDUCTION_WEIGHT_WIDTH` | `8` | Signed weighted-readout coefficient width; the default Q1.7 format has one sign bit and seven fractional bits |
-| `INPUT_FIFO_DEPTH` | `2*N` | Activation-vector FIFO depth |
+| `INPUT_FIFO_DEPTH` | `2*N` | Input-vector FIFO depth |
 | `OUTPUT_FIFO_DEPTH` | `2*N` | Depth of the accelerator-owned `resultFifo` |
 
 ## Verification
@@ -161,10 +161,15 @@ continues to use their live, configuration-lifetime values.
 Verification is split by responsibility so that each guarantee has one
 primary owner:
 
-- `FunctionalReference` owns end-to-end numerical and learning behavior.
+- `arithmetic.py` owns the numerical semantics. Both references delegate to
+  it, so `test_arithmetic.py` pins each primitive directly.
+- `FunctionalReference` owns end-to-end numerical and learning behavior, and
+  states update visibility in closed form as `2*N + 1` sample positions.
 - `CycleReference` plus the RTL trace bridge owns accelerator latency,
   W/R evolution, FIFO contents, bubbles, backpressure state, and the
-  drain-before-reconfiguration contract for `passThrough`/`reduceOutput`.
+  drain-before-reconfiguration contract for `passThrough`/`reduceOutput`. It
+  reaches the same visibility delay by wave propagation; that agreement, not
+  their shared arithmetic, is the load-bearing cross-check.
 - The core UVM environment owns randomized public `nnAccelerator` traffic,
   simple reset/reload recovery, ordering, and no-loss/no-duplication checks. It
   uses three project transactions: an active/observed sample item, a compact
@@ -197,7 +202,7 @@ pwsh -File scripts/run_rtl_reference_compare.ps1
 ### Core behavior: sample-oriented UVM environment
 
 The UVM environment in [`uvm/`](uvm/) connects directly to the public
-`nnAccelerator` interface. One accepted activation vector is one sample item,
+`nnAccelerator` interface. One accepted input vector is one sample item,
 and one `resultValid && resultReady` handshake is one result item. Weight and
 reduction loading are explicit configuration commands, not fields on every
 sample. The input monitor tracks configuration locally and snapshots the W/R
@@ -208,7 +213,7 @@ intentionally does not model learning waves or internal FIFOs; those remain
 owned by the Python references, RTL trace bridge, and focused RTL benches.
 
 The regression uses explicit scenario assertions for input bubbles, output
-backpressure, activation backpressure, reloads, and resets instead of a
+backpressure, input backpressure, reloads, and resets instead of a
 standalone generic coverage component.
 
 Run the core UVM regression with:
@@ -223,16 +228,19 @@ selected with `NN_ACCEL_QUESTA_BIN`. With Questa configured, the regression
 scripts treat any simulation error as a failure.
 
 At the `nnAccelerator` boundary, `targetData` and `trainingEnable` are accepted
-atomically with the complete `activationData[N]` vector on
-`activationValid && activationReady`. The packed `sampleContextFifo` contributes
-to activation backpressure and presents its
-head as `resultTargetData`; that head advances only with the shared
+atomically with the complete `inputData[N]` vector on
+`inputValid && inputReady`. The packed `sampleContextFifo` contributes
+to input backpressure and presents its head internally as
+`resultTargetData`; that head advances only with the shared
 `resultValid && resultReady` result transaction. No fixed pipeline latency is
 used to align targets and predictions. While `resultValid` is asserted, the
 signed 2-bit `learningDirection` compares that target head with the full scalar
 prediction: `+1` when the target is greater, `0` when equal, and `-1` when the
 target is less. Narrower operands are sign-extended for the comparison, and the
 target, prediction, and direction remain stable together under backpressure.
+Neither signal is an accelerator port: both are internal to the retirement
+path, and `nnAcceleratorStateTrace_tb` observes them hierarchically alongside
+the other internal evidence it traces.
 The `sampleContextFifo` carries two-bit signs for every original input lane and
 the training-enable bit. The accelerator-owned `resultFifo` stores the
 activated vector, prediction, and resident reduction-weight signs as one
@@ -324,6 +332,7 @@ for board programming.
 |   |-- functional.py
 |   |-- cycle.py
 |   |-- rtl_reference_compare.py
+|   |-- test_arithmetic.py
 |   |-- test_functional.py
 |   `-- test_cycle.py
 |-- Quartus Stuff/
