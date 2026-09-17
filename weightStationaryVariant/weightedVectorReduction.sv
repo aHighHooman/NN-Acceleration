@@ -16,6 +16,12 @@ module weightedVectorReduction #(
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
     localparam int RESCALE_SHIFT = FRACTION_BITS + REDUCTION_FRACTION_BITS;
 
+    initial begin
+        if (MATRIX_RESULT_WIDTH < 1 || REDUCTION_WEIGHT_WIDTH < 1 ||
+            N < 1 || FRACTION_BITS < 0)
+            $fatal(1, "reduction widths/N>=1 and FRACTION_BITS>=0");
+    end
+
     logic signed [PRODUCT_WIDTH-1:0] product [N];
     logic signed [ACCUMULATOR_WIDTH-1:0] extendedProduct [N];
     logic signed [ACCUMULATOR_WIDTH-1:0] accumulator;

@@ -44,6 +44,13 @@ module nnAccelerator #(
     localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
         REDUCTION_WEIGHT_ONE = {{(REDUCTION_WEIGHT_WIDTH-1){1'b0}}, 1'b1};
 
+    initial begin
+        if (WIDTH < 1 || N < 2 || FRACTION_BITS < 0 ||
+            TARGET_WIDTH < 1 || REDUCTION_WEIGHT_WIDTH < 1 ||
+            IN_FLIGHT_DEPTH < 1 || OUTPUT_FIFO_DEPTH < 1)
+            $fatal(1, "WIDTH>=1, N>=2, FRACTION_BITS>=0, widths/depths>=1");
+    end
+
     logic signed [MATRIX_RESULT_WIDTH-1:0] rawResultData[N];
     logic signed [MATRIX_RESULT_WIDTH-1:0] activatedMatrixResultData[N];
     logic signed [MATRIX_RESULT_WIDTH-1:0] activatedData[N];
@@ -297,7 +304,7 @@ module nnAccelerator #(
         end
     end
 
-    matrixMultiplierWeightStationary #(
+    weightStationaryMatrixMultiplier #(
         .WIDTH(WIDTH), .N(N)
     ) matrixEngine (
         .clk(clk), .rst_n(rst_n),
@@ -315,7 +322,7 @@ module nnAccelerator #(
 
     // This is the sole activation operation.  It runs on the aligned raw
     // matrix result immediately before the result FIFO captures the entry.
-    activationLayer #(.WIDTH(MATRIX_RESULT_WIDTH), .N(N)) matrixResultActivation (
+    outputActivation #(.WIDTH(MATRIX_RESULT_WIDTH), .N(N)) matrixResultActivation (
         .inputData(rawResultData), .passThrough(passThrough),
         .outputData(activatedMatrixResultData)
     );

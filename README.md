@@ -113,7 +113,7 @@ continues to use their live, configuration-lifetime values.
   `0` through `N-1`.
 - Each result transfer corresponds to one activated output vector. In vector mode lane `j` carries element `j`; in reduction mode lane 0 carries that vector's scalar prediction and the remaining lanes carry zero.
 - Accelerator/SPI result-lane width is the architectural prediction width, `2*WIDTH + 2*$clog2(N)` bits. Unreduced activated elements are sign-extended to this width.
-- `matrixMultiplierWeightStationary` produces the raw signed `X * W` matrix product at `MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N)` without reducing precision. Its binary point has `2*FRACTION_BITS` fractional bits.
+- `weightStationaryMatrixMultiplier` produces the raw signed `X * W` matrix product at `MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N)` without reducing precision. Its binary point has `2*FRACTION_BITS` fractional bits.
 - At the aligned matrix-result handshake, `nnAccelerator` applies activation exactly once (`passThrough = 1` preserves the raw value; `passThrough = 0` applies ReLU), feeds that activated vector to `weightedVectorReduction`, and stores the activated vector, prediction, and resident reduction signs as one `resultFifo` entry.
 - Reduction weights default to signed 8-bit Q1.7 fractional coefficients (one sign bit and seven fractional bits), so one stored LSB is `1/128`. The reduction retains each complete product and accumulates at `MATRIX_RESULT_WIDTH + REDUCTION_WEIGHT_WIDTH + $clog2(N)` bits.
 - After the full weighted sum is complete, one arithmetic right shift by `FRACTION_BITS + REDUCTION_WEIGHT_WIDTH - 1` returns the prediction to the input/target binary-point position. Only then is it narrowed to the architectural prediction width.
@@ -123,7 +123,7 @@ continues to use their live, configuration-lifetime values.
 - Result retirement pops one `resultFifo` entry and one sample-context entry together. If the retired sample's buffered `trainingEnable` is high, retirement launches one packed matrix-update package and one reduction-update package. Positive, zero, and negative activated elements select `+learningDirection`, zero, and `-learningDirection`, respectively. An inference sample still produces and consumes its prediction normally but does not launch an update.
 - The same training-enabled completion forms one internal package: a `matrixUpdateValid` strobe with signed two-bit ternary `rowDirection[N]` and `columnDirection[N]` vectors. Rows carry the accepted original-input signs. Columns use the reduction-weight signs stored with that result and the pass-through/ReLU activation gate. The package is wiring between `nnAccelerator` and its matrix engine, not an accelerator output.
 - Each valid package updates PE(0,0) directly on its acceptance edge, then `2*N-2` registered stages carry it across the remaining PE anti-diagonals. Diagonal `d` updates every PE where `row + column == d` by the ternary outer product, with signed one-LSB saturation. The update pipeline and datapath share `arrayAdvance`, so both freeze together under backpressure and successive packages may overlap.
-- A package's final anti-diagonal is applied on the advancing edge that retires the last stage of `systolicArrayWeightStationary.updateValidPipe`; the array exposes no separate completion event. `reductionUpdateValidPipe` and `reductionUpdateDirectionPipe` receive the same retired-result package in `nnAccelerator` and advance under the matrix engine's `arrayAdvance`. The final valid stage applies the reduction update after the unchanged `2*N-1` delay.
+- A package's final anti-diagonal is applied on the advancing edge that retires the last stage of `weightStationarySystolicArray.updateValidPipe`; the array exposes no separate completion event. `reductionUpdateValidPipe` and `reductionUpdateDirectionPipe` receive the same retired-result package in `nnAccelerator` and advance under the matrix engine's `arrayAdvance`. The final valid stage applies the reduction update after the unchanged `2*N-1` delay.
 - A PE multiply and the weighted reduction both use their resident weights present before an update edge. Accepting the last old-state result applies the reduction direction directly to the sole resident reduction vector with signed one-LSB saturation; the next sample then uses both the updated matrix and updated reduction weights. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
 - In continuous no-stall traffic, a sample's scalar prediction is available after `2*N-1` cycles, its learning direction is formed combinationally in that cycle, and PE(0,0) applies the update on the following edge. The sample on that edge still uses the old weight; the next sample is the first affected, so update `U_S` first affects sample `S + 2*N + 1` (distance 7 for `N=3`).
 - The matrix and reduction update mechanisms are separate from result storage: a full `resultFifo` freezes the aligned matrix datapath and both update paths together until a result retires. No update-only readout events, full reduction-vector snapshots, version counters, or catch-up cycles exist in the current architecture; only each result's activated vector, prediction, and required ternary signs are stored.
@@ -146,17 +146,44 @@ continues to use their live, configuration-lifetime values.
   `skewBusy`.
 - `weightReady` and `inputReady` indicate when a complete parallel SPI vector may be started.
 
+### SPI transaction contract
+
+- `cs_n`, `weightCs_n`, and `inputCs_n` are active-low and controlled per
+  lane. Drive all lanes in lockstep for a vector transaction.
+- Set MOSI before each rising `sclk` edge. Weight and input words are sampled
+  MSB first; lane `j` carries vector element `j`.
+- Assert every input CS line for exactly `WIDTH` rising edges. Releasing CS
+  early discards the partial word, and the next frame restarts at its MSB.
+- A complete input word remains stable until the accelerator accepts it.
+  Extra clocks while it is held do not change the word; deassert CS before
+  starting another frame.
+- Assert all result CS lines together and wait until every `misoValid` lane is
+  high before sampling. Result words are MSB first and
+  `2*WIDTH + 2*$clog2(N)` bits wide.
+- Releasing result CS pauses the current word. Reasserting it resumes at the
+  same bit. After the final bit, `misoValid` is low and `miso` is zero until a
+  new result is available.
+- `rst_n` is synchronous in both the `clk` and `sclk` domains. Hold it low
+  through a rising edge of each clock, keep every CS high, and restart any
+  interrupted transaction after reset.
+- There is no timeout or error signal. Retry an incomplete input after
+  releasing CS; resume an interrupted result or reset and restart it.
+
 ## Parameters
 
 | Parameter | Default | Meaning |
 | --- | ---: | --- |
-| `WIDTH` | `16` | Signed input and weight width |
-| `N` | `3` | Square matrix and systolic-array dimension; currently tested for 2-4 |
-| `FRACTION_BITS` | `4` | Fractional bits in input values, matrix weights, predictions, and targets |
-| `TARGET_WIDTH` | `WIDTH` | Signed target width; narrower targets are sign-extended for prediction comparison |
-| `REDUCTION_WEIGHT_WIDTH` | `8` | Signed weighted-readout coefficient width; the default Q1.7 format has one sign bit and seven fractional bits |
-| `IN_FLIGHT_DEPTH` | `2*N+2` | Maximum accepted-but-unretired samples; depth of `sampleContextFifo` |
-| `OUTPUT_FIFO_DEPTH` | `2*N` | Depth of the accelerator-owned `resultFifo` |
+| `WIDTH` | `16` | Signed input and weight width; must be >= 1 |
+| `N` | `3` | Square matrix and systolic-array dimension; must be >= 2, tested for 2-4 |
+| `FRACTION_BITS` | `4` | Fractional bits in input values, matrix weights, predictions, and targets; must be >= 0 |
+| `TARGET_WIDTH` | `WIDTH` | Signed target width; must be >= 1, and narrower targets are sign-extended for prediction comparison |
+| `REDUCTION_WEIGHT_WIDTH` | `8` | Signed weighted-readout coefficient width; must be >= 1, and the default Q1.7 format has one sign bit and seven fractional bits |
+| `IN_FLIGHT_DEPTH` | `2*N+2` | Maximum accepted-but-unretired samples; depth of `sampleContextFifo`, must be >= 1 |
+| `OUTPUT_FIFO_DEPTH` | `2*N` | Depth of the accelerator-owned `resultFifo`; must be >= 1 |
+
+The matrix engine deliberately uses a valid one-entry activation skid. Generic
+FIFO storage therefore supports `DEPTH >= 1`; the earlier global minimum of two
+entries does not apply to the Phase 6 architecture.
 
 ## Verification
 
@@ -276,37 +303,35 @@ pwsh -File scripts/run_uvm.ps1 -TestName nn_uvm_regression_test -Seed 12345
 ```
 
 The UVM compile targets the direct `nnAccelerator` interface at `N=3`,
-`WIDTH=8` for a fast regression. `matrixMultiplierWeightStationary_tb.sv`
+`WIDTH=8` for a fast regression. `weightStationaryMatrixMultiplier_tb.sv`
 retains focused coverage of the supported 2x2, 3x3, and 4x4 configurations.
 
 ### FPGA/build documentation
 
-The checked-in Quartus project in `Quartus Stuff/NN_Acceleration.qsf` currently
-targets Cyclone V device `5CGXFC7C7F23C8` and uses
-`matrixMultiplierWeightStationarySPI` as its top-level entity.
+The checked-in Quartus project in `Quartus Stuff/NN_Acceleration.qsf` targets
+the DE1-SoC Cyclone V `5CSEMA5F31C6` and uses
+`weightStationaryMatrixMultiplierTop` as its top-level entity. A Quartus Prime
+25.1 Standard Lite fit of the checked-in default `N=3`, `WIDTH=16`
+configuration produced:
 
-The following numbers are a historical build snapshot, not a synthesis result
-for the current checked-in QSF. They are retained as reported for the default
-`N=3`, `WIDTH=16` configuration on the DE1-SoC Cyclone V
-`5CSEMA5F31C6` device:
-
-| Metric | Historical post-fit result |
+| Metric | Current post-fit result |
 |---|---:|
-| Logic utilization | 666 / 32,070 ALMs (2%) |
-| Registers | 1,230 |
-| Block memory | 1,044 / 4,065,280 bits (<1%) |
-| RAM blocks | 7 / 397 (2%) |
-| DSP blocks | 9 / 87 (10%) |
-| I/O pins | 30 / 457 (7%) |
+| Logic utilization | 976 / 32,070 ALMs (3%) |
+| Registers | 1,615 |
+| Block memory | 912 / 4,065,280 bits (<1%) |
+| RAM blocks | 6 / 397 (2%) |
+| DSP blocks | 18 / 87 (21%) |
+| I/O pins | 57 / 457 (12%) |
 
-No `.sdc` file is checked in, and the current QSF does not assign one. Therefore
-this repository makes no current timing-constraint or Timing Analyzer claim.
-Any timing values associated with the historical table were produced by that
-historical build and must not be interpreted as results for the current QSF.
-
-The current project also has no checked-in pin assignment or external SPI
-`sclk`/input-output delay constraints, so it is not documented here as ready
-for board programming.
+`Quartus Stuff/NN_Acceleration.sdc` constrains the primary `clk` input to
+50 MHz. The post-fit Timing Analyzer reports non-negative slack at every
+analyzed corner for that clock; the worst reported setup slack is +4.197 ns and
+the worst hold slack is +0.152 ns. The external SPI `sclk`, I/O delays, and
+physical pin locations remain application-specific and are not assigned, so
+the design is not yet documented as ready for board programming and the timing
+result must not be interpreted as full-interface timing closure. RTL
+regressions compile the source directly, so the Quartus project does not request
+a separate post-fit EDA simulation netlist.
 
 ## Repository layout
 
@@ -316,19 +341,19 @@ for board programming.
 |-- memory/
 |   `-- signedFifo.sv
 |-- weightStationaryVariant/
-|   |-- matrixMultiplierWeightStationary.sv
+|   |-- weightStationaryMatrixMultiplier.sv
 |   |-- nnAccelerator.sv
-|   |-- matrixMultiplierWeightStationarySPI.sv
-|   |-- systolicArrayWeightStationary.sv
-|   |-- multiplierBlockWeightStationary.sv
-|   |-- activationLayer.sv
-|   |-- reluActivation.sv
+|   |-- weightStationaryMatrixMultiplierTop.sv
+|   |-- weightStationarySystolicArray.sv
+|   |-- weightStationaryProcessingElement.sv
+|   |-- outputActivation.sv
+|   |-- relu.sv
 |   |-- weightedVectorReduction.sv
 |   |-- weightedVectorReduction_tb.sv
-|   |-- matrixMultiplierWeightStationary_tb.sv
+|   |-- weightStationaryMatrixMultiplier_tb.sv
 |   |-- matrixWeightUpdateWave_tb.sv
 |   |-- nnAcceleratorStateTrace_tb.sv
-|   `-- matrixMultiplierWeightStationarySPI_tb.sv
+|   `-- weightStationaryMatrixMultiplierTop_tb.sv
 |-- reference/
 |   |-- arithmetic.py
 |   |-- functional.py
@@ -339,7 +364,9 @@ for board programming.
 |   `-- test_cycle.py
 |-- Quartus Stuff/
 |   |-- NN_Acceleration.qpf
-|   `-- NN_Acceleration.qsf
+|   |-- NN_Acceleration.qsf
+|   |-- NN_Acceleration.sdc
+|   `-- NN_Acceleration_assignment_defaults.qdf
 |-- scripts/
 |   |-- run_modelsim.ps1
 |   |-- run_rtl_reference_compare.ps1

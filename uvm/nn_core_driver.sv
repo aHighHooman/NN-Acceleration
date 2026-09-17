@@ -13,6 +13,7 @@
         int unsigned stall_run;
         bit reset_active;
         bit hold_result_for_input_pressure;
+        bit input_pressure_observed;
 
         // Scenario counters are deliberately local to the driver.  They are
         // used by the test's explicit assertions, not a coverage subsystem.
@@ -27,6 +28,7 @@
             stall_run = 0;
             reset_active = 1'b0;
             hold_result_for_input_pressure = 1'b0;
+            input_pressure_observed = 1'b0;
             weight_bubbles_injected = 0;
             input_bubbles_injected = 0;
         endfunction
@@ -78,8 +80,10 @@
         task drive_sample(nn_core_sample_item item);
             active_result_stall_percent = (item.result_stall_percent > 100) ?
                                           100 : item.result_stall_percent;
-            if (item.hold_result_until_input_backpressure)
+            if (item.hold_result_until_input_backpressure) begin
                 hold_result_for_input_pressure = 1'b1;
+                input_pressure_observed = 1'b0;
+            end
 
             `uvm_info("DRV", {"Driving sample ", item.convert2string()}, UVM_MEDIUM)
             if (vif.weightsLoaded !== 1'b1)
@@ -94,6 +98,7 @@
         task drive_configuration(nn_core_config_item item);
             active_result_stall_percent = 0;
             hold_result_for_input_pressure = 1'b0;
+            input_pressure_observed = 1'b0;
             `uvm_info("DRV", {"Driving configuration ",
                                item.convert2string()}, UVM_MEDIUM)
 
@@ -124,13 +129,20 @@
                 end else if (hold_result_for_input_pressure) begin
                     // Hold the result FIFO until the public input path shows
                     // backpressure, proving the two ready/valid paths meet.
-                    if (vif.inputValid && !vif.inputReady) begin
+                    // Keep resultReady low for one complete sampled cycle
+                    // after detection.  Releasing it immediately would pop a
+                    // result and restore inputReady before the positive-edge
+                    // monitor could observe the backpressured transaction.
+                    if (input_pressure_observed) begin
                         vif.resultReady = 1'b1;
                         hold_result_for_input_pressure = 1'b0;
+                        input_pressure_observed = 1'b0;
                         stall_run = 0;
                     end else begin
                         vif.resultReady = 1'b0;
                         stall_run++;
+                        if (vif.inputValid && !vif.inputReady)
+                            input_pressure_observed = 1'b1;
                     end
                 end else if (active_result_stall_percent == 0) begin
                     vif.resultReady = 1'b1;
@@ -153,6 +165,8 @@
 
         task reset_dut();
             reset_active = 1'b1;
+            hold_result_for_input_pressure = 1'b0;
+            input_pressure_observed = 1'b0;
             @(negedge vif.clk);
             vif.rst_n = 1'b0;
             vif.weightValid = 1'b0;

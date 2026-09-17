@@ -14,7 +14,7 @@ module multiplierBlockWeightUpdate_testcase(
     logic signed [RESULT_WIDTH-1:0] topIn, bottomOut;
     logic topValid, bottomValid;
 
-    multiplierBlockWeightStationary #(
+    weightStationaryProcessingElement #(
         .WIDTH(WIDTH), .RESULT_WIDTH(RESULT_WIDTH)
     ) dut (
         .clk(clk), .rst_n(rst_n), .advance(advance),
@@ -150,7 +150,7 @@ module systolicWeightUpdateWave_testcase(
     logic updateComplete;
     assign updateComplete = advance && dut.updateValidPipe[LAST_UPDATE_STAGE];
 
-    systolicArrayWeightStationary #(.WIDTH(WIDTH), .N(N)) dut (
+    weightStationarySystolicArray #(.WIDTH(WIDTH), .N(N)) dut (
         .clk(clk), .rst_n(rst_n), .advance(advance),
         .loadWeight(loadWeight),
         .rowDirection(rowDirection), .columnDirection(columnDirection),
@@ -212,8 +212,8 @@ module systolicWeightUpdateWave_testcase(
         repeat (2) begin
             @(posedge clk); #1;
             if (!dut.updateValidPipe[0] || !dut.updateValidPipe[1] ||
-                dut.row_loop[0].col_loop[0].mb.weightReg !== 2 ||
-                dut.row_loop[0].col_loop[0].mb.rightValid !== 1'b0)
+                dut.row_loop[0].col_loop[0].pe.weightReg !== 2 ||
+                dut.row_loop[0].col_loop[0].pe.rightValid !== 1'b0)
                 $fatal(1, "array stall did not freeze data and update waves");
         end
 
@@ -290,15 +290,15 @@ module systolicWeightUpdateWave_testcase(
         input integer w20, input integer w21, input integer w22,
         input string label
     );
-        if (dut.row_loop[0].col_loop[0].mb.weightReg !== w00 ||
-            dut.row_loop[0].col_loop[1].mb.weightReg !== w01 ||
-            dut.row_loop[0].col_loop[2].mb.weightReg !== w02 ||
-            dut.row_loop[1].col_loop[0].mb.weightReg !== w10 ||
-            dut.row_loop[1].col_loop[1].mb.weightReg !== w11 ||
-            dut.row_loop[1].col_loop[2].mb.weightReg !== w12 ||
-            dut.row_loop[2].col_loop[0].mb.weightReg !== w20 ||
-            dut.row_loop[2].col_loop[1].mb.weightReg !== w21 ||
-            dut.row_loop[2].col_loop[2].mb.weightReg !== w22)
+        if (dut.row_loop[0].col_loop[0].pe.weightReg !== w00 ||
+            dut.row_loop[0].col_loop[1].pe.weightReg !== w01 ||
+            dut.row_loop[0].col_loop[2].pe.weightReg !== w02 ||
+            dut.row_loop[1].col_loop[0].pe.weightReg !== w10 ||
+            dut.row_loop[1].col_loop[1].pe.weightReg !== w11 ||
+            dut.row_loop[1].col_loop[2].pe.weightReg !== w12 ||
+            dut.row_loop[2].col_loop[0].pe.weightReg !== w20 ||
+            dut.row_loop[2].col_loop[1].pe.weightReg !== w21 ||
+            dut.row_loop[2].col_loop[2].pe.weightReg !== w22)
             $fatal(1, "%s: matrix weights did not match expected diagonal state", label);
     endtask
 

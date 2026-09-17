@@ -1,4 +1,4 @@
-module activationLayer #(
+module outputActivation #(
     parameter int WIDTH = 16,
     parameter int N = 3
 )(
@@ -12,7 +12,7 @@ module activationLayer #(
     genvar lane;
     generate
         for (lane = 0; lane < N; lane = lane + 1) begin : activation_lanes
-            reluActivation #(.WIDTH(WIDTH)) relu (
+            relu #(.WIDTH(WIDTH)) reluUnit (
                 .inputData(inputData[lane]),
                 .outputData(reluData[lane])
             );

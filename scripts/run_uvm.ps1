@@ -62,12 +62,12 @@ New-Item -ItemType Directory -Path $buildDir | Out-Null
 
 $rtlSources = @(
     (Join-Path $projectRoot "memory/signedFifo.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/reluActivation.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/activationLayer.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/relu.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/outputActivation.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/weightedVectorReduction.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/multiplierBlockWeightStationary.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/systolicArrayWeightStationary.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryProcessingElement.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationarySystolicArray.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplier.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/nnAccelerator.sv")
 )
 

@@ -1,4 +1,4 @@
-module matrixMultiplierWeightStationary #(
+module weightStationaryMatrixMultiplier #(
     parameter int WIDTH = 16,
     parameter int N = 3
 )(
@@ -26,6 +26,11 @@ module matrixMultiplierWeightStationary #(
     localparam int RESULT_WIDTH         = $clog2(N) + 2*WIDTH;
     localparam int VECTOR_WIDTH         = N * WIDTH;
     localparam int ACTIVATION_SKID_DEPTH = 1;
+
+    initial begin
+        if (WIDTH < 1 || N < 2)
+            $fatal(1, "WIDTH>=1 and N>=2");
+    end
 
     logic weightPush, consumePendingWeightRow;
     logic inputPush, inputPop;
@@ -70,8 +75,9 @@ module matrixMultiplierWeightStationary #(
     // by the missing suffix of that fixed latency so the result interface
     // presents complete vectors atomically.  These registers are ordinary
     // datapath state and use the same advance enable as the array.
+    genvar alignLane;
     generate
-        for (genvar alignLane = 0; alignLane < N; alignLane++) begin : result_alignment
+        for (alignLane = 0; alignLane < N; alignLane = alignLane + 1) begin : result_alignment
             if (alignLane < N-1) begin : delayed_column
                 localparam int ALIGN_DELAY = N-1-alignLane;
                 assign resultAlignedData[alignLane] =
@@ -230,7 +236,7 @@ module matrixMultiplierWeightStationary #(
         end
     end
 
-    systolicArrayWeightStationary #(.WIDTH(WIDTH), .N(N)) systolicArr (
+    weightStationarySystolicArray #(.WIDTH(WIDTH), .N(N)) systolicArray (
         .clk(clk), .rst_n(rst_n), .advance(arrayAdvance), .loadWeight(consumePendingWeightRow),
         .rowDirection(rowDirection), .columnDirection(columnDirection),
         .updateValid(matrixUpdateValid),

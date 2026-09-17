@@ -20,6 +20,11 @@ module signedFifo #(
     logic [$clog2(DEPTH+1)-1:0]    values;
     logic                          pushAccepted, popAccepted;
 
+    initial begin
+        if (WIDTH < 1 || DEPTH < 1)
+            $fatal(1, "FIFO WIDTH and DEPTH must both be >= 1");
+    end
+
     assign empty        = (values == 0);
     assign full         = (values == DEPTH);
     assign popAccepted  = pop && !empty;

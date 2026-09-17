@@ -1,4 +1,4 @@
-module matrixMultiplierWeightStationarySPI #(
+module weightStationaryMatrixMultiplierTop #(
     parameter int WIDTH = 16,
     parameter int N = 3,
     parameter int FRACTION_BITS = 4,
@@ -30,6 +30,13 @@ module matrixMultiplierWeightStationarySPI #(
 
     localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
+
+    initial begin
+        if (WIDTH < 1 || N < 2 || FRACTION_BITS < 0 ||
+            REDUCTION_WEIGHT_WIDTH < 1 || IN_FLIGHT_DEPTH < 1 ||
+            OUTPUT_FIFO_DEPTH < 1)
+            $fatal(1, "WIDTH>=1, N>=2, FRACTION_BITS>=0, widths/depths>=1");
+    end
 
     logic signed [WIDTH-1:0] weightData[N], inputData[N];
     logic weightValid, inputValid;

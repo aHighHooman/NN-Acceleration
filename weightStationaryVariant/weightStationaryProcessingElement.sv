@@ -1,4 +1,4 @@
-module multiplierBlockWeightStationary #(
+module weightStationaryProcessingElement #(
     parameter int WIDTH = 16,
     parameter int RESULT_WIDTH = 2*WIDTH
 )(
@@ -24,6 +24,11 @@ module multiplierBlockWeightStationary #(
         WEIGHT_MAX = {1'b0, {(WIDTH-1){1'b1}}};
     localparam logic signed [WIDTH-1:0]
         WEIGHT_ONE = {{(WIDTH-1){1'b0}}, 1'b1};
+
+    initial begin
+        if (WIDTH < 1 || RESULT_WIDTH < 2*WIDTH)
+            $fatal(1, "WIDTH>=1 and RESULT_WIDTH>=2*WIDTH");
+    end
 
     logic signed [WIDTH-1:0]        weightReg;
     logic signed [2*WIDTH-1:0]      product;

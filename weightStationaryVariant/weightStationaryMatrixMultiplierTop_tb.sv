@@ -3,7 +3,7 @@
 // SPI owns serial framing, clock-domain crossing, ordering, and backpressure.
 // The single identity-matrix transaction is only a composition smoke check;
 // accelerator arithmetic is covered by the Python golden references.
-module matrixMultiplierWeightStationarySPI_tb;
+module weightStationaryMatrixMultiplierTop_tb;
     localparam int WIDTH = 8;
     localparam int N = 2;
     localparam int FRACTION_BITS = 4;
@@ -21,7 +21,7 @@ module matrixMultiplierWeightStationarySPI_tb;
     logic inputCs_n[N], inputMosi[N];
     logic signed [7:0] reductionWeight[N];
 
-    matrixMultiplierWeightStationarySPI #(
+    weightStationaryMatrixMultiplierTop #(
         .WIDTH(WIDTH), .N(N), .FRACTION_BITS(FRACTION_BITS)
     ) dut (
         .clk(clk), .rst_n(rst_n),
@@ -68,7 +68,9 @@ module matrixMultiplierWeightStationarySPI_tb;
         // install a Q4 identity matrix.
         vector[0] = 0;
         vector[1] = SCALE;
-        send_weight_vector(vector);
+        send_partial_weight_frame(vector);
+        reset_during_weight_frame(vector);
+        send_weight_vector_with_extra_clocks(vector, 1);
         vector[0] = SCALE;
         vector[1] = 0;
         send_weight_vector(vector);
@@ -84,10 +86,10 @@ module matrixMultiplierWeightStationarySPI_tb;
         send_input_vector(vector);
 
         check_output_backpressure(4*SCALE, 5*SCALE);
-        expect_serialized_row("identity smoke row 0", 2*SCALE, -3*SCALE);
-        expect_serialized_row("identity smoke row 1", 4*SCALE, 5*SCALE);
+        expect_serialized_row("identity smoke row 0", 2*SCALE, -3*SCALE, 3);
+        expect_serialized_row("identity smoke row 1", 4*SCALE, 5*SCALE, -1);
 
-        $display("PASS: asynchronous SPI serialization, CDC, ordering, backpressure, and numerical smoke check completed.");
+        $display("PASS: asynchronous SPI framing, reset recovery, CDC, ordering, backpressure, and numerical smoke check completed.");
         $finish;
     end
 
@@ -98,10 +100,26 @@ module matrixMultiplierWeightStationarySPI_tb;
 
     task send_weight_vector(input data_t vector[N]);
         wait(weightReady);
+        send_serialized_input(vector, 1'b1, 0);
+    endtask
+
+    task send_weight_vector_with_extra_clocks(input data_t vector[N],
+                                               input int extraClocks);
+        wait(weightReady);
+        send_serialized_input(vector, 1'b1, extraClocks);
+    endtask
+
+    task send_input_vector(input data_t vector[N]);
+        wait(inputReady);
+        send_serialized_input(vector, 1'b0, 0);
+    endtask
+
+    task send_partial_weight_frame(input data_t vector[N]);
+        wait(weightReady);
         @(negedge sclk);
         for (int lane = 0; lane < N; lane++)
             weightCs_n[lane] = 1'b0;
-        for (int bitIndex = WIDTH-1; bitIndex >= 0; bitIndex--) begin
+        for (int bitIndex = WIDTH-1; bitIndex >= WIDTH/2; bitIndex--) begin
             for (int lane = 0; lane < N; lane++)
                 weightMosi[lane] = vector[lane][bitIndex];
             @(posedge sclk);
@@ -111,19 +129,60 @@ module matrixMultiplierWeightStationarySPI_tb;
             weightCs_n[lane] = 1'b1;
     endtask
 
-    task send_input_vector(input data_t vector[N]);
-        wait(inputReady);
+    task reset_during_weight_frame(input data_t vector[N]);
+        wait(weightReady);
         @(negedge sclk);
         for (int lane = 0; lane < N; lane++)
-            inputCs_n[lane] = 1'b0;
-        for (int bitIndex = WIDTH-1; bitIndex >= 0; bitIndex--) begin
+            weightCs_n[lane] = 1'b0;
+        for (int bitIndex = WIDTH-1; bitIndex >= WIDTH/2; bitIndex--) begin
             for (int lane = 0; lane < N; lane++)
-                inputMosi[lane] = vector[lane][bitIndex];
+                weightMosi[lane] = vector[lane][bitIndex];
             @(posedge sclk);
             @(negedge sclk);
         end
+        rst_n = 1'b0;
+        repeat (2) @(posedge sclk);
+        repeat (2) @(posedge clk);
         for (int lane = 0; lane < N; lane++)
-            inputCs_n[lane] = 1'b1;
+            weightCs_n[lane] = 1'b1;
+        @(negedge sclk) rst_n = 1'b1;
+    endtask
+
+    task send_serialized_input(input data_t vector[N], input bit isWeight,
+                               input int extraClocks);
+        @(negedge sclk);
+        for (int lane = 0; lane < N; lane++) begin
+            if (isWeight)
+                weightCs_n[lane] = 1'b0;
+            else
+                inputCs_n[lane] = 1'b0;
+        end
+        for (int bitIndex = WIDTH-1; bitIndex >= 0; bitIndex--) begin
+            for (int lane = 0; lane < N; lane++) begin
+                if (isWeight)
+                    weightMosi[lane] = vector[lane][bitIndex];
+                else
+                    inputMosi[lane] = vector[lane][bitIndex];
+            end
+            @(posedge sclk);
+            @(negedge sclk);
+        end
+        repeat (extraClocks) begin
+            for (int lane = 0; lane < N; lane++) begin
+                if (isWeight)
+                    weightMosi[lane] = 1'b0;
+                else
+                    inputMosi[lane] = 1'b0;
+            end
+            @(posedge sclk);
+            @(negedge sclk);
+        end
+        for (int lane = 0; lane < N; lane++) begin
+            if (isWeight)
+                weightCs_n[lane] = 1'b1;
+            else
+                inputCs_n[lane] = 1'b1;
+        end
     endtask
 
     task check_output_backpressure(input result_t expected0,
@@ -142,11 +201,14 @@ module matrixMultiplierWeightStationarySPI_tb;
 
     task expect_serialized_row(input string label,
                                input result_t expected0,
-                               input result_t expected1);
+                               input result_t expected1,
+                               input int pauseAfterBits);
         result_t actual[N];
         bit available;
+        int bitsReceived;
 
         available = 1'b0;
+        bitsReceived = 0;
         while (!available) begin
             @(negedge sclk);
             for (int lane = 0; lane < N; lane++)
@@ -166,6 +228,16 @@ module matrixMultiplierWeightStationarySPI_tb;
                 if (!misoValid[lane])
                     $fatal(1, "FAIL: MISO lane %0d lost framing.", lane);
                 actual[lane][bitIndex] = miso[lane];
+            end
+            bitsReceived++;
+            if (bitsReceived == pauseAfterBits) begin
+                @(negedge sclk);
+                for (int lane = 0; lane < N; lane++)
+                    cs_n[lane] = 1'b1;
+                repeat (2) @(posedge sclk);
+                @(negedge sclk);
+                for (int lane = 0; lane < N; lane++)
+                    cs_n[lane] = 1'b0;
             end
         end
         @(negedge sclk);

@@ -1,4 +1,4 @@
-module systolicArrayWeightStationary #(
+module weightStationarySystolicArray #(
     parameter int WIDTH = 16,
     parameter int N = 3
 )(
@@ -22,6 +22,11 @@ module systolicArrayWeightStationary #(
     localparam int UPDATE_PIPE_STAGES = UPDATE_STAGES - 1;
     localparam int UPDATE_PIPE_STORAGE = (UPDATE_PIPE_STAGES > 0) ?
                                          UPDATE_PIPE_STAGES : 1;
+
+    initial begin
+        if (WIDTH < 1 || N < 2)
+            $fatal(1, "WIDTH>=1 and N>=2");
+    end
 
     logic signed [WIDTH-1:0]                horizontalData [N][N+1];
     logic                                   horizontalValid[N][N+1];
@@ -105,7 +110,9 @@ module systolicArrayWeightStationary #(
                         localUpdateDirection = -2'sd1;
                 end
 
-                multiplierBlockWeightStationary #(.WIDTH(WIDTH), .RESULT_WIDTH(FINAL_RESULT_WIDTH)) mb (
+                weightStationaryProcessingElement #(
+                    .WIDTH(WIDTH), .RESULT_WIDTH(FINAL_RESULT_WIDTH)
+                ) pe (
                     .clk(clk), .rst_n(rst_n), .advance(advance), .loadWeight(loadWeight),
                     .updateWeight(localUpdateValid),
                     .updateDirection(localUpdateDirection),

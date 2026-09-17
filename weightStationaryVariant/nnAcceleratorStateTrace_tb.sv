@@ -105,15 +105,15 @@ module nnAcceleratorStateTrace_tb;
         begin
             $fwrite(trace_fd, "C %0d\n", c);
             $fwrite(trace_fd, "W %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
-                $signed(dut.matrixEngine.systolicArr.row_loop[0].col_loop[0].mb.weightReg),
-                $signed(dut.matrixEngine.systolicArr.row_loop[0].col_loop[1].mb.weightReg),
-                $signed(dut.matrixEngine.systolicArr.row_loop[0].col_loop[2].mb.weightReg),
-                $signed(dut.matrixEngine.systolicArr.row_loop[1].col_loop[0].mb.weightReg),
-                $signed(dut.matrixEngine.systolicArr.row_loop[1].col_loop[1].mb.weightReg),
-                $signed(dut.matrixEngine.systolicArr.row_loop[1].col_loop[2].mb.weightReg),
-                $signed(dut.matrixEngine.systolicArr.row_loop[2].col_loop[0].mb.weightReg),
-                $signed(dut.matrixEngine.systolicArr.row_loop[2].col_loop[1].mb.weightReg),
-                $signed(dut.matrixEngine.systolicArr.row_loop[2].col_loop[2].mb.weightReg));
+                $signed(dut.matrixEngine.systolicArray.row_loop[0].col_loop[0].pe.weightReg),
+                $signed(dut.matrixEngine.systolicArray.row_loop[0].col_loop[1].pe.weightReg),
+                $signed(dut.matrixEngine.systolicArray.row_loop[0].col_loop[2].pe.weightReg),
+                $signed(dut.matrixEngine.systolicArray.row_loop[1].col_loop[0].pe.weightReg),
+                $signed(dut.matrixEngine.systolicArray.row_loop[1].col_loop[1].pe.weightReg),
+                $signed(dut.matrixEngine.systolicArray.row_loop[1].col_loop[2].pe.weightReg),
+                $signed(dut.matrixEngine.systolicArray.row_loop[2].col_loop[0].pe.weightReg),
+                $signed(dut.matrixEngine.systolicArray.row_loop[2].col_loop[1].pe.weightReg),
+                $signed(dut.matrixEngine.systolicArray.row_loop[2].col_loop[2].pe.weightReg));
             $fwrite(trace_fd, "R");
             for (lane = 0; lane < N; lane++) $fwrite(trace_fd, " %0d", $signed(dut.residentReductionWeight[lane]));
             $fwrite(trace_fd, "\nPW %0d", dut.matrixEngine.pendingWeightValid);
@@ -217,7 +217,7 @@ module nnAcceleratorStateTrace_tb;
             trace_result_align_busy = dut.matrixEngine.resultAlignBusy;
             trace_matrix_wave_mask = 0;
             for (entry = 0; entry < 2*N-2; entry++)
-                if (dut.matrixEngine.systolicArr.updateValidPipe[entry])
+                if (dut.matrixEngine.systolicArray.updateValidPipe[entry])
                     trace_matrix_wave_mask |= (1 << entry);
             trace_reduction_pipe_mask = 0;
             for (entry = 0; entry < 2*N-1; entry++)

@@ -51,17 +51,17 @@ New-Item -ItemType Directory -Path $buildDir | Out-Null
 
 $sources = @(
     (Join-Path $projectRoot "memory/signedFifo.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/reluActivation.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/activationLayer.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/relu.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/outputActivation.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/weightedVectorReduction.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/multiplierBlockWeightStationary.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/systolicArrayWeightStationary.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryProcessingElement.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationarySystolicArray.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplier.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/nnAccelerator.sv"),
     (Join-Path $projectRoot "SPI_Module.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationarySPI.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationary_tb.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixMultiplierWeightStationarySPI_tb.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplierTop.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplier_tb.sv"),
+    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplierTop_tb.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/matrixWeightUpdateWave_tb.sv"),
     (Join-Path $projectRoot "weightStationaryVariant/weightedVectorReduction_tb.sv")
 )
@@ -83,9 +83,19 @@ try {
     & $vlog -sv @sources
     if ($LASTEXITCODE -ne 0) { throw "vlog failed." }
 
+    # N=1 is intentionally outside the supported matrix boundary.  This also
+    # protects the one-entry activation skid from being mistaken for the old
+    # global FIFO-depth>=2 restriction.
+    & $vsim -c work.weightStationaryMatrixMultiplier -GN=1 `
+        -l invalid-parameter.log -do "run 1ns; quit -f"
+    if (-not (Select-String -Path invalid-parameter.log -SimpleMatch `
+            -Pattern "WIDTH>=1 and N>=2" -Quiet)) {
+        throw "Invalid parameter check failed for an unexpected reason."
+    }
+
     Invoke-RtlTest "weightedVectorReduction_tb" "reduction-regression.log" `
         "Weighted reduction regression failed."
-    Invoke-RtlTest "matrixMultiplierWeightStationary_tb" "core-regression.log" `
+    Invoke-RtlTest "weightStationaryMatrixMultiplier_tb" "core-regression.log" `
         "Core regression failed."
     Invoke-RtlTest "matrixWeightUpdateWave_tb" "matrix-update-regression.log" `
         "Matrix update-wave regression failed."
@@ -96,11 +106,11 @@ try {
     & pwsh -File (Join-Path $PSScriptRoot "run_uvm.ps1")
     if ($LASTEXITCODE -ne 0) { throw "UVM protocol regression failed." }
 
-    Invoke-RtlTest "matrixMultiplierWeightStationarySPI_tb" "spi-regression.log" `
+    Invoke-RtlTest "weightStationaryMatrixMultiplierTop_tb" "spi-regression.log" `
         "SPI regression failed."
 }
 finally {
     Pop-Location
 }
 
-Write-Output "PASS: Python references, local RTL units, golden RTL comparison, UVM protocol, and SPI regressions completed."
+Write-Output "PASS: parameter bounds, Python references, local RTL units, golden RTL comparison, UVM protocol, and SPI regressions completed."
