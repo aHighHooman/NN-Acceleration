@@ -1,8 +1,7 @@
 `timescale 1ns / 1ps
 
-// SPI owns serial framing, clock-domain crossing, ordering, and backpressure.
-// The single identity-matrix transaction is only a composition smoke check;
-// accelerator arithmetic is covered by the Python golden references.
+// Check SPI framing, CDC, ordering, and backpressure with an identity-matrix
+// smoke test; Python references cover accelerator arithmetic.
 module weightStationaryMatrixMultiplierTop_tb;
     localparam int WIDTH = 8;
     localparam int N = 2;

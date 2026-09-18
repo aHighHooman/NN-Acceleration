@@ -83,9 +83,8 @@ try {
     & $vlog -sv @sources
     if ($LASTEXITCODE -ne 0) { throw "vlog failed." }
 
-    # N=1 is intentionally outside the supported matrix boundary.  This also
-    # protects the one-entry activation skid from being mistaken for the old
-    # global FIFO-depth>=2 restriction.
+    # Reject N=1 matrices while keeping the one-entry activation skid legal;
+    # there is no global FIFO-depth >= 2 restriction.
     & $vsim -c work.weightStationaryMatrixMultiplier -GN=1 `
         -l invalid-parameter.log -do "run 1ns; quit -f"
     if (-not (Select-String -Path invalid-parameter.log -SimpleMatch `

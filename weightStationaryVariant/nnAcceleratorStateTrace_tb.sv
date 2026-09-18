@@ -38,9 +38,8 @@ module nnAcceleratorStateTrace_tb;
     integer retired_activated[0:N-1], retired_result[0:N-1];
     integer enqueued_raw[0:N-1];
     string stimulus_path, trace_path;
-    // Verification-only contract state. Stream quiescence describes only
-    // accepted samples, buffered results, and learning updates. Weight loading
-    // remains outside that stream boundary.
+    // Stream quiescence covers accepted samples, buffered results, and learning
+    // updates; weight loading is outside this verification boundary.
     logic streamQuiescent;
     logic configurationActive;
     logic configuredPassThrough, configuredReduceOutput;
@@ -195,9 +194,8 @@ module nnAcceleratorStateTrace_tb;
             reloadWeights = scanned_reload_weights;
             passThrough = scanned_pass_through;
             reduceOutput = scanned_reduce_output;
-            // Sample the combinational contract after the stimulus is applied
-            // but before this cycle's rising edge.  The post-edge snapshot
-            // alone describes the next edge after FIFO state may have moved.
+            // Sample after stimulus but before the rising edge; the post-edge snapshot
+            // reflects FIFO changes and describes the next edge's contract.
             #1ps;
             retired = resultValid && resultReady;
             retired_prediction = $signed(dut.prediction);

@@ -1,8 +1,6 @@
 `timescale 1ns/1ps
 
-// Public nnAccelerator interface used by the UVM environment.  This is a
-// black-box boundary: no matrix-engine or FIFO implementation signals are
-// present here.
+// Public nnAccelerator interface for UVM; excludes internal matrix/FIFO signals.
 interface nn_core_if #(
     parameter int WIDTH = 8,
     parameter int N = 3,
@@ -37,10 +35,8 @@ interface nn_core_if #(
     logic reloadWeights;
     logic reloadReady;
 
-    // Input clocking is sampled in the clocking block's input region, before
-    // the DUT's nonblocking assignments update FIFO/state registers.  This
-    // makes passive monitors observe the same transfer represented by
-    // valid && ready at the active clock edge.
+    // Sample before DUT nonblocking updates so passive monitors see the
+    // valid && ready transfer at the active clock edge.
     clocking monitor_cb @(posedge clk);
         default input #1step;
         input rst_n;
@@ -52,10 +48,8 @@ interface nn_core_if #(
         input weightsLoaded, reloadWeights, reloadReady;
     endclocking
 
-    // A small set of cycle-level properties is kept here because these are
-    // easier to express against sampled signals than in the end-to-end
-    // scoreboard.  Mathematical correctness is intentionally not checked by
-    // these assertions.
+    // Check cycle-level protocol properties on sampled signals here;
+    // end-to-end arithmetic checks belong to the scoreboard.
     generate
         for (genvar lane = 0; lane < N; lane++) begin : protocol_assertions
             property p_result_stable_while_waiting;

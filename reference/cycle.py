@@ -1,10 +1,6 @@
-"""Cycle-indexed architectural reference for the Phase 6 accelerator.
-
-``step`` applies pre-edge inputs and returns post-edge state.  W and R are
-traced per cycle and change partially within one, so the anti-diagonal wave,
-weight-load shift and per-lane observed weights are architectural state here.
-Numerics are delegated to ``arithmetic.py``; this module owns timing.
-"""
+"""Cycle reference: ``step`` maps pre-edge inputs to post-edge W/R state.
+Tracks update waves, weight-load shifts, and per-lane observed weights;
+``arithmetic.py`` supplies numerics while this module owns timing."""
 
 from __future__ import annotations
 
@@ -55,12 +51,8 @@ def _zero_matrix_tuple(n: int) -> tuple[tuple[int, ...], ...]:
 
 @dataclass(frozen=True)
 class CycleConfig:
-    """Parameters and quiescent-lifetime configuration for the cycle model.
-
-    ``pass_through`` and ``reduce_output`` describe a stream configuration,
-    not an accepted sample.  Use :meth:`CycleReference.reconfigure` to change
-    either value, and only after all work from the preceding stream drains.
-    """
+    """Cycle parameters and stream-wide ``pass_through``/``reduce_output`` modes.
+    Change modes via ``CycleReference.reconfigure`` only after all work drains."""
 
     n: int = 3
     width: int = 16
@@ -118,11 +110,8 @@ class CycleConfig:
 
 @dataclass(frozen=True)
 class CycleInputs:
-    """Per-cycle transaction and flow-control values before a rising edge.
-
-    The stream configuration is intentionally absent.  In particular,
-    ``passThrough`` and ``reduceOutput`` are not sample metadata.
-    """
+    """Pre-edge transaction and flow-control values; stream-wide
+    ``passThrough`` and ``reduceOutput`` are not sample metadata."""
 
     input_valid: bool = False
     input_data: tuple[int, ...] = ()
@@ -156,11 +145,8 @@ class CycleInputs:
 
 @dataclass(frozen=True)
 class SampleContext:
-    """Payload of the architectural sample-context FIFO.
-
-    The RTL stores the target, ternary input signs, and training-enable bit;
-    a sample index is model bookkeeping and is intentionally not exposed.
-    """
+    """RTL sample-context payload: target, ternary input signs, and training bit.
+    Sample indices remain private model bookkeeping."""
 
     target: int
     input_signs: tuple[int, ...]
@@ -315,12 +301,8 @@ class CycleReference:
 
     @property
     def stream_quiescent(self) -> bool:
-        """Whether accepted sample/result/update work has completely drained.
-
-        This is the verification configuration boundary.  Weight-loading
-        state is intentionally excluded because it is not work belonging to
-        the current sample stream.
-        """
+        """Whether all accepted samples, results, and updates have drained.
+        This configuration boundary excludes weight-loading state."""
 
         return not bool(
             self._input_fifo
@@ -333,11 +315,8 @@ class CycleReference:
         )
 
     def _clear_stream_state(self) -> None:
-        """Empty every stream buffer and private bookkeeping list.
-
-        Shared by construction-time reset and mid-run hardware reset so a new
-        field cannot be cleared by one and forgotten by the other.
-        """
+        """Clear all stream buffers and bookkeeping for both construction and hardware
+        reset, ensuring both paths clear the same fields."""
 
         n = self.config.n
         self._next_sample_index = 0
@@ -361,11 +340,8 @@ class CycleReference:
         self._last_enqueued_raw_result: tuple[int, ...] | None = None
 
     def _load_weight_state(self, loaded: bool) -> None:
-        """Set resident W and the weight-load flags.
-
-        R is deliberately not touched here: reduction weights load over their
-        own port, so W residency and R residency are independent.
-        """
+        """Set resident W and weight-load flags; leave R unchanged because
+        reduction weights load independently over their own port."""
 
         self._W = [row[:] for row in self._initial_W] if loaded else _zero_matrix(self.config.n)
         self._weights_loaded = loaded
@@ -405,12 +381,8 @@ class CycleReference:
         pass_through: bool | None = None,
         reduce_output: bool | None = None,
     ) -> None:
-        """Change stream configuration at a quiescent boundary.
-
-        An accepted sample, buffered result, or pending learning update keeps
-        the current configuration live.  The model rejects a change until all
-        such work has drained; no mode value is copied into a sample or FIFO.
-        """
+        """Reject mode changes until accepted samples, results, and updates drain.
+        Modes belong to the stream and are never copied into samples or FIFOs."""
 
         next_pass_through = (
             self.config.pass_through if pass_through is None else bool(pass_through)

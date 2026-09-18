@@ -47,10 +47,8 @@ module weightedVectorReduction_tb;
         set_values(12, 12, -12, -12, 12, -12, 12, -12);
         check_prediction("cancellation between terms", 0, 0);
 
-        // The first term is (-128)*(-128) = +16384. That value does not fit
-        // in 15 signed bits, so it requires the full
-        // MATRIX_RESULT_WIDTH+REDUCTION_WEIGHT_WIDTH product width before the
-        // remaining terms cancel it down to one.
+        // (-128)*(-128) = +16384 needs all MATRIX_RESULT_WIDTH+REDUCTION_WEIGHT_WIDTH
+        // product bits (15 signed bits cannot hold it) before other terms cancel to one.
         set_values(-128, 127, -128, 127, -128, 127, 127, -128);
         check_prediction("full product width with signed cancellation", 1, 0);
 

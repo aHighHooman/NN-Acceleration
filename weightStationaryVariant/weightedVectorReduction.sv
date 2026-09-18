@@ -58,10 +58,8 @@ module weightedVectorReduction #(
             accumulator = accumulator + extendedProduct[termIndex];
     end
 
-    // inputData retains the matrix result's 2*FRACTION_BITS binary point.
-    // Reduction coefficients contribute REDUCTION_FRACTION_BITS more.  Shift
-    // only the completed full-width sum so prediction returns to the input and
-    // target binary-point position.
+    // The sum has 2*FRACTION_BITS + REDUCTION_FRACTION_BITS fractional bits.
+    // Shift only the full sum to restore the input/target binary point.
     assign rescaledAccumulator = accumulator >>> RESCALE_SHIFT;
     assign prediction = $signed(
         rescaledAccumulator[PREDICTION_WIDTH-1:0]

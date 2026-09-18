@@ -1,9 +1,6 @@
-    // ------------------------------------------------------------------
     // The small set of UVM transactions
-    // ------------------------------------------------------------------
 
-    // One sample item is used on both sides of the environment.  The active
-    // driver consumes the policy fields; the passive monitor fills the
+    // The driver uses the sample's policy fields; the passive monitor adds a
     // configuration snapshot before publishing the accepted sample.
     class nn_core_sample_item extends uvm_sequence_item;
         data_t input_vector[N];

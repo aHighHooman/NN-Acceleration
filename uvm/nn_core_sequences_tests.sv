@@ -1,6 +1,4 @@
-    // ------------------------------------------------------------------
     // Environment
-    // ------------------------------------------------------------------
 
     class nn_core_env extends uvm_env;
         `uvm_component_utils(nn_core_env)
@@ -55,9 +53,7 @@
         endtask
     endclass
 
-    // ------------------------------------------------------------------
     // Compact stimulus sequences
-    // ------------------------------------------------------------------
 
     class nn_core_sequence_base extends uvm_sequence #(uvm_sequence_item);
         int unsigned random_seed, random_state;
@@ -193,9 +189,7 @@
         endtask
     endclass
 
-    // ------------------------------------------------------------------
     // Tests
-    // ------------------------------------------------------------------
 
     class nn_uvm_base_test extends uvm_test;
         `uvm_component_utils(nn_uvm_base_test)
