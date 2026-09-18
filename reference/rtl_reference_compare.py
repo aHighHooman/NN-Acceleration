@@ -1,10 +1,6 @@
-"""Generate RTL inputs and compare traced accelerator state with Python references.
-
-The stimulus file contains one pre-edge input bundle per line.  The RTL trace
-contains semantic post-edge state (never raw pointers or RAM layout).  This
-module deliberately delegates all numerical and scheduling decisions to
-FunctionalReference and CycleReference.
-"""
+"""Compare pre-edge RTL stimuli and semantic post-edge traces with Python references.
+FunctionalReference and CycleReference own numerics and scheduling;
+traces exclude raw pointers and RAM layout."""
 
 from __future__ import annotations
 
@@ -190,20 +186,17 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     bubble_cycles.extend(_idle_cycles(28))
     add_scenario("input_bubbles", bubble_cycles)
 
-    # 5: the default IN_FLIGHT_DEPTH (eight) accepted contexts and six
-    # buffered outputs force a true array stall while ready remains low;
-    # release then drains in original order.
+    # 5: eight accepted contexts and six buffered outputs force an array stall;
+    # releasing ready must drain them in order.
     backpressure_cycles = _reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
     backpressure_cycles.extend(_input_cycle((i + 1, 1, -1), 0, False, ready=False) for i in range(12))
     backpressure_cycles.extend(_idle_cycles(16, ready=False))
     backpressure_cycles.extend(_idle_cycles(32, ready=True))
     add_scenario("output_backpressure", backpressure_cycles)
 
-    # 6L: train one result before the result FIFO fills, then hold the real
-    # datapath while its matrix wave and reduction-delay package are live.
-    # The fifth result is training-enabled and was enqueued with R=(1,1,1).
-    # The first retired package changes resident R to zero before that result
-    # retires, so its stored positive signs must still make its matrix update.
+    # 6L: retire a training result, then stall with both update paths live.
+    # Result five saved R=(1,1,1); its matrix update must use those signs even
+    # after the first retired package changes resident R to zero.
     phase6l_samples = (
         Sample((1, 1, 1), -128, True),
         Sample((0, 0, 0), 0, False),
@@ -219,9 +212,8 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     phase6l_cycles = _reset_and_load_weights(
         INITIAL_WEIGHT_MATRIX, PHASE6L_INITIAL_REDUCTION_WEIGHTS
     )
-    # The first eight samples are accepted continuously.  The three idle
-    # cycles leave four results buffered, then one ready cycle retires the
-    # first result and injects the first learning package.
+    # Accept eight samples, then idle three cycles to buffer four results.
+    # One ready cycle retires the first result and starts its learning package.
     phase6l_cycles.extend(_sample_cycles(phase6l_samples[:8], ready=False))
     phase6l_cycles.extend(_idle_cycles(3, ready=False))
     phase6l_cycles.extend(_sample_cycles(phase6l_samples[8:9], ready=True))
@@ -260,10 +252,8 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
         len(cycles) - 1, RELOADED_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS,
         post_reload_samples, True, False))
 
-    # 7: run and drain pass-through/reduced mode, change both configuration
-    # pins while quiescent, then run and drain ReLU/vector mode without reset.
-    # Deliberately drain just one sample before changing modes to exercise the
-    # stream-configuration boundary independently of matrix geometry.
+    # 7: drain one pass-through/reduced sample, then switch to ReLU/vector mode
+    # without reset, testing quiescent reconfiguration independently of geometry.
     pass_samples = (Sample((-2, 1, 3), 0, False),)
     relu_samples = tuple(Sample(x, t, False) for x, t in (
         ((-3, 1, 0), 2), ((2, -4, 1), -3), ((1, 1, -2), 4), ((-2, -1, 3), 1),
@@ -624,9 +614,9 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         raise AssertionError("phase6L datapath stall was not held on consecutive cycles")
     first_stall = stalled_cycles[0]
     first_progress = phase6l_progress[first_stall]
-    # P fields are datapathAdvance, outputBlocked, reductionUpdateBusy,
-    # matrix-pipeline-busy, and result-alignment-busy.  Both update paths must
-    # still be live at the first held edge.
+    # P fields: datapathAdvance, outputBlocked, reductionUpdateBusy,
+    # matrix-pipeline-busy, result-alignment-busy. Both update paths must
+    # be live at the first held edge.
     if first_progress[2] != 1 or first_progress[3] != 1:
         raise AssertionError(
             "phase6L stall did not begin with live reduction and matrix update work"

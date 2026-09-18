@@ -1,9 +1,5 @@
-"""Pure fixed-point arithmetic used by the accelerator reference model.
-
-All values in this module are signed stored integers.  Width-limiting is
-explicit at the same boundaries as the RTL; Python floating point is never
-used for the golden calculation.
-"""
+"""Fixed-point reference arithmetic uses signed stored integers only.
+Widths match RTL boundaries; golden calculations never use floating point."""
 
 from __future__ import annotations
 
@@ -104,12 +100,8 @@ def matrix_multiply(
     weights: Sequence[Sequence[int]],
     width: int,
 ) -> list[int]:
-    """Compute ``input_vector * weights`` with the RTL matrix widths.
-
-    ``weights[row][column]`` is the architectural matrix orientation.  Each
-    product is a signed ``2*WIDTH`` value and each column accumulation is
-    performed at ``2*WIDTH+$clog2(N)`` bits.
-    """
+    """Compute ``input_vector * weights`` with ``weights[row][column]`` orientation.
+    Use signed 2*WIDTH products and ``2*WIDTH+$clog2(N)``-bit column sums."""
 
     _check_width(width)
     n = len(weights)
@@ -151,12 +143,8 @@ def activation_gates(
     activated_result: Sequence[int],
     pass_through: bool,
 ) -> list[bool]:
-    """Return the per-lane matrix-update activation gates.
-
-    This is intentionally the RTL condition ``passThrough || activated != 0``.
-    Thus pass-through mode opens a gate even for a zero raw result, while ReLU
-    closes it for non-positive pre-activations.
-    """
+    """Return RTL gates ``passThrough || activated != 0``: pass-through opens
+    even zero lanes; ReLU closes non-positive pre-activations."""
 
     return [bool(pass_through) or activated != 0 for activated in activated_result]
 

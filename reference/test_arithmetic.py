@@ -1,8 +1,5 @@
-"""Direct unit tests for the shared numerical primitives.
-
-Both references delegate to ``arithmetic.py``, so a defect here is invisible
-to any check that compares them.  Expectations are hand-computed.
-"""
+"""Test shared arithmetic against hand-computed expectations; cross-checking
+the two references cannot detect defects in their shared primitives."""
 
 from __future__ import annotations
 

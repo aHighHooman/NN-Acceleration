@@ -38,9 +38,8 @@ $vsim = Join-Path $questaBin "vsim.exe"
 $questaRoot = Split-Path -Parent $questaBin
 $uvmSource = Join-Path $questaRoot "verilog_src/uvm-1.1d/src"
 
-# Questa 2025.1+ reads SALT_LICENSE_SERVER.  Some Intel installers still leave
-# a valid node-locked path in SALT_LICENSE_FILE, so bridge it for this process
-# without changing the user's machine-wide environment.
+# Bridge Intel's SALT_LICENSE_FILE to Questa 2025.1+ SALT_LICENSE_SERVER
+# for this process only; leave the machine-wide environment unchanged.
 if (-not $env:SALT_LICENSE_SERVER) {
     $userSaltLicense = [Environment]::GetEnvironmentVariable(
         "SALT_LICENSE_SERVER", "User")
@@ -82,10 +81,8 @@ try {
     & $vlib work
     if ($LASTEXITCODE -ne 0) { throw "vlib failed." }
 
-    # Questa ships a compiled mtiUvm library.  The environment intentionally
-    # uses seeded $urandom stimulus and local scenario assertions so it remains
-    # runnable when svverification-licensed constrained randomization and
-    # covergroups are unavailable.
+    # Use Questa's compiled mtiUvm with seeded $urandom and local assertions;
+    # constrained randomization and covergroups require svverification licenses.
     & $vlog -sv -L mtiUvm -timescale 1ns/1ps "+incdir+$uvmSource" "+incdir+$uvmDir" @rtlSources @uvmSources
     if ($LASTEXITCODE -ne 0) { throw "RTL/UVM testbench compilation failed." }
 

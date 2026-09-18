@@ -158,9 +158,8 @@ class ArithmeticTests(unittest.TestCase):
 
     def test_fixed_point_rescaling_and_cancellation(self) -> None:
         self.assertEqual(fixed_point_rescale(2048, 4, 16), 128)
-        # A matrix result carries 2*4 fractional bits.  The full product is
-        # shifted once by 4+7, returning the target-scale stored value 8
-        # (a matrix value of 1.0 multiplied by a Q1.7 coefficient of 0.5).
+        # Shift the full product once by 4+7: matrix 1.0 (2*4 fractional bits) times
+        # a Q1.7 coefficient of 0.5 returns target-scale stored value 8.
         self.assertEqual(
             weighted_vector_reduction([256, 0], [64, 0], 8, 8, 4),
             8,

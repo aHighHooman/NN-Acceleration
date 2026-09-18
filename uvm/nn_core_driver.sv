@@ -1,6 +1,4 @@
-    // ------------------------------------------------------------------
     // Active public-interface driver
-    // ------------------------------------------------------------------
 
     class nn_core_driver extends uvm_driver #(uvm_sequence_item);
         `uvm_component_utils(nn_core_driver)
@@ -15,8 +13,7 @@
         bit hold_result_for_input_pressure;
         bit input_pressure_observed;
 
-        // Scenario counters are deliberately local to the driver.  They are
-        // used by the test's explicit assertions, not a coverage subsystem.
+        // Local scenario counters support explicit test assertions.
         int unsigned weight_bubbles_injected;
         int unsigned input_bubbles_injected;
 
@@ -127,12 +124,8 @@
                     vif.resultReady = 1'b0;
                     stall_run = 0;
                 end else if (hold_result_for_input_pressure) begin
-                    // Hold the result FIFO until the public input path shows
-                    // backpressure, proving the two ready/valid paths meet.
-                    // Keep resultReady low for one complete sampled cycle
-                    // after detection.  Releasing it immediately would pop a
-                    // result and restore inputReady before the positive-edge
-                    // monitor could observe the backpressured transaction.
+                    // Hold resultReady low for a full cycle after input backpressure
+                    // so the positive-edge monitor sees it before a pop restores ready.
                     if (input_pressure_observed) begin
                         vif.resultReady = 1'b1;
                         hold_result_for_input_pressure = 1'b0;

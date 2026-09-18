@@ -63,17 +63,14 @@ module nnAccelerator #(
                                         PREDICTION_WIDTH + 2*N;
     logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoPushData;
     logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoHead;
-    // The retired sample's target and its comparison against the prediction.
-    // Both are consumed by the update package below; the accelerator's
-    // interface is the result stream itself.
+    // The retired target and prediction comparison feed the internal update package.
     logic signed [TARGET_WIDTH-1:0] resultTargetData;
     logic signed [1:0] learningDirection;
     logic signed [COMPARE_WIDTH-1:0] comparePrediction, compareTarget;
     logic signed [2*N-1:0] inputSignPushData, inputSignHead;
     logic trainingEnableHead;
-    // The matrix and reduction update packages are formed here and consumed
-    // by matrixEngine below.  They are internal wiring, not an accelerator
-    // interface.
+    // Internal update wiring connects the matrix package to matrixEngine
+    // and the reduction package to the resident-vector update pipe.
     logic signed [1:0] rowDirection[N], columnDirection[N];
     logic matrixUpdateValid;
     logic signed [1:0] reductionDirection[N];
@@ -92,18 +89,15 @@ module nnAccelerator #(
     logic sampleContextFull, sampleContextEmpty;
     logic samplePush, samplePop, sampleCanAccept;
 
-    // The input vector, target, input signs, and training-enable bit are
-    // one input transaction. Gate the matrix valid as well as the external
-    // ready so no part can advance alone when the sample-context FIFO applies
-    // backpressure.
+    // The vector, target, signs, and training bit form one transaction. Gate matrix
+    // valid and external ready together when the sample-context FIFO backpressures.
     assign sampleCanAccept       = !sampleContextFull || samplePop;
     assign inputReady       = matrixInputReady && sampleCanAccept;
     assign matrixInputValid = inputValid && sampleCanAccept;
     assign samplePush       = inputValid && inputReady;
 
-    // The single result FIFO owns the complete architectural result.  Its
-    // capacity is the only forward-path storage decision: a full FIFO may
-    // still accept a new matrix result on the same edge that its head retires.
+    // The result FIFO holds the complete architectural result and controls capacity;
+    // a full FIFO can accept a matrix result on the same edge its head retires.
     assign resultFifoPop      = resultValid && resultReady;
     assign resultFifoCanAccept = !resultFifoFull || resultFifoPop;
     assign matrixResultReady  = resultFifoCanAccept;
@@ -152,11 +146,8 @@ module nnAccelerator #(
         end
     end
 
-    // Both update vectors describe the single result-FIFO head. Matrix-update
-    // valid is a training-enabled result handshake, so no package is emitted
-    // for an inference sample or while an output is stalled. The activated
-    // vector, prediction, and resident reduction signs all come from the same
-    // stored transaction.
+    // Both updates use the same FIFO head's activated vector, prediction, and saved
+    // reduction signs; only a training-enabled result handshake emits a package.
     always_comb begin
         for (int lane = 0; lane < N; lane++) begin
             rowDirection[lane] = $signed(inputSignHead[2*lane +: 2]);
@@ -180,19 +171,16 @@ module nnAccelerator #(
         end
     end
 
-    // A matrix package and its reduction package are generated together.
-    // Packing the N ternary directions keeps the sideband compact while
-    // successive packages overlap in the update wave.
+    // Matrix and reduction packages are generated together; packed ternary
+    // directions keep the sideband compact as update waves overlap.
     always_comb begin
         reductionUpdateData = '0;
         for (int lane = 0; lane < N; lane++)
             reductionUpdateData[2*lane +: 2] = reductionDirection[lane];
     end
 
-    // Capture the ternary sign of the resident reduction coefficient with the
-    // activated vector and prediction created by one matrix-result handshake.
-    // No reduction event is created for an input bubble, and no standalone
-    // update item can get in front of a ready result.
+    // Capture resident reduction signs, activation, and prediction together on a
+    // matrix-result handshake, keeping updates paired with results through bubbles.
     always_comb begin
         reductionWeightSignPushData = '0;
         for (int lane = 0; lane < N; lane++) begin
@@ -229,9 +217,7 @@ module nnAccelerator #(
     assign reductionWeightSignHead =
         resultFifoHead[N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH +: 2*N];
 
-    // FIFO order, rather than a cycle count, carries the complete sample
-    // context to the result transaction produced by the corresponding
-    // input vector.
+    // FIFO order pairs each input's sample context with its result transaction.
     signedFifo #(
         .WIDTH(SAMPLE_CONTEXT_WIDTH),
         .DEPTH(IN_FLIGHT_DEPTH)
@@ -254,10 +240,8 @@ module nnAccelerator #(
         .full(resultFifoFull), .empty(resultFifoEmpty)
     );
 
-    // The accelerator owns the compact reduction update.  Stage zero samples
-    // the live package directly, while the update pipe commits the resident
-    // vector on the same advancing slots as the matrix update wave, including
-    // useful bubble edges.
+    // Stage zero uses the live reduction package; the pipe commits the resident
+    // vector on the matrix update wave's advancing slots, including bubbles.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             for (int lane = 0; lane < N; lane++)

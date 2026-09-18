@@ -36,14 +36,9 @@ module weightStationarySystolicArray #(
     logic signed [1:0]                      updateColumnPipe[UPDATE_PIPE_STORAGE][N];
     logic                                   updateValidPipe [UPDATE_PIPE_STORAGE];
 
-    // Diagonal zero consumes the live package on its acceptance edge.  The
-    // remaining 2N-2 diagonals consume the registered package on successive
-    // advancing edges, so the last stage of updateValidPipe is the final PE
-    // update rather than an otherwise unused extra pipeline stage.
-    //
-    // Update packages advance with exactly the same enable as the data array.
-    // Keeping both complete vectors in every stage permits one new package on
-    // every advancing cycle while each stage addresses one anti-diagonal.
+    // Diagonal zero uses the live package; the remaining 2N-2 use pipeline stages.
+    // Full vectors advance with the data array, allowing one package per advance;
+    // the last updateValidPipe stage applies the final PE update.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             for (int stage = 0; stage < UPDATE_PIPE_STORAGE; stage++) begin

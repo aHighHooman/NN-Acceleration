@@ -1,6 +1,4 @@
-    // ------------------------------------------------------------------
     // Passive public-interface monitors
-    // ------------------------------------------------------------------
 
     class nn_core_input_monitor extends uvm_monitor;
         `uvm_component_utils(nn_core_input_monitor)

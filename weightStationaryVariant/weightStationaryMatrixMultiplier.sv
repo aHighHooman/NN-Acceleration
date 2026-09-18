@@ -71,10 +71,8 @@ module weightStationaryMatrixMultiplier #(
         end
     end
 
-    // The systolic columns finish one cycle apart.  Delay the earlier columns
-    // by the missing suffix of that fixed latency so the result interface
-    // presents complete vectors atomically.  These registers are ordinary
-    // datapath state and use the same advance enable as the array.
+    // Delay earlier columns to align their staggered results into complete vectors.
+    // Alignment registers share the array's advance enable.
     genvar alignLane;
     generate
         for (alignLane = 0; alignLane < N; alignLane = alignLane + 1) begin : result_alignment
@@ -118,10 +116,8 @@ module weightStationaryMatrixMultiplier #(
         end
     end
 
-    // The aligned result is the matrix engine's terminal interface.  The
-    // accelerator owns the result FIFO and presents its capacity as
-    // resultReady.  If a complete vector is waiting and that interface is not
-    // ready, every shared datapath register freezes exactly as before.
+    // nnAccelerator supplies resultReady from its result FIFO capacity.
+    // A complete result waiting on !resultReady freezes the shared datapath.
     assign outputBlocked    = resultAlignedAllValid && !resultReady;
 
     // A pending row can be replaced on the same edge on which it is consumed,
@@ -132,9 +128,8 @@ module weightStationaryMatrixMultiplier #(
     assign weightReady      = !weightsLoaded &&
                               (!pendingWeightValid || !consumingFinalWeightRow);
     assign weightPush       = weightValid && weightReady;
-    // The matrix engine has one input-activation skid entry.  A pop and a
-    // replacement push may happen on the same advancing edge, preserving the
-    // one-vector-per-cycle steady-state throughput of the array.
+    // The one-entry activation skid allows a simultaneous pop and replacement
+    // push on advancing edges, sustaining one vector per cycle.
     assign inputReady  = weightsLoaded && (!inputFull || inputPop);
     assign inputPush   = inputValid && inputReady;
     assign resultValid      = resultAlignedAllValid;

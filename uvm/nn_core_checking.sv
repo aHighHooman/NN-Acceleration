@@ -1,6 +1,4 @@
-    // ------------------------------------------------------------------
     // Ordered black-box scoreboard
-    // ------------------------------------------------------------------
 
     class nn_core_scoreboard extends uvm_scoreboard;
         `uvm_component_utils(nn_core_scoreboard)

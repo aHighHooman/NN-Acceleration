@@ -454,9 +454,8 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertTrue(all(-8 <= value <= 7 for value in model.R))
 
     def test_closed_form_update_visibility_matches_wave_propagation(self) -> None:
-        """Cross-check the one claim the references derive independently:
-        which weight generation each sample sees.  Functional states it in
-        closed form (2*N+1); cycle produces it by wave propagation."""
+        """Cross-check weight visibility: functional derives the 2*N+1 sample delay
+        in closed form; cycle derives it independently through wave propagation."""
 
         for n in (2, 3, 4):
             with self.subTest(n=n):
