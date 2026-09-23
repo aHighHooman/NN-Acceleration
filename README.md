@@ -1,6 +1,6 @@
 # Parameterized Weight-Stationary Neural-Network Accelerator
 
-This repository contains a signed, parameterized SystemVerilog matrix multiplier built around an `N x N` weight-stationary systolic array. Weights remain inside the processing elements while input rows stream through the array. FIFO-backed ready/valid interfaces absorb stalls, and the top-level wrapper moves vectors across parallel SPI lanes.
+This repository contains a signed, parameterized SystemVerilog neural-network accelerator built around an `N x N` weight-stationary systolic array. The array holds matrix weights while input vectors stream through it. The accelerator adds activation, a weighted reduction, and training updates. Its ready/valid core uses a one-entry input register and two transaction FIFOs; an SPI wrapper moves vectors across parallel lanes.
 
 ## Architecture
 
@@ -19,34 +19,40 @@ flowchart LR
     end
 
     subgraph CORE["Accelerator clock domain (`clk`)"]
-        W_FIFO["weight-vector FIFO<br/>depth N"]
-        I_FIFO["one-deep activation skid"]
+        W_STAGE["pending weight-row register"]
+        I_SKID["one-entry input skid register"]
         S_FIFO["sampleContextFifo<br/>depth IN_FLIGHT_DEPTH"]
         SKEW["Input skew network"]
         ARRAY["N x N weight-stationary PE array"]
         ALIGN["Complete-result alignment"]
         ACT["Activation layer"]
+        READOUT["Weighted reduction"]
+        R_WEIGHTS["Resident reduction weights"]
         RESULT_FIFO["resultFifo<br/>activated vector + prediction + reduction signs<br/>depth OUTPUT_FIFO_DEPTH"]
         RETIRE["Result retirement"]
         M_UPDATE["Matrix update wave"]
         R_UPDATE["2N-1-stage reduction update delay"]
     end
 
-    W_RX --> W_CDC --> W_FIFO --> ARRAY
-    I_RX --> I_CDC --> I_FIFO --> SKEW --> ARRAY
+    W_RX --> W_CDC --> W_STAGE --> ARRAY
+    I_RX --> I_CDC --> I_SKID --> SKEW --> ARRAY
     I_RX --> I_CDC --> S_FIFO
     ARRAY --> ALIGN --> ACT --> RESULT_FIFO --> RETIRE --> R_CDC --> R_TX
+    ACT --> READOUT --> RESULT_FIFO
+    R_WEIGHTS --> READOUT
+    R_WEIGHTS -. saved signs .-> RESULT_FIFO
     S_FIFO --> RETIRE
     RETIRE --> M_UPDATE --> ARRAY
-    RETIRE --> R_UPDATE
+    RETIRE --> R_UPDATE --> R_WEIGHTS
 ```
 
-The core has two architectural FIFOs, `sampleContextFifo` and the
-accelerator-owned `resultFifo`, plus a fixed one-entry activation skid inside
-the matrix engine. `IN_FLIGHT_DEPTH` is the admission-control capacity for
-accepted samples that have not yet retired. Each result FIFO entry is one
-transaction containing the activated vector, its prediction, and the resident
-reduction-weight signs used to produce that prediction.
+The matrix engine buffers one accepted input vector in a data register with a
+valid bit. It can consume that vector and accept its replacement on the same
+edge. The accelerator has two FIFOs: `sampleContextFifo` holds each sample's
+target, original-input signs, and training bit from acceptance to retirement;
+`resultFifo` holds the activated vector, prediction, and reduction-weight signs
+from result completion to retirement. `IN_FLIGHT_DEPTH` limits accepted samples
+that have not retired.
 
 Each processing element stores one weight and performs a signed multiply-accumulate while forwarding the input and partial sum:
 
@@ -127,7 +133,7 @@ continues to use their live, configuration-lifetime values.
 - A PE multiply and the weighted reduction both use their resident weights present before an update edge. Accepting the last old-state result applies the reduction direction directly to the sole resident reduction vector with signed one-LSB saturation; the next sample then uses both the updated matrix and updated reduction weights. With `FRACTION_BITS = 4`, one matrix-weight step is `mu = 1/16`.
 - In continuous no-stall traffic, a sample's scalar prediction is available after `2*N-1` cycles, its learning direction is formed combinationally in that cycle, and PE(0,0) applies the update on the following edge. The sample on that edge still uses the old weight; the next sample is the first affected, so update `U_S` first affects sample `S + 2*N + 1` (distance 7 for `N=3`).
 - The matrix and reduction update mechanisms are separate from result storage: a full `resultFifo` freezes the aligned matrix datapath and both update paths together until a result retires. No update-only readout events, full reduction-vector snapshots, version counters, or catch-up cycles exist in the current architecture; only each result's activated vector, prediction, and required ternary signs are stored.
-- `sampleContextFifo` stores target, original-input signs, and per-sample `trainingEnable`; its head advances only when the corresponding result entry retires. It is the sole admission-capacity parameter: `IN_FLIGHT_DEPTH` bounds accepted-but-unretired samples, while the matrix engine's activation skid is fixed at one entry. The current SPI adapter supports normal inference. If `trainingEnable` is asserted through that adapter, `targetData` is supplied as zero, so learning is toward target zero; arbitrary supervised targets are not transported by the present SPI interface.
+- `sampleContextFifo` stores target, original-input signs, and per-sample `trainingEnable`; its head advances only when the corresponding result entry retires. `IN_FLIGHT_DEPTH` bounds accepted-but-unretired samples, while the matrix engine's input register holds one vector. The SPI wrapper does not transport targets: it supplies `targetData = 0` to the core. Asserting `trainingEnable` through that wrapper therefore learns toward zero; arbitrary supervised targets require the direct core interface.
 - Assert `reloadWeights` only while `reloadReady` is high.
 - Stream quiescence and matrix reload readiness are distinct. Stream
   quiescence means that no accepted sample, result, or update work remains, so
@@ -181,9 +187,9 @@ continues to use their live, configuration-lifetime values.
 | `IN_FLIGHT_DEPTH` | `2*N+2` | Maximum accepted-but-unretired samples; depth of `sampleContextFifo`, must be >= 1 |
 | `OUTPUT_FIFO_DEPTH` | `2*N` | Depth of the accelerator-owned `resultFifo`; must be >= 1 |
 
-The matrix engine deliberately uses a valid one-entry activation skid. Generic
-FIFO storage therefore supports `DEPTH >= 1`; the earlier global minimum of two
-entries does not apply to the Phase 6 architecture.
+The matrix engine's one-entry input register is fixed in size; it is not a
+parameterized FIFO. The generic `signedFifo` is used for the sample-context and
+result FIFOs and supports `DEPTH >= 1`.
 
 ## Verification
 
@@ -202,9 +208,11 @@ primary owner:
 - The core UVM environment owns randomized public `nnAccelerator` traffic,
   simple reset/reload recovery, ordering, and no-loss/no-duplication checks. It
   uses three project transactions: an active/observed sample item, a compact
-  configuration item, and a retired-result transaction. Its small
-  training-disabled per-sample predictor is only a smoke check; exact learning
-  and cycle/state behavior remain owned by the references and RTL trace.
+  configuration item, and a retired-result transaction. It checks inference
+  numerically while the weights needed for that output mode are known, but
+  treats training and inference using learned state as liveness and ordering
+  checks. Exact learning and cycle/state behavior remain owned by the references
+  and RTL trace.
 - Directed RTL units own reduction arithmetic, PE/update-wave mechanics, and
   `N=2/3/4` matrix-core parameterization. The matrix-engine bench is limited to
   deterministic arithmetic, signed accumulation edges, basic loading, and one
@@ -219,10 +227,10 @@ Run the complete regression in ownership order with:
 pwsh -File scripts/run_modelsim.ps1
 ```
 
-This runs the Python reference tests, local RTL units, golden RTL comparison,
+This runs the Python reference tests, local RTL units, RTL/reference comparison,
 UVM protocol regression, and SPI regression in that order.
 
-The Phase 6E golden RTL comparison can also be run directly:
+Run the cycle-by-cycle RTL/reference comparison separately with:
 
 ```powershell
 pwsh -File scripts/run_rtl_reference_compare.ps1
@@ -236,10 +244,12 @@ and one `resultValid && resultReady` handshake is one result item. Weight and
 reduction loading are explicit configuration commands, not fields on every
 sample. The input monitor tracks configuration locally and snapshots the W/R
 state and mode pins into the accepted sample; only accepted samples and retired
-results cross analysis ports. The compact scoreboard checks ordered counts,
-reset invalidation, and a small training-disabled inference predictor. It
-intentionally does not model learning waves or internal FIFOs; those remain
-owned by the Python references, RTL trace bridge, and focused RTL benches.
+results cross analysis ports. The scoreboard checks ordered counts and reset
+invalidation. It checks exact inference results only while the matrix weights,
+and the reduction weights when reduction mode is selected, are known. Training
+results must retire, but inference using learned weights is outside its numeric
+scope until the relevant weights are reloaded. Learning waves and internal FIFO
+state are checked by the Python references and RTL trace.
 
 The regression uses explicit scenario assertions for input bubbles, output
 backpressure, input backpressure, reloads, and resets instead of a
@@ -274,11 +284,11 @@ The `sampleContextFifo` carries two-bit signs for every original input lane and
 the training-enable bit. The accelerator-owned `resultFifo` stores the
 activated vector, prediction, and resident reduction-weight signs as one
 transaction. The raw matrix result is not retained after that entry is formed.
-On a training-enabled result handshake, those signs and the current
-pre-activation values form one `rowDirection`/`columnDirection` package while
+On a training-enabled result handshake, those signs and the stored activated
+vector form one `rowDirection`/`columnDirection` package while
 the corresponding reduction directions are packed into an update sideband.
-The package observes the same resident reduction weights that produced its
-prediction.
+The matrix directions use the reduction-weight signs captured with the
+prediction, even if the resident reduction weights have changed since enqueue.
 On an `arrayAdvance`, the matrix engine applies the live package directly to
 anti-diagonal zero and captures it for anti-diagonals 1 through `2*N-2`. Weight loading
 has priority over learning, and matrix-update stages contribute to pipeline-busy
@@ -311,10 +321,10 @@ retains focused coverage of the supported 2x2, 3x3, and 4x4 configurations.
 The checked-in Quartus project in `Quartus Stuff/NN_Acceleration.qsf` targets
 the DE1-SoC Cyclone V `5CSEMA5F31C6` and uses
 `weightStationaryMatrixMultiplierTop` as its top-level entity. A Quartus Prime
-25.1 Standard Lite fit of the checked-in default `N=3`, `WIDTH=16`
-configuration produced:
+25.1 Standard Lite fit of the default `N=3`, `WIDTH=16` configuration,
+recorded before the one-entry FIFO was replaced by a register, produced:
 
-| Metric | Current post-fit result |
+| Metric | Recorded post-fit result |
 |---|---:|
 | Logic utilization | 976 / 32,070 ALMs (3%) |
 | Registers | 1,615 |
@@ -324,12 +334,14 @@ configuration produced:
 | I/O pins | 57 / 457 (12%) |
 
 `Quartus Stuff/NN_Acceleration.sdc` constrains the primary `clk` input to
-50 MHz. The post-fit Timing Analyzer reports non-negative slack at every
-analyzed corner for that clock; the worst reported setup slack is +4.197 ns and
-the worst hold slack is +0.152 ns. The external SPI `sclk`, I/O delays, and
-physical pin locations remain application-specific and are not assigned, so
-the design is not yet documented as ready for board programming and the timing
-result must not be interpreted as full-interface timing closure. RTL
+50 MHz. That earlier post-fit Timing Analyzer run reported non-negative slack
+at every analyzed corner for that clock; its worst reported setup slack was
++4.197 ns and its worst hold slack was +0.152 ns. The register change has not
+been re-fitted, so these utilization and timing figures are historical. The
+external SPI `sclk`, I/O delays, and physical pin locations remain
+application-specific and are not assigned, so the design is not yet documented
+as ready for board programming. The timing result does not establish full
+interface timing closure. RTL
 regressions compile the source directly, so the Quartus project does not request
 a separate post-fit EDA simulation netlist.
 
