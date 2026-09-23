@@ -25,7 +25,6 @@ module weightStationaryMatrixMultiplier #(
     localparam int WEIGHT_COUNT_WIDTH   = $clog2(N+1);
     localparam int RESULT_WIDTH         = $clog2(N) + 2*WIDTH;
     localparam int VECTOR_WIDTH         = N * WIDTH;
-    localparam int ACTIVATION_SKID_DEPTH = 1;
 
     initial begin
         if (WIDTH < 1 || N < 2)
@@ -40,9 +39,10 @@ module weightStationaryMatrixMultiplier #(
     logic pendingWeightValid;
     logic consumingFinalWeightRow;
     logic signed [VECTOR_WIDTH-1:0] inputVectorPushData;
-    logic signed [VECTOR_WIDTH-1:0] inputVectorHead;
+    logic signed [VECTOR_WIDTH-1:0] inputVectorData, inputVectorHead;
+    logic inputVectorValid;
     logic signed [WIDTH-1:0] queuedInput[N];
-    logic inputFull, inputEmpty;
+    logic inputEmpty;
     localparam int RESULT_ALIGN_STORAGE = (N > 1) ? N-1 : 1;
     logic signed [RESULT_WIDTH-1:0]
         resultAlignData[N][RESULT_ALIGN_STORAGE];
@@ -130,8 +130,10 @@ module weightStationaryMatrixMultiplier #(
     assign weightPush       = weightValid && weightReady;
     // The one-entry activation skid allows a simultaneous pop and replacement
     // push on advancing edges, sustaining one vector per cycle.
-    assign inputReady  = weightsLoaded && (!inputFull || inputPop);
+    assign inputReady  = weightsLoaded && (!inputVectorValid || inputPop);
     assign inputPush   = inputValid && inputReady;
+    assign inputEmpty  = !inputVectorValid;
+    assign inputVectorHead = inputVectorValid ? inputVectorData : '0;
     assign resultValid      = resultAlignedAllValid;
     assign arrayAdvance     = !weightsLoaded ? consumePendingWeightRow : !outputBlocked;
     assign inputPop    = weightsLoaded && !inputEmpty && arrayAdvance;
@@ -147,12 +149,19 @@ module weightStationaryMatrixMultiplier #(
         end
     endgenerate
 
-    signedFifo #(.WIDTH(VECTOR_WIDTH), .DEPTH(ACTIVATION_SKID_DEPTH)) inputVectorFifo (
-        .clk(clk), .rst_n(rst_n), .push(inputPush),
-        .pushData(inputVectorPushData), .pop(inputPop),
-        .popData(inputVectorHead), .full(inputFull),
-        .empty(inputEmpty)
-    );
+    // A pop and push on the same edge replace the buffered vector directly.
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            inputVectorValid <= 1'b0;
+        end else begin
+            if (inputPush) begin
+                inputVectorData  <= inputVectorPushData;
+                inputVectorValid <= 1'b1;
+            end else if (inputPop) begin
+                inputVectorValid <= 1'b0;
+            end
+        end
+    end
 
     genvar laneIndex;
     generate
