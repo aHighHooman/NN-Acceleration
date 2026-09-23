@@ -45,8 +45,6 @@ set_global_assignment -name PROJECT_CREATION_TIME_DATE "22:57:18  NOVEMBER 08, 2
 set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/weightStationaryProcessingElement.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/weightStationarySystolicArray.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/relu.sv
-set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/outputActivation.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/weightedVectorReduction.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/weightStationaryMatrixMultiplier.sv
 set_global_assignment -name SYSTEMVERILOG_FILE ../weightStationaryVariant/nnAccelerator.sv

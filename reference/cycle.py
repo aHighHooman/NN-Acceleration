@@ -1,5 +1,5 @@
 """Cycle reference: ``step`` maps pre-edge inputs to post-edge W/R state.
-Tracks update waves, weight-load shifts, and per-lane observed weights;
+Tracks update waves, weight-load shifts, and per-PE observed weights;
 ``arithmetic.py`` supplies numerics while this module owns timing."""
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from .arithmetic import (
     matrix_update_directions,
     prediction_width,
     reduction_update_directions,
-    ternary_product,
     ternary_sign,
     to_signed,
     weighted_vector_reduction,
@@ -102,12 +101,6 @@ class CycleConfig:
     def sample_context_depth(self) -> int:
         return self.in_flight_depth  # type: ignore[return-value]
 
-    @property
-    def activation_skid_depth(self) -> int:
-        """The matrix engine's fixed one-entry input-activation skid."""
-
-        return 1
-
 
 @dataclass(frozen=True)
 class CycleInputs:
@@ -171,7 +164,7 @@ class CycleSnapshot:
     W: tuple[tuple[int, ...], ...]
     R: tuple[int, ...]
     pending_weight_row: tuple[int, ...] | None
-    input_fifo: tuple[tuple[int, ...], ...]
+    input_stage: tuple[int, ...] | None
     sample_context_fifo: tuple[SampleContext, ...]
     result_fifo: tuple[ResultEntry, ...]
 
@@ -212,8 +205,7 @@ class _ResultEntry:
 
 @dataclass(frozen=True)
 class _MatrixWave:
-    row_direction: tuple[int, ...]
-    column_direction: tuple[int, ...]
+    direction: tuple[tuple[int, ...], ...]
     next_diagonal: int
 
 
@@ -280,7 +272,7 @@ class CycleReference:
         return bool(
             self._pending_weight_row is not None
             or (not self._weights_loaded and self._loaded_weight_count)
-            or self._input_fifo
+            or self._input_stage is not None
             or self._sample_context_fifo
             or self._data_tokens
             or self._alignment
@@ -295,7 +287,7 @@ class CycleReference:
         This configuration boundary excludes weight-loading state."""
 
         return not bool(
-            self._input_fifo
+            self._input_stage is not None
             or self._data_tokens
             or self._matrix_waves
             or self._alignment
@@ -313,7 +305,7 @@ class CycleReference:
         self._pending_weight_row: tuple[int, ...] | None = None
         self._weight_load_pipe: list[tuple[int, ...] | None] = [None] * n
         self._reduction_pipe: list[_ReductionWave | None] = [None] * (2 * n - 1)
-        self._input_fifo: deque[_Sample] = deque()
+        self._input_stage: _Sample | None = None
         self._sample_context_fifo: deque[_Sample] = deque()
         self._result_fifo: deque[_ResultEntry] = deque()
         self._alignment: deque[_CompletedResult] = deque()
@@ -414,7 +406,7 @@ class CycleReference:
 
         return bool(
             self._weights_loaded
-            and not self._input_fifo
+            and self._input_stage is None
             and not self._data_tokens
             and not self._alignment
             and not self._matrix_waves
@@ -425,9 +417,7 @@ class CycleReference:
         for row in range(self.config.n):
             for column in range(self.config.n):
                 if row + column == diagonal:
-                    direction[row][column] = ternary_product(
-                        wave.row_direction[row], wave.column_direction[column]
-                    )
+                    direction[row][column] = wave.direction[row][column]
         self._W = apply_matrix_update(self._W, direction, self.config.width)
 
     def _advance_matrix_waves(self, injected: _MatrixWave | None) -> None:
@@ -436,23 +426,11 @@ class CycleReference:
         for wave in self._matrix_waves:
             self._apply_matrix_diagonal(wave, wave.next_diagonal)
             if wave.next_diagonal < last_diagonal:
-                next_waves.append(
-                    _MatrixWave(
-                        wave.row_direction,
-                        wave.column_direction,
-                        wave.next_diagonal + 1,
-                    )
-                )
+                next_waves.append(_MatrixWave(wave.direction, wave.next_diagonal + 1))
         if injected is not None:
             self._apply_matrix_diagonal(injected, 0)
             if last_diagonal > 0:
-                next_waves.append(
-                    _MatrixWave(
-                        injected.row_direction,
-                        injected.column_direction,
-                        1,
-                    )
-                )
+                next_waves.append(_MatrixWave(injected.direction, 1))
         self._matrix_waves = next_waves
 
     def _advance_reduction_waves(
@@ -567,11 +545,12 @@ class CycleReference:
             )
             matrix_direction = _matrix_tuple(matrix_directions)
             reduction_direction = tuple(reduction_update_directions(activated, direction))
-            update_visible_at = completed.sample.index + 2 * self.config.n + 1
         else:
             matrix_direction = _zero_matrix_tuple(self.config.n)
             reduction_direction = (0,) * self.config.n
-            update_visible_at = None
+        # The directions depend only on values frozen at enqueue, so the record
+        # is complete here and retirement issues it unchanged.  Visibility is
+        # not claimed: it emerges from the waves and shows up in W_used/R_used.
         result = SampleRecord(
             sample_index=completed.sample.index,
             input_vector=completed.sample.input_vector,
@@ -586,7 +565,7 @@ class CycleReference:
             matrix_update_directions=matrix_direction,
             reduction_update_directions=reduction_direction,
             update_generated=completed.sample.training_enable,
-            update_visible_at=update_visible_at,
+            update_visible_at=None,
         )
         if result.sample_index != len(self.records):
             raise AssertionError("sample result order diverged from enqueue order")
@@ -596,14 +575,14 @@ class CycleReference:
     def _snapshot(self) -> CycleSnapshot:
         if len(self._result_fifo) > self.config.output_fifo_depth:
             raise AssertionError("result FIFO exceeded its configured depth")
-        if len(self._input_fifo) > self.config.activation_skid_depth:
-            raise AssertionError("activation skid exceeded its fixed depth")
         return CycleSnapshot(
             cycle=self._cycle,
             W=_matrix_tuple(self._W),
             R=tuple(self._R),
             pending_weight_row=self._pending_weight_row,
-            input_fifo=tuple(sample.input_vector for sample in self._input_fifo),
+            input_stage=(
+                self._input_stage.input_vector if self._input_stage is not None else None
+            ),
             sample_context_fifo=tuple(
                 SampleContext(sample.target, sample.input_signs, sample.training_enable)
                 for sample in self._sample_context_fifo
@@ -636,19 +615,6 @@ class CycleReference:
 
         result_head, context_head = self._result_head()
         result_valid = result_head is not None and context_head is not None
-        current_activated: tuple[int, ...] | None = None
-        prediction = 0
-        direction = 0
-        if result_valid:
-            assert result_head is not None and context_head is not None
-            current_activated = result_head.activated_result
-            prediction = result_head.prediction
-            direction = learning_direction(
-                context_head.target,
-                prediction,
-                self.config.target_width,  # type: ignore[arg-type]
-                self.config.prediction_width,
-            )
         result_retired = bool(result_valid and cycle_inputs.result_ready)
 
         pending_weight_consumed = bool(
@@ -685,11 +651,16 @@ class CycleReference:
             pending_weight_consumed if not self._weights_loaded else not output_blocked
         )
 
-        input_pop = bool(self._weights_loaded and self._input_fifo and datapath_advance)
+        input_pop = bool(
+            self._weights_loaded and self._input_stage is not None and datapath_advance
+        )
         context_full = len(self._sample_context_fifo) >= self.config.sample_context_depth
         sample_can_accept = not context_full or result_retired
-        input_full = len(self._input_fifo) >= self.config.activation_skid_depth
-        input_ready = self._weights_loaded and (not input_full or input_pop) and sample_can_accept
+        input_ready = (
+            self._weights_loaded
+            and (self._input_stage is None or input_pop)
+            and sample_can_accept
+        )
         input_accepted = bool(cycle_inputs.input_valid and input_ready)
         accepted_sample: _Sample | None = None
         if input_accepted:
@@ -702,12 +673,10 @@ class CycleReference:
             self._next_sample_index += 1
             self.timings.append(SampleTiming(accepted_at=cycle_number))
 
-        input_for_array = self._input_fifo[0] if input_pop else None
+        input_for_array = self._input_stage if input_pop else None
         result_enqueue = bool(datapath_advance and aligned_head_ready)
         injected_matrix: _MatrixWave | None = None
         injected_reduction: _ReductionWave | None = None
-        issued_matrix_direction = _zero_matrix_tuple(self.config.n)
-        issued_reduction_direction = (0,) * self.config.n
         matrix_update_accepted = bool(
             result_retired
             and context_head is not None
@@ -715,25 +684,10 @@ class CycleReference:
             and datapath_advance
         )
         if matrix_update_accepted:
-            assert result_head is not None and current_activated is not None and context_head is not None
-            row_direction, column_direction, matrix_direction = matrix_update_directions(
-                context_head.input_vector,
-                current_activated,
-                result_head.reduction_weight_signs,
-                direction,
-                self.config.width,
-                self.config.reduction_weight_width,
-                pass_through,
-            )
-            reduction_direction = reduction_update_directions(current_activated, direction)
-            injected_matrix = _MatrixWave(
-                tuple(row_direction),
-                tuple(column_direction),
-                0,
-            )
-            injected_reduction = _ReductionWave(tuple(reduction_direction))
-            issued_matrix_direction = _matrix_tuple(matrix_direction)
-            issued_reduction_direction = tuple(reduction_direction)
+            assert context_head is not None
+            issued = self.records[context_head.index]
+            injected_matrix = _MatrixWave(issued.matrix_update_directions, 0)
+            injected_reduction = _ReductionWave(issued.reduction_update_directions)
 
         resident_R_before = self._R[:]
 
@@ -771,9 +725,9 @@ class CycleReference:
             self._pending_weight_row = None
 
         if input_pop:
-            self._input_fifo.popleft()
+            self._input_stage = None
         if accepted_sample is not None:
-            self._input_fifo.append(accepted_sample)
+            self._input_stage = accepted_sample
             self._sample_context_fifo.append(accepted_sample)
 
         if result_enqueue:
@@ -803,19 +757,9 @@ class CycleReference:
             retired_context = self._sample_context_fifo.popleft()
             if retired_result.sample_index != retired_context.index:
                 raise AssertionError("result and sample-context order diverged")
-            if retired_context.index >= len(self.records):
-                raise AssertionError("retired a sample that was never enqueued")
-            record = self.records[retired_context.index]
             timing = self.timings[retired_context.index]
             if timing.retired_at is not None or timing.enqueued_at is None:
                 raise AssertionError("sample retirement order diverged")
-            if (
-                record.learning_direction != direction
-                or record.matrix_update_directions != issued_matrix_direction
-                or record.reduction_update_directions != issued_reduction_direction
-                or record.update_generated != matrix_update_accepted
-            ):
-                raise AssertionError("retirement update differs from enqueued sample")
             timing.retired_at = cycle_number
 
         snapshot = self._snapshot()

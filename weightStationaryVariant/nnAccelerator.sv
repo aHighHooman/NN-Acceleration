@@ -103,7 +103,8 @@ module nnAccelerator #(
     assign matrixResultReady  = resultFifoCanAccept;
     assign matrixResultPush   = matrixResultValid && matrixResultReady;
     assign resultFifoPush     = matrixResultPush;
-    assign resultValid        = !resultFifoEmpty && !sampleContextEmpty;
+    // Every result entry's sample context is still buffered until it retires.
+    assign resultValid        = !resultFifoEmpty;
     assign samplePop          = resultFifoPop;
     assign matrixUpdateValid = samplePop && trainingEnableHead;
     assign applyReductionUpdate = arrayAdvance &&
@@ -305,11 +306,13 @@ module nnAccelerator #(
     );
 
     // This is the sole activation operation.  It runs on the aligned raw
-    // matrix result immediately before the result FIFO captures the entry.
-    outputActivation #(.WIDTH(MATRIX_RESULT_WIDTH), .N(N)) matrixResultActivation (
-        .inputData(rawResultData), .passThrough(passThrough),
-        .outputData(activatedMatrixResultData)
-    );
+    // matrix result immediately before the result FIFO captures the entry;
+    // ReLU is closed at zero, matching the column gate above.
+    always_comb begin
+        for (int lane = 0; lane < N; lane++)
+            activatedMatrixResultData[lane] =
+                (passThrough || rawResultData[lane] > 0) ? rawResultData[lane] : '0;
+    end
 
     weightedVectorReduction #(
         .MATRIX_RESULT_WIDTH(MATRIX_RESULT_WIDTH),

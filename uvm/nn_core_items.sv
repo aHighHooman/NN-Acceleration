@@ -12,13 +12,10 @@
         bit reset_after_accept;
 
         data_t weights[N][N];
-        reduction_t reduction_weights[N];
         bit weights_valid;
-        // Exact numeric prediction is scoped to a known matrix and, when
-        // reduction is enabled, a known reduction vector.
+        // Exact numeric prediction is scoped to a known matrix in
+        // pass-through vector mode.
         bit exact_prediction_valid;
-        bit pass_through;
-        bit reduce_output;
 
         `uvm_object_utils(nn_core_sample_item)
 

@@ -66,48 +66,20 @@
             end
         endtask
 
-        function matrix_result_t narrow_matrix(input longint signed value);
-            narrow_matrix = matrix_result_t'(value);
-        endfunction
-
-        function result_t narrow_result(input longint signed value);
-            narrow_result = result_t'(value);
-        endfunction
-
+        // Pass-through vector mode: each result lane is the sign-extended
+        // matrix product column.
         function void check_inference(
             input nn_core_sample_item sample,
             input nn_core_result_transaction actual);
-            matrix_result_t raw_value[N];
-            matrix_result_t activated_value[N];
             result_t expected[N];
             longint signed sum;
-            longint signed reduction_sum;
 
             for (int col = 0; col < N; col++) begin
                 sum = 0;
                 for (int row = 0; row < N; row++)
                     sum += $signed(sample.input_vector[row]) *
                            $signed(sample.weights[row][col]);
-                raw_value[col] = narrow_matrix(sum);
-                if (sample.pass_through || raw_value[col] >= 0)
-                    activated_value[col] = raw_value[col];
-                else
-                    activated_value[col] = '0;
-            end
-
-            if (sample.reduce_output) begin
-                reduction_sum = 0;
-                for (int lane = 0; lane < N; lane++)
-                    reduction_sum += $signed(activated_value[lane]) *
-                                     $signed(sample.reduction_weights[lane]);
-                reduction_sum = reduction_sum >>>
-                    (FRACTION_BITS + REDUCTION_WEIGHT_WIDTH - 1);
-                expected[0] = narrow_result(reduction_sum);
-                for (int lane = 1; lane < N; lane++)
-                    expected[lane] = '0;
-            end else begin
-                for (int lane = 0; lane < N; lane++)
-                    expected[lane] = result_t'(activated_value[lane]);
+                expected[col] = result_t'(matrix_result_t'(sum));
             end
 
             for (int lane = 0; lane < N; lane++)

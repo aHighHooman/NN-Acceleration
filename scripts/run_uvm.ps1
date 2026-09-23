@@ -9,46 +9,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$projectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "questa_env.ps1")
 $buildDir = Join-Path $projectRoot "build/uvm"
 $uvmDir = Join-Path $projectRoot "uvm"
-
-# Prefer the recent Questa installed with Quartus.  PATH on machines upgraded
-# from older Quartus releases often still points at ModelSim 20.x.
-$candidateBins = @()
-if ($env:NN_ACCEL_QUESTA_BIN) {
-    $candidateBins += $env:NN_ACCEL_QUESTA_BIN
-}
-$candidateBins += "C:\altera_lite\25.1std\questa_fse\win64"
-$candidateBins += @(Get-Command vsim -All -ErrorAction SilentlyContinue |
-    Where-Object { $_.Source -match "questa" } |
-    ForEach-Object { Split-Path -Parent $_.Source })
-
-$questaBin = $candidateBins |
-    Where-Object { Test-Path -LiteralPath (Join-Path $_ "vsim.exe") } |
-    Select-Object -First 1
-
-if (-not $questaBin) {
-    throw "Questa was not found. Set NN_ACCEL_QUESTA_BIN to the directory containing vlog.exe and vsim.exe."
-}
-
-$vlib = Join-Path $questaBin "vlib.exe"
-$vlog = Join-Path $questaBin "vlog.exe"
-$vsim = Join-Path $questaBin "vsim.exe"
 $questaRoot = Split-Path -Parent $questaBin
 $uvmSource = Join-Path $questaRoot "verilog_src/uvm-1.1d/src"
-
-# Bridge Intel's SALT_LICENSE_FILE to Questa 2025.1+ SALT_LICENSE_SERVER
-# for this process only; leave the machine-wide environment unchanged.
-if (-not $env:SALT_LICENSE_SERVER) {
-    $userSaltLicense = [Environment]::GetEnvironmentVariable(
-        "SALT_LICENSE_SERVER", "User")
-    if ($userSaltLicense) {
-        $env:SALT_LICENSE_SERVER = $userSaltLicense
-    } elseif ($env:SALT_LICENSE_FILE) {
-        $env:SALT_LICENSE_SERVER = $env:SALT_LICENSE_FILE
-    }
-}
 
 if (-not (Test-Path -LiteralPath (Join-Path $uvmSource "uvm_macros.svh"))) {
     throw "Bundled UVM macro source was not found below $questaRoot."
@@ -58,17 +23,6 @@ if (Test-Path -LiteralPath $buildDir) {
     Remove-Item -LiteralPath $buildDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path $buildDir | Out-Null
-
-$rtlSources = @(
-    (Join-Path $projectRoot "memory/signedFifo.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/relu.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/outputActivation.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightedVectorReduction.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryProcessingElement.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightStationarySystolicArray.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplier.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/nnAccelerator.sv")
-)
 
 $uvmSources = @(
     (Join-Path $projectRoot "uvm/nn_core_if.sv"),
@@ -83,7 +37,7 @@ try {
 
     # Use Questa's compiled mtiUvm with seeded $urandom and local assertions;
     # constrained randomization and covergroups require svverification licenses.
-    & $vlog -sv -L mtiUvm -timescale 1ns/1ps "+incdir+$uvmSource" "+incdir+$uvmDir" @rtlSources @uvmSources
+    & $vlog -sv -L mtiUvm -timescale 1ns/1ps "+incdir+$uvmSource" "+incdir+$uvmDir" @coreSources @uvmSources
     if ($LASTEXITCODE -ne 0) { throw "RTL/UVM testbench compilation failed." }
 
     $logPath = Join-Path $buildDir "$TestName.log"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from dataclasses import fields
+from dataclasses import fields, replace
 
 from reference.arithmetic import (
     apply_matrix_update,
@@ -56,7 +56,7 @@ class CycleReferenceTests(unittest.TestCase):
             snapshot.W,
             snapshot.R,
             snapshot.pending_weight_row,
-            snapshot.input_fifo,
+            snapshot.input_stage,
             snapshot.sample_context_fifo,
             snapshot.result_fifo,
         )
@@ -75,7 +75,7 @@ class CycleReferenceTests(unittest.TestCase):
                 "W",
                 "R",
                 "pending_weight_row",
-                "input_fifo",
+                "input_stage",
                 "sample_context_fifo",
                 "result_fifo",
             ],
@@ -83,7 +83,7 @@ class CycleReferenceTests(unittest.TestCase):
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
         snapshot = model.step(self.drive(training=False))
         self.assertEqual(snapshot.cycle, 0)
-        self.assertEqual(snapshot.input_fifo, ((1, 2, 3),))
+        self.assertEqual(snapshot.input_stage, (1, 2, 3))
         self.assertEqual(snapshot.sample_context_fifo[0].input_signs, (1, 1, 1))
         self.assertEqual(snapshot.sample_context_fifo[0].target, 127)
         self.assertEqual(snapshot.result_fifo, ())
@@ -162,7 +162,7 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertEqual([record.sample_index for record in model.records], list(range(9)))
         self.assertTrue(all(timing.retired_at is not None for timing in model.timings))
 
-    def test_in_flight_depth_is_admission_capacity_and_skid_is_fixed(self) -> None:
+    def test_in_flight_depth_is_admission_capacity(self) -> None:
         model = CycleReference(
             self.config(in_flight_depth=3),
             self.initial_W(),
@@ -175,9 +175,7 @@ class CycleReferenceTests(unittest.TestCase):
         ]
 
         self.assertEqual(model.config.sample_context_depth, 3)
-        self.assertEqual(model.config.activation_skid_depth, 1)
         self.assertEqual(len(model.timings), 3)
-        self.assertLessEqual(max(len(snapshot.input_fifo) for snapshot in snapshots), 1)
         self.assertLessEqual(
             max(len(snapshot.sample_context_fifo) for snapshot in snapshots),
             model.config.sample_context_depth,
@@ -273,7 +271,7 @@ class CycleReferenceTests(unittest.TestCase):
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
         first = model.step(self.drive(x=(1, -2, 0), target=17, training=False))
         self.assertIsNone(first.pending_weight_row)
-        self.assertEqual(first.input_fifo, ((1, -2, 0),))
+        self.assertEqual(first.input_stage, (1, -2, 0))
         self.assertEqual(
             first.sample_context_fifo[0].input_signs,
             (1, -1, 0),
@@ -282,7 +280,7 @@ class CycleReferenceTests(unittest.TestCase):
         for x in ((2, 3, 0), (-1, 0, 4), (3, -3, 1)):
             model.step(self.drive(x=x, target=0, training=False))
         fill = model.snapshots[-1]
-        self.assertEqual(len(fill.input_fifo), 1)
+        self.assertIsNotNone(fill.input_stage)
         self.assertEqual(len(fill.sample_context_fifo), 4)
 
         for x in ((4, 1, 0), (0, 2, 2), (-2, 1, 3), (1, 1, -1)):
@@ -299,7 +297,7 @@ class CycleReferenceTests(unittest.TestCase):
 
         model.flush()
         drained = model.snapshots[-1]
-        self.assertEqual(drained.input_fifo, ())
+        self.assertIsNone(drained.input_stage)
         self.assertEqual(drained.sample_context_fifo, ())
         self.assertEqual(drained.result_fifo, ())
 
@@ -506,8 +504,12 @@ class CycleReferenceTests(unittest.TestCase):
                 cycle.flush()
 
                 # Functional uses a closed-form visibility delay; cycle observes
-                # each PE and propagates update waves independently.
-                self.assertEqual(cycle.records, functional_records)
+                # each PE and propagates update waves independently, so it makes
+                # no visibility claim and the delay must emerge in W_used/R_used.
+                self.assertEqual(
+                    cycle.records,
+                    [replace(record, update_visible_at=None) for record in functional_records],
+                )
                 self.assertEqual(cycle.W, functional.final_W)
                 self.assertEqual(cycle.R, functional.final_R)
 

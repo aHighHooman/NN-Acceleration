@@ -389,13 +389,12 @@ def read_trace(
             values = tuple(map(int, f[1:])); current["W"] = tuple(values[i:i+N] for i in range(0, N*N, N))
         elif f[0] == "R":
             current["R"] = tuple(map(int, f[1:]))
-        elif f[0] == "PW":
+        elif f[0] in ("PW", "IS"):
             entries = _parse_counted(f, N)
             if len(entries) > 1:
-                raise ValueError(f"bad PW trace payload at line {line_number}")
-            current["pending_weight_row"] = entries[0] if entries else None
-        elif f[0] == "IF":
-            current["input_fifo"] = _parse_counted(f, N)
+                raise ValueError(f"bad {f[0]} trace payload at line {line_number}")
+            name = "pending_weight_row" if f[0] == "PW" else "input_stage"
+            current[name] = entries[0] if entries else None
         elif f[0] == "SF":
             entries = _parse_counted(f, N + 2)
             current["sample_context_fifo"] = tuple((e[0], tuple(e[1:1+N]), bool(e[-1])) for e in entries)
@@ -472,7 +471,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
             ("W", exp.W, act.get("W", ())),
             ("R", tuple(exp.R), act.get("R", ())),
             ("pending_weight_row", exp.pending_weight_row, act.get("pending_weight_row")),
-            ("input_fifo", exp.input_fifo, act.get("input_fifo")),
+            ("input_stage", exp.input_stage, act.get("input_stage")),
             ("sampleContextFifo",
              tuple((e.target, e.input_signs, e.training_enable)
                    for e in exp.sample_context_fifo),

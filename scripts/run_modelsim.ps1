@@ -1,27 +1,7 @@
 $ErrorActionPreference = "Stop"
 
-$projectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot "questa_env.ps1")
 $buildDir = Join-Path $projectRoot "build/modelsim"
-
-$candidateBins = @()
-if ($env:NN_ACCEL_QUESTA_BIN) {
-    $candidateBins += $env:NN_ACCEL_QUESTA_BIN
-}
-$candidateBins += "C:\altera_lite\25.1std\questa_fse\win64"
-$candidateBins += @(Get-Command vsim -All -ErrorAction SilentlyContinue |
-    ForEach-Object { Split-Path -Parent $_.Source })
-
-$questaBin = $candidateBins |
-    Where-Object { Test-Path -LiteralPath (Join-Path $_ "vsim.exe") } |
-    Select-Object -First 1
-
-if (-not $questaBin) {
-    throw "Questa/ModelSim was not found. Set NN_ACCEL_QUESTA_BIN to the directory containing vlib.exe, vlog.exe, and vsim.exe."
-}
-
-$vlib = Join-Path $questaBin "vlib.exe"
-$vlog = Join-Path $questaBin "vlog.exe"
-$vsim = Join-Path $questaBin "vsim.exe"
 
 function Invoke-RtlTest {
     param([string]$Top, [string]$Log, [string]$Failure)
@@ -34,37 +14,19 @@ function Invoke-RtlTest {
     }
 }
 
-if (-not $env:SALT_LICENSE_SERVER) {
-    $userSaltLicense = [Environment]::GetEnvironmentVariable(
-        "SALT_LICENSE_SERVER", "User")
-    if ($userSaltLicense) {
-        $env:SALT_LICENSE_SERVER = $userSaltLicense
-    } elseif ($env:SALT_LICENSE_FILE) {
-        $env:SALT_LICENSE_SERVER = $env:SALT_LICENSE_FILE
-    }
-}
-
 if (Test-Path -LiteralPath $buildDir) {
     Remove-Item -LiteralPath $buildDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path $buildDir | Out-Null
 
-$sources = @(
-    (Join-Path $projectRoot "memory/signedFifo.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/relu.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/outputActivation.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightedVectorReduction.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryProcessingElement.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightStationarySystolicArray.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplier.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/nnAccelerator.sv"),
-    (Join-Path $projectRoot "SPI_Module.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplierTop.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplier_tb.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightStationaryMatrixMultiplierTop_tb.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/matrixWeightUpdateWave_tb.sv"),
-    (Join-Path $projectRoot "weightStationaryVariant/weightedVectorReduction_tb.sv")
-)
+$sources = $coreSources + (@(
+    "SPI_Module.sv",
+    "weightStationaryVariant/weightStationaryMatrixMultiplierTop.sv",
+    "weightStationaryVariant/weightStationaryMatrixMultiplier_tb.sv",
+    "weightStationaryVariant/weightStationaryMatrixMultiplierTop_tb.sv",
+    "weightStationaryVariant/matrixWeightUpdateWave_tb.sv",
+    "weightStationaryVariant/weightedVectorReduction_tb.sv"
+) | ForEach-Object { Join-Path $projectRoot $_ })
 
 Push-Location $projectRoot
 try {
@@ -83,7 +45,7 @@ try {
     & $vlog -sv @sources
     if ($LASTEXITCODE -ne 0) { throw "vlog failed." }
 
-    # Reject N=1 matrices; the one-entry activation skid remains legal.
+    # Reject N=1 matrices with the parameter message, not an elaboration error.
     & $vsim -c work.weightStationaryMatrixMultiplier -GN=1 `
         -l invalid-parameter.log -do "run 1ns; quit -f"
     if (-not (Select-String -Path invalid-parameter.log -SimpleMatch `
