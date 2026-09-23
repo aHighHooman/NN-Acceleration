@@ -348,10 +348,3 @@ def apply_reduction_update(
         saturating_lsb_update(value, direction, width)
         for value, direction in zip(reduction_weights, update_direction)
     ]
-
-
-# Short aliases make the primitives convenient to use in small external tests
-# without duplicating the implementation under multiple names.
-matrix_product = matrix_multiply
-weighted_reduction = weighted_vector_reduction
-compare_target_prediction = learning_direction

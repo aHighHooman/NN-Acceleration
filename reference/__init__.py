@@ -13,6 +13,7 @@ from .cycle import (
     CycleSnapshot,
     ResultEntry,
     SampleContext,
+    SampleTiming,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "CycleSnapshot",
     "ResultEntry",
     "SampleContext",
+    "SampleTiming",
 ]

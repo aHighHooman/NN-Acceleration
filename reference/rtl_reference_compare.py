@@ -451,10 +451,14 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         )
         snapshot = cycle_model.step(driven_cycle.inputs)
         expected.append(snapshot)
-        if cycle_model._last_enqueued_raw_result is not None:
+        if (
+            cycle_model.records
+            and cycle_model.timings[cycle_model.records[-1].sample_index].enqueued_at
+            == snapshot.cycle
+        ):
             expected_enqueues.append({
                 "cycle": snapshot.cycle,
-                "raw": cycle_model._last_enqueued_raw_result,
+                "raw": cycle_model.records[-1].raw_matrix_result,
             })
     actual, enqueues, retirements = read_trace(trace_path)
     if len(actual) != len(expected):

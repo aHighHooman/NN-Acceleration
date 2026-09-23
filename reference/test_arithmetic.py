@@ -101,6 +101,9 @@ class TestTernary(unittest.TestCase):
 
 
 class TestMatrixMultiply(unittest.TestCase):
+    def test_signed_two_by_two_case(self) -> None:
+        self.assertEqual(matrix_multiply((-2, 3), ((2, -1), (1, -2)), 4), [-1, -4])
+
     def test_orientation_is_row_indexed_by_input_lane(self) -> None:
         # result[column] = sum over row of input[row] * W[row][column]
         # col0 = 1+8+21 = 30, col1 = 2+10+24 = 36, col2 = 3+12+27 = 42
@@ -143,6 +146,9 @@ class TestActivation(unittest.TestCase):
 
 
 class TestFixedPointRescale(unittest.TestCase):
+    def test_shift_by_four(self) -> None:
+        self.assertEqual(fixed_point_rescale(2048, 4, 16), 128)
+
     def test_positive_shift(self) -> None:
         self.assertEqual(fixed_point_rescale(2688, 7, 28), 21)
 
@@ -161,6 +167,11 @@ class TestFixedPointRescale(unittest.TestCase):
 
 
 class TestWeightedReduction(unittest.TestCase):
+    def test_q_format_and_cancelling_terms(self) -> None:
+        # 256*64 >> (4+7) = 8; equal opposite lanes cancel before shifting.
+        self.assertEqual(weighted_vector_reduction((256, 0), (64, 0), 8, 8, 4), 8)
+        self.assertEqual(weighted_vector_reduction((16, -16), (64, 64), 8, 8, 4), 0)
+
     def test_accumulator_is_the_plain_weighted_sum_when_it_fits(self) -> None:
         # 30*16 + 36*24 + 42*32 = 480 + 864 + 1344 = 2688
         self.assertEqual(weighted_reduction_accumulator((30, 36, 42), (16, 24, 32), 8, 8), 2688)
@@ -202,6 +213,14 @@ class TestLearningDirection(unittest.TestCase):
 
 
 class TestUpdateDirections(unittest.TestCase):
+    def test_zero_reduction_coefficient_and_input_signs(self) -> None:
+        _, columns, update = matrix_update_directions(
+            (1, -1, 0), (2, -2, 0), (5, -5, 0), 1, 8, 8, True
+        )
+        self.assertEqual(columns, [1, -1, 0])
+        self.assertEqual(update, [[1, -1, 0], [-1, 1, 0], [0, 0, 0]])
+        self.assertEqual(reduction_update_directions((2, -2, 0), -1), [-1, 1, 0])
+
     def test_outer_product_of_row_and_column_directions(self) -> None:
         row, column, update = matrix_update_directions(
             (1, -2, 0), (5, 5, 5), (16, -24, 32), 1, 8, 8, True
@@ -248,6 +267,9 @@ class TestUpdateDirections(unittest.TestCase):
 
 
 class TestSaturatingUpdate(unittest.TestCase):
+    def test_eight_bit_reduction_saturates_at_both_endpoints(self) -> None:
+        self.assertEqual(apply_reduction_update((127, -128), (1, -1), 8), [127, -128])
+
     def test_single_lsb_step(self) -> None:
         self.assertEqual(saturating_lsb_update(3, 1, 4), 4)
         self.assertEqual(saturating_lsb_update(3, -1, 4), 2)
