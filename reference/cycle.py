@@ -23,6 +23,7 @@ from .arithmetic import (
     to_signed,
     weighted_vector_reduction,
 )
+from .functional import SampleRecord
 
 
 def _matrix_copy(values: Sequence[Sequence[int]], n: int, width: int) -> list[list[int]]:
@@ -222,23 +223,12 @@ class _ReductionWave:
 
 
 @dataclass
-class _SampleResult:
-    """Private per-sample record; numerics filled at enqueue, learning fields
-    at the retirement edge that issues the update."""
+class SampleTiming:
+    """Cycle stamps for one accepted sample, indexed alongside ``records``."""
 
-    sample_index: int
-    input_vector: tuple[int, ...]
-    target: int
-    training_enable: bool
-    W_used: tuple[tuple[int, ...], ...]
-    R_used: tuple[int, ...]
-    raw_matrix_result: tuple[int, ...]
-    activated_result: tuple[int, ...]
-    prediction: int
-    learning_direction: int = 0
-    matrix_update_directions: tuple[tuple[int, ...], ...] = ()
-    reduction_update_directions: tuple[int, ...] = ()
-    update_generated: bool = False
+    accepted_at: int
+    enqueued_at: int | None = None
+    retired_at: int | None = None
 
 
 class CycleReference:
@@ -329,15 +319,9 @@ class CycleReference:
         self._alignment: deque[_CompletedResult] = deque()
         self._data_tokens: list[_DataToken] = []
         self._matrix_waves: list[_MatrixWave] = []
-        self._sample_results: list[_SampleResult] = []
-        self._sample_result_cursor = 0
-        # Private timing-test aids, absent from CycleSnapshot by design.
-        self._accepted_cycles: list[int] = []
-        self._enqueue_cycles: list[int] = []
-        self._retirement_cycles: list[int] = []
-        self._enqueued_sample_indices: list[int] = []
-        self._retired_sample_indices: list[int] = []
-        self._last_enqueued_raw_result: tuple[int, ...] | None = None
+        self.records: list[SampleRecord] = []
+        # Timing is separate from architectural records and CycleSnapshot.
+        self.timings: list[SampleTiming] = []
 
     def _load_weight_state(self, loaded: bool) -> None:
         """Set resident W and weight-load flags; leave R unchanged because
@@ -548,7 +532,7 @@ class CycleReference:
         completed: _CompletedResult,
         pass_through: bool,
         resident_R: Sequence[int],
-    ) -> _SampleResult:
+    ) -> SampleRecord:
         observed = completed.observed_weights
         if any(value is None for row in observed for value in row):
             raise AssertionError("completed sample has an unobserved PE weight")
@@ -565,8 +549,30 @@ class CycleReference:
             self.config.reduction_weight_width,
             self.config.fraction_bits,
         )
-        # Learning fields stay at their defaults; retirement fills them.
-        result = _SampleResult(
+        direction = learning_direction(
+            completed.sample.target,
+            prediction,
+            self.config.target_width,  # type: ignore[arg-type]
+            self.config.prediction_width,
+        )
+        if completed.sample.training_enable:
+            _, _, matrix_directions = matrix_update_directions(
+                completed.sample.input_vector,
+                activated,
+                tuple(ternary_sign(value) for value in R_used),
+                direction,
+                self.config.width,
+                self.config.reduction_weight_width,
+                pass_through,
+            )
+            matrix_direction = _matrix_tuple(matrix_directions)
+            reduction_direction = tuple(reduction_update_directions(activated, direction))
+            update_visible_at = completed.sample.index + 2 * self.config.n + 1
+        else:
+            matrix_direction = _zero_matrix_tuple(self.config.n)
+            reduction_direction = (0,) * self.config.n
+            update_visible_at = None
+        result = SampleRecord(
             sample_index=completed.sample.index,
             input_vector=completed.sample.input_vector,
             target=completed.sample.target,
@@ -576,33 +582,16 @@ class CycleReference:
             raw_matrix_result=completed.raw_matrix_result,
             activated_result=activated,
             prediction=prediction,
-            matrix_update_directions=_zero_matrix_tuple(self.config.n),
-            reduction_update_directions=(0,) * self.config.n,
+            learning_direction=direction,
+            matrix_update_directions=matrix_direction,
+            reduction_update_directions=reduction_direction,
+            update_generated=completed.sample.training_enable,
+            update_visible_at=update_visible_at,
         )
-        self._sample_results.append(result)
+        if result.sample_index != len(self.records):
+            raise AssertionError("sample result order diverged from enqueue order")
+        self.records.append(result)
         return result
-
-    def _record_issued_update(
-        self,
-        sample_index: int,
-        direction: int,
-        matrix_direction: tuple[tuple[int, ...], ...],
-        reduction_direction: tuple[int, ...],
-        update_generated: bool,
-    ) -> None:
-        """Attach the update a retiring sample issued to its enqueue record."""
-
-        cursor = self._sample_result_cursor
-        if cursor >= len(self._sample_results):
-            raise AssertionError("retired a sample that was never enqueued")
-        record = self._sample_results[cursor]
-        if record.sample_index != sample_index:
-            raise AssertionError("sample result order diverged from retirement order")
-        record.learning_direction = direction
-        record.matrix_update_directions = matrix_direction
-        record.reduction_update_directions = reduction_direction
-        record.update_generated = update_generated
-        self._sample_result_cursor = cursor + 1
 
     def _snapshot(self) -> CycleSnapshot:
         if len(self._result_fifo) > self.config.output_fifo_depth:
@@ -637,7 +626,6 @@ class CycleReference:
             raise TypeError("step expects CycleInputs")
         cycle_number = self._cycle
         pass_through = self.config.pass_through
-        self._last_enqueued_raw_result = None
 
         if not cycle_inputs.reset_n:
             self._hardware_reset()
@@ -712,7 +700,7 @@ class CycleReference:
                 training_enable=cycle_inputs.training_enable,
             )
             self._next_sample_index += 1
-            self._accepted_cycles.append(cycle_number)
+            self.timings.append(SampleTiming(accepted_at=cycle_number))
 
         input_for_array = self._input_fifo[0] if input_pop else None
         result_enqueue = bool(datapath_advance and aligned_head_ready)
@@ -803,9 +791,10 @@ class CycleReference:
                     tuple(ternary_sign(value) for value in result.R_used),
                 )
             )
-            self._enqueue_cycles.append(cycle_number)
-            self._enqueued_sample_indices.append(completed_to_enqueue.sample.index)
-            self._last_enqueued_raw_result = completed_to_enqueue.raw_matrix_result
+            timing = self.timings[completed_to_enqueue.sample.index]
+            if timing.enqueued_at is not None:
+                raise AssertionError("sample enqueued twice")
+            timing.enqueued_at = cycle_number
 
         if result_retired:
             if not self._result_fifo or not self._sample_context_fifo:
@@ -814,15 +803,20 @@ class CycleReference:
             retired_context = self._sample_context_fifo.popleft()
             if retired_result.sample_index != retired_context.index:
                 raise AssertionError("result and sample-context order diverged")
-            self._record_issued_update(
-                retired_context.index,
-                direction,
-                issued_matrix_direction,
-                issued_reduction_direction,
-                matrix_update_accepted,
-            )
-            self._retirement_cycles.append(cycle_number)
-            self._retired_sample_indices.append(retired_context.index)
+            if retired_context.index >= len(self.records):
+                raise AssertionError("retired a sample that was never enqueued")
+            record = self.records[retired_context.index]
+            timing = self.timings[retired_context.index]
+            if timing.retired_at is not None or timing.enqueued_at is None:
+                raise AssertionError("sample retirement order diverged")
+            if (
+                record.learning_direction != direction
+                or record.matrix_update_directions != issued_matrix_direction
+                or record.reduction_update_directions != issued_reduction_direction
+                or record.update_generated != matrix_update_accepted
+            ):
+                raise AssertionError("retirement update differs from enqueued sample")
+            timing.retired_at = cycle_number
 
         snapshot = self._snapshot()
         self._cycle = cycle_number + 1
@@ -837,4 +831,5 @@ __all__ = [
     "CycleSnapshot",
     "ResultEntry",
     "SampleContext",
+    "SampleTiming",
 ]

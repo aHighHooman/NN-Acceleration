@@ -126,7 +126,7 @@ class CycleReferenceTests(unittest.TestCase):
                 model.flush()
 
                 self.assertEqual(
-                    model._retired_sample_indices,
+                    [index for index, timing in enumerate(model.timings) if timing.retired_at is not None],
                     list(range(sample_count)),
                 )
                 self.assertTrue(model.stream_quiescent)
@@ -140,8 +140,8 @@ class CycleReferenceTests(unittest.TestCase):
         )
 
         def check_accounting() -> None:
-            accepted = model._next_sample_index
-            retired = len(model._retired_sample_indices)
+            accepted = len(model.timings)
+            retired = sum(timing.retired_at is not None for timing in model.timings)
             self.assertEqual(
                 accepted - retired,
                 len(model._sample_context_fifo),
@@ -159,8 +159,8 @@ class CycleReferenceTests(unittest.TestCase):
             if not model.in_flight:
                 break
 
-        self.assertEqual(model._enqueued_sample_indices, list(range(9)))
-        self.assertEqual(model._retired_sample_indices, list(range(9)))
+        self.assertEqual([record.sample_index for record in model.records], list(range(9)))
+        self.assertTrue(all(timing.retired_at is not None for timing in model.timings))
 
     def test_in_flight_depth_is_admission_capacity_and_skid_is_fixed(self) -> None:
         model = CycleReference(
@@ -176,7 +176,7 @@ class CycleReferenceTests(unittest.TestCase):
 
         self.assertEqual(model.config.sample_context_depth, 3)
         self.assertEqual(model.config.activation_skid_depth, 1)
-        self.assertEqual(len(model._accepted_cycles), 3)
+        self.assertEqual(len(model.timings), 3)
         self.assertLessEqual(max(len(snapshot.input_fifo) for snapshot in snapshots), 1)
         self.assertLessEqual(
             max(len(snapshot.sample_context_fifo) for snapshot in snapshots),
@@ -195,7 +195,7 @@ class CycleReferenceTests(unittest.TestCase):
 
         # The first input is accepted at E0 and no complete result exists in
         # the architectural output storage through E6.
-        self.assertEqual(model._accepted_cycles[:1], [0])
+        self.assertEqual(model.timings[0].accepted_at, 0)
         self.assertTrue(all(snapshot.result_fifo == () for snapshot in snapshots[:7]))
 
         e7 = model.step(self.drive(x=(0, -2, 1), target=0, training=False))
@@ -208,8 +208,8 @@ class CycleReferenceTests(unittest.TestCase):
 
         e8 = model.step(self.drive(x=(3, 1, 0), target=0, training=False))
         self.assertEqual(e8.cycle, 8)
-        self.assertEqual(model._enqueue_cycles[:2], [7, 8])
-        self.assertEqual(model._retirement_cycles[:1], [8])
+        self.assertEqual([timing.enqueued_at for timing in model.timings[:2]], [7, 8])
+        self.assertEqual(model.timings[0].retired_at, 8)
         self.assertEqual(len(e8.result_fifo), 1)
         self.assertEqual(
             e8.result_fifo[0].activated_result,
@@ -242,11 +242,11 @@ class CycleReferenceTests(unittest.TestCase):
         for index in range(12):
             model.step(self.drive(x=(index + 1, 0, 0), target=0, training=False))
 
-        self.assertEqual(model._accepted_cycles, list(range(12)))
-        self.assertEqual(model._enqueued_sample_indices[:5], list(range(5)))
-        self.assertEqual(model._retired_sample_indices[:4], list(range(4)))
-        self.assertEqual(model._enqueue_cycles[:5], [7, 8, 9, 10, 11])
-        self.assertEqual(model._retirement_cycles[:4], [8, 9, 10, 11])
+        self.assertEqual([timing.accepted_at for timing in model.timings], list(range(12)))
+        self.assertEqual([record.sample_index for record in model.records[:5]], list(range(5)))
+        self.assertTrue(all(timing.retired_at is not None for timing in model.timings[:4]))
+        self.assertEqual([timing.enqueued_at for timing in model.timings[:5]], [7, 8, 9, 10, 11])
+        self.assertEqual([timing.retired_at for timing in model.timings[:4]], [8, 9, 10, 11])
 
     def test_feedback_visibility_is_s0_s7_s1_s8_s2_s9(self) -> None:
         initial_W = self.initial_W()
@@ -256,7 +256,7 @@ class CycleReferenceTests(unittest.TestCase):
             model.step(self.drive())
         model.flush()
 
-        records = model._sample_results
+        records = model.records
         old_W = tuple(tuple(row) for row in initial_W)
         old_R = tuple(initial_R)
         self.assertEqual([record.W_used for record in records[:7]], [old_W] * 7)
@@ -411,12 +411,12 @@ class CycleReferenceTests(unittest.TestCase):
             if not model.in_flight:
                 break
 
-        self.assertEqual(model._retired_sample_indices, list(range(9)))
-        self.assertEqual(model._enqueued_sample_indices, list(range(9)))
-        self.assertEqual(len(model._sample_results), 9)
+        self.assertTrue(all(timing.retired_at is not None for timing in model.timings))
+        self.assertEqual([record.sample_index for record in model.records], list(range(9)))
+        self.assertEqual(len(model.records), 9)
         expected_W = [row[:] for row in self.initial_W()]
         expected_R = [16, 24, 32]
-        for record in model._sample_results:
+        for record in model.records:
             if record.update_generated:
                 expected_W = apply_matrix_update(expected_W, record.matrix_update_directions, model.config.width)
                 expected_R = apply_reduction_update(expected_R, record.reduction_update_directions, model.config.reduction_weight_width)
@@ -444,7 +444,7 @@ class CycleReferenceTests(unittest.TestCase):
 
         expected_W = [row[:] for row in initial_W]
         expected_R = initial_R[:]
-        for record in model._sample_results:
+        for record in model.records:
             if record.update_generated:
                 expected_W = apply_matrix_update(expected_W, record.matrix_update_directions, config.width)
                 expected_R = apply_reduction_update(expected_R, record.reduction_update_directions, config.reduction_weight_width)
@@ -505,23 +505,15 @@ class CycleReferenceTests(unittest.TestCase):
                     )
                 cycle.flush()
 
-                self.assertEqual(len(cycle._sample_results), len(functional_records))
-
-                # The load-bearing comparison.
-                self.assertEqual(
-                    [record.W_used for record in cycle._sample_results],
-                    [record.W_used for record in functional_records],
-                )
-                self.assertEqual(
-                    [record.R_used for record in cycle._sample_results],
-                    [record.R_used for record in functional_records],
-                )
+                # Functional uses a closed-form visibility delay; cycle observes
+                # each PE and propagates update waves independently.
+                self.assertEqual(cycle.records, functional_records)
                 self.assertEqual(cycle.W, functional.final_W)
                 self.assertEqual(cycle.R, functional.final_R)
 
                 # Guard against a vacuous check.
                 observed_generations = {
-                    record.W_used for record in cycle._sample_results
+                    record.W_used for record in cycle.records
                 }
                 self.assertGreater(len(observed_generations), 1)
 
@@ -530,12 +522,12 @@ class CycleReferenceTests(unittest.TestCase):
                 self.assertEqual(delay, 2 * n + 1)
                 self.assertEqual(functional_records[0].update_visible_at, delay)
                 self.assertEqual(
-                    cycle._sample_results[delay - 1].W_used,
-                    cycle._sample_results[0].W_used,
+                    cycle.records[delay - 1].W_used,
+                    cycle.records[0].W_used,
                 )
                 self.assertNotEqual(
-                    cycle._sample_results[delay].W_used,
-                    cycle._sample_results[0].W_used,
+                    cycle.records[delay].W_used,
+                    cycle.records[0].W_used,
                 )
 
 
