@@ -14,6 +14,9 @@
         data_t weights[N][N];
         reduction_t reduction_weights[N];
         bit weights_valid;
+        // Exact numeric prediction is scoped to a known matrix and, when
+        // reduction is enabled, a known reduction vector.
+        bit exact_prediction_valid;
         bit pass_through;
         bit reduce_output;
 

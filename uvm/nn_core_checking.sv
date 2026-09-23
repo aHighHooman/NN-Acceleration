@@ -13,6 +13,10 @@
         nn_core_sample_item expected_samples[$];
         int unsigned accepted_sample_count;
         int unsigned retired_result_count;
+        int unsigned retired_training_count;
+        int unsigned discarded_training_count;
+        int unsigned exact_inference_count;
+        int unsigned scoped_inference_count;
         int unsigned samples_discarded_on_reset;
         int unsigned numeric_mismatch_count;
         int unsigned result_without_sample_count;
@@ -24,6 +28,10 @@
             result_imp = new("result_imp", this);
             accepted_sample_count = 0;
             retired_result_count = 0;
+            retired_training_count = 0;
+            discarded_training_count = 0;
+            exact_inference_count = 0;
+            scoped_inference_count = 0;
             samples_discarded_on_reset = 0;
             numeric_mismatch_count = 0;
             result_without_sample_count = 0;
@@ -47,6 +55,9 @@
                 if (!vif.rst_n) begin
                     if (!reset_seen) begin
                         samples_discarded_on_reset += expected_samples.size();
+                        foreach (expected_samples[i])
+                            if (expected_samples[i].training_enable)
+                                discarded_training_count++;
                         expected_samples.delete();
                     end
                     reset_seen = 1'b1;
@@ -129,8 +140,13 @@
             sample = expected_samples.pop_front();
             // Training is a liveness/order check only.  The references own
             // the learning state and update-wave semantics.
-            if (!sample.training_enable)
+            if (sample.training_enable)
+                retired_training_count++;
+            else if (sample.exact_prediction_valid) begin
+                exact_inference_count++;
                 check_inference(sample, actual);
+            end else
+                scoped_inference_count++;
         endfunction
 
         task wait_for_completion(input int unsigned expected_results,
@@ -158,8 +174,10 @@
 
         function void report_phase(uvm_phase phase);
             `uvm_info("SCOREBOARD", $sformatf(
-                "accepted=%0d retired=%0d discardedOnReset=%0d mismatches=%0d unexpected=%0d",
+                "accepted=%0d retired=%0d trainingRetired=%0d trainingDiscarded=%0d exactInference=%0d inferenceOutsideNumericScope=%0d discardedOnReset=%0d mismatches=%0d unexpected=%0d",
                 accepted_sample_count, retired_result_count,
+                retired_training_count, discarded_training_count,
+                exact_inference_count, scoped_inference_count,
                 samples_discarded_on_reset, numeric_mismatch_count,
                 result_without_sample_count), UVM_NONE)
         endfunction

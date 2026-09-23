@@ -56,6 +56,8 @@
     // Compact stimulus sequences
 
     class nn_core_sequence_base extends uvm_sequence #(uvm_sequence_item);
+        virtual nn_core_if #(WIDTH, N, TARGET_WIDTH,
+                             REDUCTION_WEIGHT_WIDTH) vif;
         int unsigned random_seed, random_state;
         int unsigned expected_results, sent_samples, training_samples;
 
@@ -135,6 +137,18 @@
             item.hold_result_until_input_backpressure = hold;
             send_sample(item);
         endtask
+
+        // The public drain indication includes both pipeline completion and
+        // output retirement, so this cannot be satisfied by input acceptance.
+        task wait_for_drain();
+            int unsigned cycles;
+            cycles = 0;
+            do begin
+                @(negedge vif.clk);
+                if (++cycles > 100000)
+                    `uvm_fatal("DRAIN_TIMEOUT", "sequence did not drain")
+            end while (vif.reloadReady !== 1'b1);
+        endtask
     endclass
 
     class nn_core_smoke_sequence extends nn_core_sequence_base;
@@ -166,17 +180,33 @@
             send_filled_sample(1, 15, 0, 0);
 
             configure(1, 1, 1);
-            for (int index = 0; index < 8; index++)
+            for (int index = 0; index < 12; index++)
                 send_filled_sample(2, (index == 0) ? 0 : 50,
                                    (index % 3) != 1, index == 0);
 
+            // A known baseline makes the learned-state boundary observable.
+            configure(0, 1, 0);
             item = nn_core_sample_item::type_id::create("training_sample");
-            fill_sample(item, 2);
-            item.target = target_t'(3);
+            for (int lane = 0; lane < N; lane++)
+                item.input_vector[lane] = 16;
+            item.target = target_t'(127);
             item.training_enable = 1'b1;
             item.input_bubble = 1'b1;
             item.result_stall_percent = 30;
             send_sample(item);
+            wait_for_drain();
+
+            item = nn_core_sample_item::type_id::create("learned_inference");
+            for (int lane = 0; lane < N; lane++)
+                item.input_vector[lane] = 16;
+            item.result_stall_percent = 35;
+            send_sample(item);
+            wait_for_drain();
+
+            // A complete reload restores an exact-checkable epoch.
+            configure(0, 1, 0);
+            send_filled_sample(0, 20, 0, 0);
+            wait_for_drain();
 
             item = nn_core_sample_item::type_id::create("reset_sample");
             fill_sample(item, 2);
@@ -264,6 +294,7 @@
             phase.raise_objection(this);
             seq_obj = nn_core_regression_sequence::type_id::create("regression_sequence");
             seq_obj.random_seed = seed;
+            seq_obj.vif = env.vif;
             seq_obj.start(env.sequencer);
             env.wait_for_completion(seq_obj.expected_results);
             assert_common_counts(seq_obj);
@@ -282,8 +313,15 @@
                 `uvm_error("SCENARIO", "reset/recovery was not observed")
             if (env.scoreboard.samples_discarded_on_reset == 0)
                 `uvm_error("SCENARIO", "reset did not discard an in-flight sample")
-            if (seq_obj.training_samples == 0)
-                `uvm_error("SCENARIO", "training liveness sample was not sent")
+            if (seq_obj.training_samples == 0 ||
+                env.scoreboard.retired_training_count != seq_obj.training_samples)
+                `uvm_error("SCENARIO", "training sample did not retire before reset")
+            if (env.scoreboard.discarded_training_count != 0)
+                `uvm_error("SCENARIO", "reset discarded a training sample")
+            if (env.scoreboard.scoped_inference_count != 1)
+                `uvm_error("SCENARIO", "expected one learned-state inference outside numeric scope")
+            if (env.scoreboard.exact_inference_count == 0)
+                `uvm_error("SCENARIO", "no known-weight inference was checked")
             phase.drop_objection(this);
         endtask
     endclass
