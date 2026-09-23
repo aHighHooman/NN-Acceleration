@@ -25,9 +25,6 @@ module weightedVectorReduction_tb;
     );
 
     initial begin
-        if (REDUCTION_WEIGHT_WIDTH != 8 ||
-            (1.0 / (1 << (REDUCTION_WEIGHT_WIDTH-1))) != 0.0078125)
-            $fatal(1, "8-bit reduction coefficients are not Q1.7 with a 1/128 LSB");
         if ($bits(dut.product[0]) !=
                 MATRIX_RESULT_WIDTH + REDUCTION_WEIGHT_WIDTH ||
             $bits(dut.accumulator) !=

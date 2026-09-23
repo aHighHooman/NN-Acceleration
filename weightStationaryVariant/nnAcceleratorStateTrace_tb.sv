@@ -97,7 +97,7 @@ module nnAcceleratorStateTrace_tb;
     end
 
     assign streamQuiescent =
-        dut.matrixEngine.inputEmpty &&
+        !dut.matrixEngine.inputVectorValid &&
         !dut.matrixEngine.skewBusy &&
         !dut.matrixEngine.pipelineBusy &&
         !dut.matrixEngine.resultAlignBusy &&
@@ -150,7 +150,7 @@ module nnAcceleratorStateTrace_tb;
             if (dut.matrixEngine.pendingWeightValid)
                 for (lane = 0; lane < N; lane++)
                     $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.pendingWeightRow[lane]));
-            $fwrite(trace_fd, "\nIF %0d", dut.matrixEngine.inputVectorValid);
+            $fwrite(trace_fd, "\nIS %0d", dut.matrixEngine.inputVectorValid);
             if (dut.matrixEngine.inputVectorValid) begin
                 for (lane = 0; lane < N; lane++)
                     $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.inputVectorData[lane*WIDTH +: WIDTH]));

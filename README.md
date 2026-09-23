@@ -208,16 +208,16 @@ primary owner:
 - The core UVM environment owns randomized public `nnAccelerator` traffic,
   simple reset/reload recovery, ordering, and no-loss/no-duplication checks. It
   uses three project transactions: an active/observed sample item, a compact
-  configuration item, and a retired-result transaction. It checks inference
-  numerically while the weights needed for that output mode are known, but
+  configuration item, and a retired-result transaction. It runs in pass-through
+  vector mode and checks inference numerically while the matrix is known, but
   treats training and inference using learned state as liveness and ordering
-  checks. Exact learning and cycle/state behavior remain owned by the references
-  and RTL trace.
+  checks. Activation and reduction modes, exact learning, and cycle/state
+  behavior remain owned by the references and RTL trace.
 - Directed RTL units own reduction arithmetic, PE/update-wave mechanics, and
   `N=2/3/4` matrix-core parameterization. The matrix-engine bench is limited to
   deterministic arithmetic, signed accumulation edges, basic loading, and one
   direct result-boundary backpressure check; the update-wave bench keeps only
-  physical anti-diagonal propagation and completion checks.
+  physical anti-diagonal propagation, stall, and drain checks.
 - The SPI bench owns serialization, CDC, ordering, and output backpressure,
   with one identity-matrix numerical smoke transaction.
 
@@ -242,14 +242,14 @@ The UVM environment in [`uvm/`](uvm/) connects directly to the public
 `nnAccelerator` interface. One accepted input vector is one sample item,
 and one `resultValid && resultReady` handshake is one result item. Weight and
 reduction loading are explicit configuration commands, not fields on every
-sample. The input monitor tracks configuration locally and snapshots the W/R
-state and mode pins into the accepted sample; only accepted samples and retired
-results cross analysis ports. The scoreboard checks ordered counts and reset
-invalidation. It checks exact inference results only while the matrix weights,
-and the reduction weights when reduction mode is selected, are known. Training
-results must retire, but inference using learned weights is outside its numeric
-scope until the relevant weights are reloaded. Learning waves and internal FIFO
-state are checked by the Python references and RTL trace.
+sample. The input monitor tracks the loaded matrix locally and snapshots it
+into the accepted sample; only accepted samples and retired results cross
+analysis ports. The scoreboard checks ordered counts and reset invalidation. It
+checks exact pass-through vector results only while the matrix weights are
+known. Training results must retire, but inference using learned weights is
+outside its numeric scope until the matrix is reloaded. Activation and
+reduction modes, learning waves, and internal FIFO state are checked by the
+Python references and RTL trace.
 
 The regression uses explicit scenario assertions for input bubbles, output
 backpressure, input backpressure, reloads, and resets instead of a
@@ -358,8 +358,6 @@ a separate post-fit EDA simulation netlist.
 |   |-- weightStationaryMatrixMultiplierTop.sv
 |   |-- weightStationarySystolicArray.sv
 |   |-- weightStationaryProcessingElement.sv
-|   |-- outputActivation.sv
-|   |-- relu.sv
 |   |-- weightedVectorReduction.sv
 |   |-- weightedVectorReduction_tb.sv
 |   |-- weightStationaryMatrixMultiplier_tb.sv
@@ -380,6 +378,7 @@ a separate post-fit EDA simulation netlist.
 |   |-- NN_Acceleration.sdc
 |   `-- NN_Acceleration_assignment_defaults.qdf
 |-- scripts/
+|   |-- questa_env.ps1
 |   |-- run_modelsim.ps1
 |   |-- run_rtl_reference_compare.ps1
 |   `-- run_uvm.ps1

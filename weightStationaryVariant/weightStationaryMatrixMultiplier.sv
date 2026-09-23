@@ -42,7 +42,7 @@ module weightStationaryMatrixMultiplier #(
     logic signed [VECTOR_WIDTH-1:0] inputVectorData, inputVectorHead;
     logic inputVectorValid;
     logic signed [WIDTH-1:0] queuedInput[N];
-    logic inputEmpty;
+    // Keep N=1 elaborating so the parameter check reports it, not an array size.
     localparam int RESULT_ALIGN_STORAGE = (N > 1) ? N-1 : 1;
     logic signed [RESULT_WIDTH-1:0]
         resultAlignData[N][RESULT_ALIGN_STORAGE];
@@ -128,18 +128,18 @@ module weightStationaryMatrixMultiplier #(
     assign weightReady      = !weightsLoaded &&
                               (!pendingWeightValid || !consumingFinalWeightRow);
     assign weightPush       = weightValid && weightReady;
-    // The one-entry activation skid allows a simultaneous pop and replacement
+    // The one-entry input register allows a simultaneous pop and replacement
     // push on advancing edges, sustaining one vector per cycle.
     assign inputReady  = weightsLoaded && (!inputVectorValid || inputPop);
     assign inputPush   = inputValid && inputReady;
-    assign inputEmpty  = !inputVectorValid;
+    // Gating the head keeps the never-written register out of the skew path.
     assign inputVectorHead = inputVectorValid ? inputVectorData : '0;
     assign resultValid      = resultAlignedAllValid;
     assign arrayAdvance     = !weightsLoaded ? consumePendingWeightRow : !outputBlocked;
-    assign inputPop    = weightsLoaded && !inputEmpty && arrayAdvance;
+    assign inputPop    = weightsLoaded && inputVectorValid && arrayAdvance;
     // The matrix engine reports only its own computation state.  Result
     // storage belongs to nnAccelerator.
-    assign reloadReady      = weightsLoaded && inputEmpty && !skewBusy &&
+    assign reloadReady      = weightsLoaded && !inputVectorValid && !skewBusy &&
                               !pipelineBusy && !resultAlignBusy && !resultValid;
 
     genvar resultLane;
@@ -194,8 +194,6 @@ module weightStationaryMatrixMultiplier #(
                     pendingWeightRow[lane] <= weightData[lane];
                 pendingWeightValid <= 1;
             end else if (consumePendingWeightRow) begin
-                for (int lane = 0; lane < N; lane++)
-                    pendingWeightRow[lane] <= 0;
                 pendingWeightValid <= 0;
             end
 
@@ -212,8 +210,6 @@ module weightStationaryMatrixMultiplier #(
                 weightsLoaded    <= 0;
                 loadedWeightRows <= 0;
                 pendingWeightValid <= 0;
-                for (int lane = 0; lane < N; lane++)
-                    pendingWeightRow[lane] <= 0;
             end
 
             if (weightsLoaded && arrayAdvance) begin
