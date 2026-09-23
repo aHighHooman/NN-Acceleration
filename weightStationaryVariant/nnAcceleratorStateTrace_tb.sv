@@ -9,7 +9,6 @@ module nnAcceleratorStateTrace_tb;
     localparam int REDUCTION_WEIGHT_WIDTH = 8;
     localparam int FRACTION_BITS = 0;
     localparam int IN_FLIGHT_DEPTH = 2*N+2;
-    localparam int ACTIVATION_SKID_DEPTH = 1;
     localparam int OUTPUT_FIFO_DEPTH = 2*N;
     localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
@@ -151,12 +150,10 @@ module nnAcceleratorStateTrace_tb;
             if (dut.matrixEngine.pendingWeightValid)
                 for (lane = 0; lane < N; lane++)
                     $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.pendingWeightRow[lane]));
-            $fwrite(trace_fd, "\nIF %0d", dut.matrixEngine.inputVectorFifo.values);
-            for (entry = 0; entry < dut.matrixEngine.inputVectorFifo.values; entry++) begin
-                index = dut.matrixEngine.inputVectorFifo.readPtr + entry;
-                if (index >= ACTIVATION_SKID_DEPTH) index = index - ACTIVATION_SKID_DEPTH;
+            $fwrite(trace_fd, "\nIF %0d", dut.matrixEngine.inputVectorValid);
+            if (dut.matrixEngine.inputVectorValid) begin
                 for (lane = 0; lane < N; lane++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.inputVectorFifo.data[index][lane*WIDTH +: WIDTH]));
+                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.inputVectorData[lane*WIDTH +: WIDTH]));
             end
             $fwrite(trace_fd, "\nSF %0d", dut.sampleContextFifo.values);
             for (entry = 0; entry < dut.sampleContextFifo.values; entry++) begin

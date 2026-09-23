@@ -83,8 +83,7 @@ try {
     & $vlog -sv @sources
     if ($LASTEXITCODE -ne 0) { throw "vlog failed." }
 
-    # Reject N=1 matrices while keeping the one-entry activation skid legal;
-    # there is no global FIFO-depth >= 2 restriction.
+    # Reject N=1 matrices; the one-entry activation skid remains legal.
     & $vsim -c work.weightStationaryMatrixMultiplier -GN=1 `
         -l invalid-parameter.log -do "run 1ns; quit -f"
     if (-not (Select-String -Path invalid-parameter.log -SimpleMatch `
