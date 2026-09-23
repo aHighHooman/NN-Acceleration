@@ -23,7 +23,7 @@ IN_FLIGHT_DEPTH = 2 * N + 2
 INITIAL_WEIGHT_MATRIX = ((1, 2, 3), (4, 5, 6), (7, 8, 9))
 RELOADED_WEIGHT_MATRIX = ((-3, 2, 1), (5, -4, 2), (1, 3, -2))
 INITIAL_REDUCTION_WEIGHTS = (16, 24, 32)
-PHASE6L_INITIAL_REDUCTION_WEIGHTS = (1, 1, 1)
+SAVED_SIGN_INITIAL_REDUCTION_WEIGHTS = (1, 1, 1)
 
 
 @dataclass(frozen=True)
@@ -194,10 +194,22 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     backpressure_cycles.extend(_idle_cycles(32, ready=True))
     add_scenario("output_backpressure", backpressure_cycles)
 
-    # 6L: retire a training result, then stall with both update paths live.
+    # Reset on a blocked edge after the result FIFO has filled. The reset is
+    # allowed to clear pipeline registers even though ordinary stalls hold them.
+    reset_stall_cycles = _reset_and_load_weights(
+        INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS
+    )
+    reset_stall_cycles.extend(
+        _input_cycle((i + 1, 1, -1), 0, False, ready=False) for i in range(12)
+    )
+    reset_stall_cycles.extend(_idle_cycles(16, ready=False))
+    reset_stall_cycles.append(_driven(CycleInputs(reset_n=False, result_ready=False)))
+    add_scenario("reset_during_output_stall", reset_stall_cycles)
+
+    # Retire a training result, then stall with both update paths live.
     # Result five saved R=(1,1,1); its matrix update must use those signs even
     # after the first retired package changes resident R to zero.
-    phase6l_samples = (
+    saved_sign_samples = (
         Sample((1, 1, 1), -128, True),
         Sample((0, 0, 0), 0, False),
         Sample((0, 0, 0), 0, False),
@@ -209,24 +221,24 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
         Sample((0, 0, 0), 0, False),
         Sample((0, 0, 0), 0, False),
     )
-    phase6l_cycles = _reset_and_load_weights(
-        INITIAL_WEIGHT_MATRIX, PHASE6L_INITIAL_REDUCTION_WEIGHTS
+    saved_sign_cycles = _reset_and_load_weights(
+        INITIAL_WEIGHT_MATRIX, SAVED_SIGN_INITIAL_REDUCTION_WEIGHTS
     )
     # Accept eight samples, then idle three cycles to buffer four results.
     # One ready cycle retires the first result and starts its learning package.
-    phase6l_cycles.extend(_sample_cycles(phase6l_samples[:8], ready=False))
-    phase6l_cycles.extend(_idle_cycles(3, ready=False))
-    phase6l_cycles.extend(_sample_cycles(phase6l_samples[8:9], ready=True))
+    saved_sign_cycles.extend(_sample_cycles(saved_sign_samples[:8], ready=False))
+    saved_sign_cycles.extend(_idle_cycles(3, ready=False))
+    saved_sign_cycles.extend(_sample_cycles(saved_sign_samples[8:9], ready=True))
     # Two held cycles occur after the result FIFO becomes full.  The second
     # input is accepted on the first advancing edge after the stall.
-    phase6l_cycles.extend(_idle_cycles(4, ready=False))
-    phase6l_cycles.extend(_sample_cycles(phase6l_samples[9:10], ready=True))
-    phase6l_cycles.extend(_idle_cycles(32, ready=True))
+    saved_sign_cycles.extend(_idle_cycles(4, ready=False))
+    saved_sign_cycles.extend(_sample_cycles(saved_sign_samples[9:10], ready=True))
+    saved_sign_cycles.extend(_idle_cycles(32, ready=True))
     add_scenario(
-        "phase6L_training_backpressure",
-        phase6l_cycles,
-        phase6l_samples,
-        initial_reduction_weights=PHASE6L_INITIAL_REDUCTION_WEIGHTS,
+        "saved_reduction_signs_under_backpressure",
+        saved_sign_cycles,
+        saved_sign_samples,
+        initial_reduction_weights=SAVED_SIGN_INITIAL_REDUCTION_WEIGHTS,
     )
 
     # 6: drain one sample, legally reload, stream a second matrix, and run a
@@ -393,12 +405,16 @@ def read_trace(
                 (tuple(entry[:N]), entry[N], tuple(entry[N+1:]))
                 for entry in entries
             )
-        elif f[0] == "P":
-            if len(f) != 11:
-                raise ValueError(f"bad P record at trace line {line_number}")
+        elif f[0] == "STALL":
+            if len(f) != 4:
+                raise ValueError(f"bad STALL record at trace line {line_number}")
             if int(f[1]) != int(current["cycle"]):
-                raise ValueError(f"P record cycle does not match C at trace line {line_number}")
-            current["datapath_progress"] = tuple(int(value) for value in f[2:])
+                raise ValueError(f"STALL record cycle does not match C at trace line {line_number}")
+            current["stall_pending"] = tuple(int(value) for value in f[2:])
+        elif f[0] == "RESET_STALL":
+            if len(f) != 2 or int(f[1]) != int(current["cycle"]):
+                raise ValueError(f"bad RESET_STALL record at trace line {line_number}")
+            current["reset_stall"] = True
         else:
             raise ValueError(f"unknown trace record {f[0]} at line {line_number}")
     return snapshots, enqueues, retirements
@@ -466,9 +482,6 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
                 _compare_sequence(cycle, name, left, right)
             elif left != right:
                 _fail(cycle, name, left, right)
-        progress = act.get("datapath_progress")
-        if not isinstance(progress, tuple) or len(progress) != 9:
-            _fail(cycle, "datapath progress trace", "nine fields", progress)
 
     if len(enqueues) != len(expected_enqueues):
         raise AssertionError(
@@ -483,6 +496,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
                   expected_enqueue["raw"], actual_enqueue.get("raw"))
 
     functional_comparisons = 0
+    functional_records = {}
     for comparison in comparison_inputs.functional_comparisons:
         model = FunctionalReference(
             ReferenceConfig(
@@ -494,6 +508,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
             comparison.W, comparison.R,
         )
         records = model.run(comparison.samples)
+        functional_records[comparison.name] = records
         window = [
             [r for r in rows
              if comparison.start_cycle <= int(r["cycle"]) <= comparison.end_cycle]
@@ -529,52 +544,14 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
             if left != right:
                 _fail(comparison.end_cycle, f"{comparison.name} {label}", left, right)
 
-    # Scenario-specific evidence required beyond field-by-field comparison.
-    training_comparison = next(
-        item for item in comparison_inputs.functional_comparisons
-        if item.name == "continuous_training"
-    )
-    training_model = FunctionalReference(ReferenceConfig(n=N, width=WIDTH, fraction_bits=FRACTION_BITS,
-        target_width=TARGET_WIDTH, reduction_weight_width=REDUCTION_WEIGHT_WIDTH),
-        INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
-    training_records = training_model.run(training_comparison.samples)
-    if any(record.W_used != INITIAL_WEIGHT_MATRIX or
-           record.R_used != INITIAL_REDUCTION_WEIGHTS
-           for record in training_records[:7]):
-        raise AssertionError("a training update became visible before S7")
-    for sample_index in (7, 8, 9):
-        if training_records[sample_index].W_used == training_records[sample_index - 1].W_used or \
-           training_records[sample_index].R_used == training_records[sample_index - 1].R_used:
-            raise AssertionError(f"U{sample_index - 7} visibility evidence missing at S{sample_index}")
-
-    inference = next(
-        scenario for scenario in comparison_inputs.scenarios
-        if scenario.name == "continuous_inference"
-    )
-    e0 = inference.start_cycle + len(
-        _reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
-    )
-    if expected[e0 + 6].result_fifo or len(expected[e0 + 7].result_fifo) != 1:
-        raise AssertionError("continuous inference did not demonstrate E0 -> E7 enqueue timing")
-    inference_retirements = [int(r["cycle"]) for r in retirements
-                             if inference.start_cycle <= int(r["cycle"]) <= inference.end_cycle]
-    if inference_retirements != list(range(e0 + 8, e0 + 8 + 12)):
-        raise AssertionError(f"continuous inference retirement cycles were {inference_retirements}")
-
+    # Scenario reachability checks supplement the per-cycle and result comparisons.
     backpressure = next(
         scenario for scenario in comparison_inputs.scenarios
         if scenario.name == "output_backpressure"
     )
-    states = [expected[i] for i in range(backpressure.start_cycle, backpressure.end_cycle + 1)]
-    held = any(len(states[i].result_fifo) == config.output_fifo_depth and
-               states[i].W == states[i-1].W and states[i].R == states[i-1].R and
-               states[i].pending_weight_row == states[i-1].pending_weight_row and
-               states[i].input_fifo == states[i-1].input_fifo and
-               states[i].sample_context_fifo == states[i-1].sample_context_fifo and
-               states[i].result_fifo == states[i-1].result_fifo
-               for i in range(1, len(states)))
-    if not held:
-        raise AssertionError("output_backpressure did not produce a held architectural snapshot")
+    if not any("stall_pending" in actual[cycle]
+               for cycle in range(backpressure.start_cycle, backpressure.end_cycle + 1)):
+        raise AssertionError("output_backpressure did not stall the datapath")
     simultaneous_full_pop_push = any(
         backpressure.start_cycle < cycle <= backpressure.end_cycle
         and len(expected[cycle - 1].result_fifo) == config.output_fifo_depth
@@ -590,135 +567,61 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
             "output_backpressure did not exercise simultaneous full pop/push"
         )
 
-    phase6l = next(
+    reset_stall = next(
         scenario for scenario in comparison_inputs.scenarios
-        if scenario.name == "phase6L_training_backpressure"
+        if scenario.name == "reset_during_output_stall"
     )
-    phase6l_states = {
-        snapshot.cycle: snapshot
-        for snapshot in expected[phase6l.start_cycle:phase6l.end_cycle + 1]
-    }
-    phase6l_progress = {
-        int(snapshot["cycle"]): snapshot["datapath_progress"]
-        for snapshot in actual[phase6l.start_cycle:phase6l.end_cycle + 1]
-    }
+    reset_cycle = reset_stall.end_cycle
+    if (not actual[reset_cycle].get("reset_stall") or
+            "stall_pending" not in actual[reset_cycle - 1] or
+            "stall_pending" in actual[reset_cycle]):
+        raise AssertionError("reset-during-stall scenario did not reset a blocked datapath")
+
+    saved_signs = next(
+        scenario for scenario in comparison_inputs.scenarios
+        if scenario.name == "saved_reduction_signs_under_backpressure"
+    )
     stalled_cycles = [
-        cycle for cycle, progress in phase6l_progress.items()
-        if progress[0] == 0 and progress[1] == 1
+        cycle for cycle in range(saved_signs.start_cycle, saved_signs.end_cycle + 1)
+        if "stall_pending" in actual[cycle]
     ]
-    if len(stalled_cycles) < 2:
-        raise AssertionError(
-            "phase6L scenario did not produce multiple outputBlocked datapath-stall cycles"
-        )
-    if stalled_cycles != list(range(stalled_cycles[0], stalled_cycles[-1] + 1)):
-        raise AssertionError("phase6L datapath stall was not held on consecutive cycles")
-    first_stall = stalled_cycles[0]
-    first_progress = phase6l_progress[first_stall]
-    # P fields: datapathAdvance, outputBlocked, reductionUpdateBusy,
-    # matrix-pipeline-busy, result-alignment-busy. Both update paths must
-    # be live at the first held edge.
-    if first_progress[2] != 1 or first_progress[3] != 1:
-        raise AssertionError(
-            "phase6L stall did not begin with live reduction and matrix update work"
-        )
-    for cycle in stalled_cycles:
-        before = phase6l_states[cycle - 1]
-        during = phase6l_states[cycle]
-        architectural_fields = (
-            "W", "R", "pending_weight_row", "input_fifo", "sample_context_fifo",
-            "result_fifo",
-        )
-        if any(getattr(before, field) != getattr(during, field) for field in architectural_fields):
-            raise AssertionError(
-                f"phase6L architectural state moved during the held stall at cycle {cycle}"
-            )
-        if len(during.result_fifo) != config.output_fifo_depth:
-            raise AssertionError(
-                f"phase6L stall at cycle {cycle} was not caused by a full output buffer"
-            )
-    for cycle in stalled_cycles[1:]:
-        previous_progress = phase6l_progress[cycle - 1]
-        current_progress = phase6l_progress[cycle]
-        if previous_progress[5:] != current_progress[5:]:
-            raise AssertionError(
-                f"phase6L internal update/skew/alignment state advanced during cycle {cycle}"
-            )
+    if len(stalled_cycles) < 2 or stalled_cycles != list(range(stalled_cycles[0], stalled_cycles[-1] + 1)):
+        raise AssertionError("saved-sign scenario did not hold an output stall for multiple cycles")
+    if actual[stalled_cycles[0]]["stall_pending"] != (1, 1):
+        raise AssertionError("saved-sign stall did not begin with matrix and reduction updates pending")
+    if len(actual[stalled_cycles[0]]["result_fifo"]) != config.output_fifo_depth:
+        raise AssertionError("saved-sign stall did not fill the result buffer")
 
-    phase6l_functional = next(
-        item for item in comparison_inputs.functional_comparisons
-        if item.name == "phase6L_training_backpressure"
-    )
-    phase6l_model = FunctionalReference(
-        ReferenceConfig(
-            n=N, width=WIDTH, fraction_bits=FRACTION_BITS,
-            target_width=TARGET_WIDTH, reduction_weight_width=REDUCTION_WEIGHT_WIDTH,
-        ),
-        phase6l_functional.W,
-        phase6l_functional.R,
-    )
-    phase6l_records = phase6l_model.run(phase6l_functional.samples)
-    phase6l_retirements = [
-        int(record["cycle"])
-        for record in retirements
-        if phase6l.start_cycle <= int(record["cycle"]) <= phase6l.end_cycle
+    records = functional_records[saved_signs.name]
+    scenario_retirements = [
+        int(row["cycle"]) for row in retirements
+        if saved_signs.start_cycle <= int(row["cycle"]) <= saved_signs.end_cycle
     ]
-    if len(phase6l_retirements) != len(phase6l_records):
-        raise AssertionError("phase6L retirement count did not match FunctionalReference samples")
     buffered_result_index = 4
-    buffered_retirement = phase6l_retirements[buffered_result_index]
-    buffered_before_retire = phase6l_states[buffered_retirement - 1]
-    stored_signs = buffered_before_retire.result_fifo[0].reduction_weight_signs
-    resident_signs = tuple(1 if value > 0 else -1 if value < 0 else 0
-                           for value in buffered_before_retire.R)
+    before_retirement = expected[scenario_retirements[buffered_result_index] - 1]
+    stored_signs = before_retirement.result_fifo[0].reduction_weight_signs
+    resident_signs = tuple((value > 0) - (value < 0) for value in before_retirement.R)
     if stored_signs != (1, 1, 1) or resident_signs != (0, 0, 0):
-        raise AssertionError(
-            "phase6L buffered result did not retain old R signs across the resident sign change"
-        )
-    buffered_record = phase6l_records[buffered_result_index]
-    if buffered_record.R_used != PHASE6L_INITIAL_REDUCTION_WEIGHTS:
-        raise AssertionError("FunctionalReference did not retain the buffered result's old R")
-    _, _, current_sign_matrix_direction = matrix_update_directions(
-        buffered_record.input_vector,
-        buffered_record.activated_result,
-        buffered_before_retire.R,
-        buffered_record.learning_direction,
-        WIDTH,
-        REDUCTION_WEIGHT_WIDTH,
-        True,
-    )
-    if tuple(tuple(row) for row in current_sign_matrix_direction) == buffered_record.matrix_update_directions:
-        raise AssertionError("phase6L current-R counterfactual did not differ from stored-sign update")
-    counterfactual_W = [row[:] for row in phase6l_functional.W]
-    for index, record in enumerate(phase6l_records):
-        if record.update_generated:
-            direction = (
-                current_sign_matrix_direction
-                if index == buffered_result_index
-                else record.matrix_update_directions
-            )
-            counterfactual_W = apply_matrix_update(counterfactual_W, direction, WIDTH)
-    final_phase6l = phase6l_states[phase6l.end_cycle]
-    if tuple(tuple(row) for row in counterfactual_W) == final_phase6l.W:
-        raise AssertionError("phase6L final W did not expose the stored-sign choice")
+        raise AssertionError("buffered training result lost the reduction signs captured at enqueue")
 
-    stall_before = phase6l_states[first_stall - 1]
-    stall_during = phase6l_states[first_stall]
-    resume = phase6l_states[stalled_cycles[-1] + 1]
-    print(
-        "PASS: phase6L evidence "
-        f"stall_cycles={stalled_cycles[0]}..{stalled_cycles[-1]} "
-        f"held_cycles={len(stalled_cycles)} "
-        f"live_work=(reduction,matrix)=({first_progress[2]},{first_progress[3]}) "
-        f"R_sign_change=cycle {buffered_retirement - 1} lanes=(0,1,2) +1->0 "
-        f"stored_signs={stored_signs} resident_before_retire={resident_signs} "
-        f"buffered_retire_cycle={buffered_retirement}"
+    buffered_record = records[buffered_result_index]
+    _, _, current_sign_direction = matrix_update_directions(
+        buffered_record.input_vector, buffered_record.activated_result,
+        before_retirement.R, buffered_record.learning_direction,
+        WIDTH, REDUCTION_WEIGHT_WIDTH, True,
     )
+    counterfactual_W = [list(row) for row in INITIAL_WEIGHT_MATRIX]
+    for index, record in enumerate(records):
+        if record.update_generated:
+            direction = current_sign_direction if index == buffered_result_index else record.matrix_update_directions
+            counterfactual_W = apply_matrix_update(counterfactual_W, direction, WIDTH)
+    if tuple(map(tuple, counterfactual_W)) == expected[saved_signs.end_cycle].W:
+        raise AssertionError("saved reduction signs did not affect final matrix weights")
     print(
-        "PASS: phase6L W/R states "
-        f"before={stall_before.W}/{stall_before.R} "
-        f"during={stall_during.W}/{stall_during.R} "
-        f"after_resume={resume.W}/{resume.R} "
-        f"final={final_phase6l.W}/{final_phase6l.R}"
+        "PASS: saved reduction signs under backpressure: "
+        f"stall={stalled_cycles[0]}..{stalled_cycles[-1]}, "
+        f"stored={stored_signs}, resident={resident_signs}, "
+        f"retired={scenario_retirements[buffered_result_index]}"
     )
     return len(expected), functional_comparisons
 

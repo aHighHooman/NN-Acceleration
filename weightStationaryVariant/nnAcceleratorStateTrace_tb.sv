@@ -43,11 +43,16 @@ module nnAcceleratorStateTrace_tb;
     logic streamQuiescent;
     logic configurationActive;
     logic configuredPassThrough, configuredReduceOutput;
-    logic trace_datapath_advance, trace_output_blocked;
+    logic trace_stalled, trace_reset_stalled, trace_matrix_update_pending;
     logic trace_matrix_result_handshake;
-    logic trace_reduction_update_busy, trace_pipeline_busy, trace_result_align_busy;
-    integer trace_matrix_wave_mask, trace_reduction_pipe_mask;
-    integer trace_skew_valid_mask, trace_align_valid_mask;
+    logic trace_reduction_update_busy;
+    logic held_update_valid[2*N-2], held_reduction_valid[2*N-1];
+    logic signed [1:0] held_update_row[2*N-2][N], held_update_column[2*N-2][N];
+    logic signed [2*N-1:0] held_reduction_direction[2*N-1];
+    logic signed [WIDTH-1:0] held_skew_data[N][N];
+    logic held_skew_valid[N][N];
+    logic signed [MATRIX_RESULT_WIDTH-1:0] held_align_data[N][N-1];
+    logic held_align_valid[N][N-1];
 
     always #5ns clk = ~clk;
 
@@ -64,6 +69,33 @@ module nnAcceleratorStateTrace_tb;
         .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights),
         .reloadReady(reloadReady), .passThrough(passThrough)
     );
+
+    // Check PE registers on the edge itself, including the data registers that
+    // are absent from the architectural trace. The output-stall event is logged
+    // separately so Python can check that the directed case reaches this path.
+    for (genvar row = 0; row < N; row++) begin : freeze_row
+        for (genvar col = 0; col < N; col++) begin : freeze_col
+            always @(posedge clk) begin : check_pe_freeze
+                logic signed [WIDTH-1:0] weight_before, right_before;
+                logic signed [MATRIX_RESULT_WIDTH-1:0] bottom_before;
+                logic right_valid_before, bottom_valid_before;
+                if (rst_n && dut.matrixEngine.outputBlocked && !dut.matrixEngine.arrayAdvance) begin
+                    weight_before = dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.weightReg;
+                    right_before = dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.rightOut;
+                    right_valid_before = dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.rightValid;
+                    bottom_before = dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.bottomOut;
+                    bottom_valid_before = dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.bottomValid;
+                    #1ps;
+                    if (weight_before !== dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.weightReg ||
+                        right_before !== dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.rightOut ||
+                        right_valid_before !== dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.rightValid ||
+                        bottom_before !== dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.bottomOut ||
+                        bottom_valid_before !== dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.bottomValid)
+                        $fatal(1, "PE (%0d,%0d) advanced during output stall", row, col);
+                end
+            end
+        end
+    end
 
     assign streamQuiescent =
         dut.matrixEngine.inputEmpty &&
@@ -149,6 +181,55 @@ module nnAcceleratorStateTrace_tb;
         end
     endtask
 
+    task automatic capture_stalled_pipelines;
+        for (int stage = 0; stage < 2*N-2; stage++) begin
+            held_update_valid[stage] = dut.matrixEngine.systolicArray.updateValidPipe[stage];
+            for (int wire_lane = 0; wire_lane < N; wire_lane++) begin
+                held_update_row[stage][wire_lane] = dut.matrixEngine.systolicArray.updateRowPipe[stage][wire_lane];
+                held_update_column[stage][wire_lane] = dut.matrixEngine.systolicArray.updateColumnPipe[stage][wire_lane];
+            end
+        end
+        for (int stage = 0; stage < 2*N-1; stage++) begin
+            held_reduction_valid[stage] = dut.reductionUpdateValidPipe[stage];
+            held_reduction_direction[stage] = dut.reductionUpdateDirectionPipe[stage];
+        end
+        for (int wire_lane = 0; wire_lane < N; wire_lane++) begin
+            for (int stage = 0; stage < N; stage++) begin
+                held_skew_data[wire_lane][stage] = dut.matrixEngine.skewData[wire_lane][stage];
+                held_skew_valid[wire_lane][stage] = dut.matrixEngine.skewValid[wire_lane][stage];
+            end
+            for (int stage = 0; stage < N-1; stage++) begin
+                held_align_data[wire_lane][stage] = dut.matrixEngine.resultAlignData[wire_lane][stage];
+                held_align_valid[wire_lane][stage] = dut.matrixEngine.resultAlignValid[wire_lane][stage];
+            end
+        end
+    endtask
+
+    task automatic check_stalled_pipelines(input integer c);
+        for (int stage = 0; stage < 2*N-2; stage++) begin
+            if (held_update_valid[stage] !== dut.matrixEngine.systolicArray.updateValidPipe[stage])
+                $fatal(1, "matrix update valid advanced during stall at cycle %0d", c);
+            for (int wire_lane = 0; wire_lane < N; wire_lane++)
+                if (held_update_row[stage][wire_lane] !== dut.matrixEngine.systolicArray.updateRowPipe[stage][wire_lane] ||
+                    held_update_column[stage][wire_lane] !== dut.matrixEngine.systolicArray.updateColumnPipe[stage][wire_lane])
+                    $fatal(1, "matrix update payload advanced during stall at cycle %0d", c);
+        end
+        for (int stage = 0; stage < 2*N-1; stage++)
+            if (held_reduction_valid[stage] !== dut.reductionUpdateValidPipe[stage] ||
+                held_reduction_direction[stage] !== dut.reductionUpdateDirectionPipe[stage])
+                $fatal(1, "reduction update pipe advanced during stall at cycle %0d", c);
+        for (int wire_lane = 0; wire_lane < N; wire_lane++) begin
+            for (int stage = 0; stage < N; stage++)
+                if (held_skew_data[wire_lane][stage] !== dut.matrixEngine.skewData[wire_lane][stage] ||
+                    held_skew_valid[wire_lane][stage] !== dut.matrixEngine.skewValid[wire_lane][stage])
+                    $fatal(1, "input skew advanced during stall at cycle %0d", c);
+            for (int stage = 0; stage < N-1; stage++)
+                if (held_align_data[wire_lane][stage] !== dut.matrixEngine.resultAlignData[wire_lane][stage] ||
+                    held_align_valid[wire_lane][stage] !== dut.matrixEngine.resultAlignValid[wire_lane][stage])
+                    $fatal(1, "result alignment advanced during stall at cycle %0d", c);
+        end
+    endtask
+
     initial begin
         if (!$value$plusargs("STIMULUS=%s", stimulus_path)) $fatal(1, "missing +STIMULUS path");
         if (!$value$plusargs("TRACE=%s", trace_path)) $fatal(1, "missing +TRACE path");
@@ -208,40 +289,25 @@ module nnAcceleratorStateTrace_tb;
             trace_matrix_result_handshake = dut.matrixResultValid && dut.matrixResultReady;
             for (lane = 0; lane < N; lane++)
                 enqueued_raw[lane] = $signed(dut.rawResultData[lane]);
-            trace_datapath_advance = dut.matrixEngine.arrayAdvance;
-            trace_output_blocked = dut.matrixEngine.outputBlocked;
+            trace_stalled = rst_n && dut.matrixEngine.outputBlocked && !dut.matrixEngine.arrayAdvance;
+            trace_reset_stalled = !rst_n && dut.matrixEngine.outputBlocked && !dut.matrixEngine.arrayAdvance;
             trace_reduction_update_busy = dut.reductionUpdateBusy;
-            trace_pipeline_busy = dut.matrixEngine.pipelineBusy;
-            trace_result_align_busy = dut.matrixEngine.resultAlignBusy;
-            trace_matrix_wave_mask = 0;
+            trace_matrix_update_pending = 0;
             for (entry = 0; entry < 2*N-2; entry++)
                 if (dut.matrixEngine.systolicArray.updateValidPipe[entry])
-                    trace_matrix_wave_mask |= (1 << entry);
-            trace_reduction_pipe_mask = 0;
-            for (entry = 0; entry < 2*N-1; entry++)
-                if (dut.reductionUpdateValidPipe[entry])
-                    trace_reduction_pipe_mask |= (1 << entry);
-            trace_skew_valid_mask = 0;
-            for (lane = 0; lane < N; lane++)
-                for (index = 0; index < N; index++)
-                    if (dut.matrixEngine.skewValid[lane][index])
-                        trace_skew_valid_mask |= (1 << (lane*N + index));
-            trace_align_valid_mask = 0;
-            for (lane = 0; lane < N; lane++)
-                for (index = 0; index < N-1; index++)
-                    if (dut.matrixEngine.resultAlignValid[lane][index])
-                        trace_align_valid_mask |= (1 << (lane*(N-1) + index));
+                    trace_matrix_update_pending = 1;
+            if (trace_stalled)
+                capture_stalled_pipelines();
             @(posedge clk);
             #1ps;
+            if (trace_stalled)
+                check_stalled_pipelines(c);
             dump_snapshot(c);
-            // Verification-only hierarchical evidence.  These are internal
-            // combinational states, not synthesizable accelerator ports.
-            $fwrite(trace_fd, "P %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\n", c,
-                trace_datapath_advance, trace_output_blocked,
-                trace_reduction_update_busy, trace_pipeline_busy,
-                trace_result_align_busy, trace_matrix_wave_mask,
-                trace_reduction_pipe_mask, trace_skew_valid_mask,
-                trace_align_valid_mask);
+            if (trace_stalled)
+                $fwrite(trace_fd, "STALL %0d %0d %0d\n", c,
+                    trace_matrix_update_pending, trace_reduction_update_busy);
+            if (trace_reset_stalled)
+                $fwrite(trace_fd, "RESET_STALL %0d\n", c);
             if (trace_matrix_result_handshake) $fwrite(trace_fd,
                 "ENQ %0d %0d %0d %0d\n", c,
                 enqueued_raw[0], enqueued_raw[1], enqueued_raw[2]);
