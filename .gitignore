@@ -40,3 +40,6 @@ Quartus Stuff/*_pin_model_dump.txt
 *.fls
 *.log
 *.synctex.gz
+
+# Local documentation artifacts
+/docs/
