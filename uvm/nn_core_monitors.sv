@@ -12,6 +12,8 @@
         reduction_t resident_reduction_weights[N];
         int unsigned pending_weight_rows;
         bit weights_valid;
+        bit matrix_known;
+        bit reduction_known;
         bit in_reset;
         bit released_once;
 
@@ -53,6 +55,8 @@
             end
             pending_weight_rows = 0;
             weights_valid = 1'b0;
+            matrix_known = 1'b0;
+            reduction_known = 1'b1;
         endfunction
 
         task run_phase(uvm_phase phase);
@@ -75,13 +79,19 @@
                 if (vif.monitor_cb.reloadWeights &&
                     vif.monitor_cb.reloadReady) begin
                     reload_count++;
-                    clear_configuration();
+                    // Reload clears the matrix, but does not reload the
+                    // reduction vector. Its learned/known state persists.
+                    pending_weight_rows = 0;
+                    weights_valid = 1'b0;
+                    matrix_known = 1'b0;
                 end
 
-                if (vif.monitor_cb.loadReductionWeights)
+                if (vif.monitor_cb.loadReductionWeights) begin
                     for (int lane = 0; lane < N; lane++)
                         resident_reduction_weights[lane] =
                             vif.monitor_cb.reductionWeight[lane];
+                    reduction_known = 1'b1;
+                end
 
                 if (vif.monitor_cb.weightValid && vif.monitor_cb.weightReady) begin
                     int row_index;
@@ -100,6 +110,7 @@
                                 vif.monitor_cb.weightData[lane];
                         pending_weight_rows = 0;
                         weights_valid = 1'b1;
+                        matrix_known = 1'b1;
                     end else
                         pending_weight_rows++;
                 end
@@ -124,10 +135,19 @@
                     sample.target = vif.monitor_cb.targetData;
                     sample.training_enable = vif.monitor_cb.trainingEnable;
                     sample.weights_valid = weights_valid;
+                    sample.exact_prediction_valid = matrix_known &&
+                        (!vif.monitor_cb.reduceOutput || reduction_known);
                     sample.pass_through = vif.monitor_cb.passThrough;
                     sample.reduce_output = vif.monitor_cb.reduceOutput;
                     samples_observed++;
                     sample_ap.write(sample);
+                    // A training admission can change both resident weight
+                    // stores before any later sample is evaluated. The
+                    // learning reference, not this monitor, owns those values.
+                    if (sample.training_enable) begin
+                        matrix_known = 1'b0;
+                        reduction_known = 1'b0;
+                    end
                 end
             end
         endtask
