@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 -16 1032 282" width="1032" height="282" role="img" aria-label="Three snapshots of a 3 by 3 array during loading. The host sends row 2, then row 1, then row 0. After the first consume row 2 sits in PE row 0; after the second, row 1 is on top and row 2 has moved down; after the third, every matrix row is in its own PE row and weightsLoaded is 1.">
+<title>Weight loading</title>
+<style>
+svg{--paper:#F3F5F3; --panel:#FFFFFF; --ink:#15191C; --ink-2:#48525A; --ink-3:#7A848B;
+  --rule:#D5DBD8; --grid:#E5E9E6;
+  --data:#2350C8; --data-soft:#DDE5FB; --learn:#CF4F16; --learn-soft:#FCE4D7;
+  --store:#56665C; --store-soft:#E3EAE5; --ok:#2F7D4F; --warn:#B7791F;
+  --display:"Arial Narrow","Roboto Condensed","Segoe UI",system-ui,sans-serif;
+  --body:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;}
+@media (prefers-color-scheme:dark){svg{--paper:#101315; --panel:#171B1E; --ink:#E6E9EB; --ink-2:#AEB7BD; --ink-3:#7D878E;
+    --rule:#2C3337; --grid:#20262A;
+    --data:#86A6FF; --data-soft:#1B2847; --learn:#FF8F57; --learn-soft:#3A2116;
+    --store:#A3B8AA; --store-soft:#1F2824; --ok:#63C28A; --warn:#E3B04B;}}
+text{font-family:var(--body);fill:var(--ink);font-size:13px}
+.m{font-family:var(--mono);font-size:12px}
+.s{font-size:11.5px;fill:var(--ink-2)}
+.ms{font-family:var(--mono);font-size:10.5px;fill:var(--ink-2)}
+.b{font-weight:600}
+.h{font-family:var(--display);font-weight:700;font-size:14px}
+.mid{text-anchor:middle}
+.end{text-anchor:end}
+.muted{fill:var(--ink-3)}
+.tdata{fill:var(--data)}
+.tlearn{fill:var(--learn)}
+.bx{fill:var(--panel);stroke:var(--ink);stroke-width:1.25}
+.bx2{fill:var(--paper);stroke:var(--ink-3);stroke-width:1}
+.bxd{fill:var(--data-soft);stroke:var(--data);stroke-width:1.25}
+.bxl{fill:var(--learn-soft);stroke:var(--learn);stroke-width:1.5}
+.bxs{fill:var(--store-soft);stroke:var(--store);stroke-width:1.25}
+.frame{fill:none;stroke:var(--ink-3);stroke-width:1;stroke-dasharray:5 4}
+.core{fill:var(--panel);stroke:var(--ink);stroke-width:1.5}
+.ld{fill:none;stroke:var(--data);stroke-width:2}
+.ll{fill:none;stroke:var(--learn);stroke-width:2.25}
+.ls{fill:none;stroke:var(--store);stroke-width:1.75}
+.lk{fill:none;stroke:var(--ink-2);stroke-width:1.5}
+.lg{fill:none;stroke:var(--grid);stroke-width:1}
+.lr{fill:none;stroke:var(--rule);stroke-width:1}
+.dash{stroke-dasharray:4 4}
+.halo{fill:none;stroke:var(--panel);stroke-width:9}
+.fd{fill:var(--data)} .fl{fill:var(--learn)} .fs{fill:var(--store)} .fk{fill:var(--ink-2)}
+.fsoftd{fill:var(--data-soft)} .fsoftl{fill:var(--learn-soft)} .fsofts{fill:var(--store-soft)}
+.fp{fill:var(--panel)} .fpp{fill:var(--paper)}
+.ghost{fill:none;stroke:var(--ink-3);stroke-width:1;stroke-dasharray:2 2}
+</style>
+<rect x="-15.5" y="-15.5" width="1031" height="281" rx="10" style="fill:var(--panel);stroke:var(--rule)"/>
+<defs>
+        <marker id="f3d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="fd"/></marker>
+      </defs>
+      <text x="20" y="30" class="h">host order →</text>
+      <g>
+        <rect x="130" y="12" width="70" height="26" rx="4" class="bxd"/><text x="165" y="30" class="mid m">W row 2</text>
+        <rect x="210" y="12" width="70" height="26" rx="4" class="bxd"/><text x="245" y="30" class="mid m">W row 1</text>
+        <rect x="290" y="12" width="70" height="26" rx="4" class="bxd"/><text x="325" y="30" class="mid m">W row 0</text>
+        <text x="372" y="30" class="s">each held in the one-row <tspan class="m">pending weight row</tspan> stage, then consumed on the next edge</text>
+      </g>
+      <!-- snapshot columns -->
+      <g>
+        <text x="40" y="78" class="b">after consume 1</text>
+        <text x="40" y="94" class="ms">loadedWeightRows = 1</text>
+        <rect x="40" y="106" width="200" height="30" rx="4" class="bxd"/><text x="140" y="126" class="mid m">row 2 → PE row 0</text>
+        <rect x="40" y="142" width="200" height="30" rx="4" class="bx2"/><text x="140" y="162" class="mid ms muted">empty</text>
+        <rect x="40" y="178" width="200" height="30" rx="4" class="bx2"/><text x="140" y="198" class="mid ms muted">empty</text>
+      </g>
+      <line x1="256" y1="157" x2="316" y2="157" class="ld" marker-end="url(#f3d)"/>
+      <g>
+        <text x="330" y="78" class="b">after consume 2</text>
+        <text x="330" y="94" class="ms">loadedWeightRows = 2</text>
+        <rect x="330" y="106" width="200" height="30" rx="4" class="bxd"/><text x="430" y="126" class="mid m">row 1</text>
+        <rect x="330" y="142" width="200" height="30" rx="4" class="bxd"/><text x="430" y="162" class="mid m">row 2 ↓</text>
+        <rect x="330" y="178" width="200" height="30" rx="4" class="bx2"/><text x="430" y="198" class="mid ms muted">empty</text>
+      </g>
+      <line x1="546" y1="157" x2="606" y2="157" class="ld" marker-end="url(#f3d)"/>
+      <g>
+        <text x="620" y="78" class="b">after consume 3</text>
+        <text x="620" y="94" class="ms">weightsLoaded = 1</text>
+        <rect x="620" y="106" width="200" height="30" rx="4" class="bxd"/><text x="720" y="126" class="mid m">row 0 = PE row 0</text>
+        <rect x="620" y="142" width="200" height="30" rx="4" class="bxd"/><text x="720" y="162" class="mid m">row 1 = PE row 1</text>
+        <rect x="620" y="178" width="200" height="30" rx="4" class="bxd"/><text x="720" y="198" class="mid m">row 2 = PE row 2</text>
+      </g>
+      <g>
+        <text x="850" y="120" class="s">PE(i, j) holds W[i][j].</text>
+        <text x="850" y="140" class="s">Input lane i enters row i,</text>
+        <text x="850" y="160" class="s">column j emits</text>
+        <text x="850" y="180" class="m">y[j] = Σᵢ x[i]·W[i][j]</text>
+      </g>
+      <text x="40" y="236" class="ms">weightReady = !weightsLoaded ∧ (stage empty ∨ the row being consumed isn't the last one): a refill can land on the same edge as a consume, except the Nth.</text>
+</svg>

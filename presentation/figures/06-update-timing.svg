@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 -16 792 285" width="792" height="285" role="img" aria-label="Space-time chart. Columns are clock edges, rows are pipeline positions. Each sample is a diagonal line; the orange update wave runs parallel to them, between the last old-weight sample and the first new-weight sample.">
+<title>Sample and update-wave timing, N = 3</title>
+<style>
+svg{--paper:#F3F5F3; --panel:#FFFFFF; --ink:#15191C; --ink-2:#48525A; --ink-3:#7A848B;
+  --rule:#D5DBD8; --grid:#E5E9E6;
+  --data:#2350C8; --data-soft:#DDE5FB; --learn:#CF4F16; --learn-soft:#FCE4D7;
+  --store:#56665C; --store-soft:#E3EAE5; --ok:#2F7D4F; --warn:#B7791F;
+  --display:"Arial Narrow","Roboto Condensed","Segoe UI",system-ui,sans-serif;
+  --body:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;}
+@media (prefers-color-scheme:dark){svg{--paper:#101315; --panel:#171B1E; --ink:#E6E9EB; --ink-2:#AEB7BD; --ink-3:#7D878E;
+    --rule:#2C3337; --grid:#20262A;
+    --data:#86A6FF; --data-soft:#1B2847; --learn:#FF8F57; --learn-soft:#3A2116;
+    --store:#A3B8AA; --store-soft:#1F2824; --ok:#63C28A; --warn:#E3B04B;}}
+text{font-family:var(--body);fill:var(--ink);font-size:13px}
+.m{font-family:var(--mono);font-size:12px}
+.s{font-size:11.5px;fill:var(--ink-2)}
+.ms{font-family:var(--mono);font-size:10.5px;fill:var(--ink-2)}
+.b{font-weight:600}
+.h{font-family:var(--display);font-weight:700;font-size:14px}
+.mid{text-anchor:middle}
+.end{text-anchor:end}
+.muted{fill:var(--ink-3)}
+.tdata{fill:var(--data)}
+.tlearn{fill:var(--learn)}
+.bx{fill:var(--panel);stroke:var(--ink);stroke-width:1.25}
+.bx2{fill:var(--paper);stroke:var(--ink-3);stroke-width:1}
+.bxd{fill:var(--data-soft);stroke:var(--data);stroke-width:1.25}
+.bxl{fill:var(--learn-soft);stroke:var(--learn);stroke-width:1.5}
+.bxs{fill:var(--store-soft);stroke:var(--store);stroke-width:1.25}
+.frame{fill:none;stroke:var(--ink-3);stroke-width:1;stroke-dasharray:5 4}
+.core{fill:var(--panel);stroke:var(--ink);stroke-width:1.5}
+.ld{fill:none;stroke:var(--data);stroke-width:2}
+.ll{fill:none;stroke:var(--learn);stroke-width:2.25}
+.ls{fill:none;stroke:var(--store);stroke-width:1.75}
+.lk{fill:none;stroke:var(--ink-2);stroke-width:1.5}
+.lg{fill:none;stroke:var(--grid);stroke-width:1}
+.lr{fill:none;stroke:var(--rule);stroke-width:1}
+.dash{stroke-dasharray:4 4}
+.halo{fill:none;stroke:var(--panel);stroke-width:9}
+.fd{fill:var(--data)} .fl{fill:var(--learn)} .fs{fill:var(--store)} .fk{fill:var(--ink-2)}
+.fsoftd{fill:var(--data-soft)} .fsoftl{fill:var(--learn-soft)} .fsofts{fill:var(--store-soft)}
+.fp{fill:var(--panel)} .fpp{fill:var(--paper)}
+.ghost{fill:none;stroke:var(--ink-3);stroke-width:1;stroke-dasharray:2 2}
+</style>
+<rect x="-15.5" y="-15.5" width="791" height="284" rx="10" style="fill:var(--panel);stroke:var(--rule)"/>
+<rect x="-3402.6315789473683" y="30" width="35.1578947368421" height="197" rx="3" style="fill:var(--ink);opacity:0.08"></rect>
+<line x1="78" y1="44.5" x2="750" y2="44.5" class="lg"></line>
+<text x="70" y="48.5" class="end ms">accept</text>
+<line x1="78" y1="65.5" x2="750" y2="65.5" class="lg"></line>
+<text x="70" y="69.5" class="end ms">PE(0,0)</text>
+<line x1="78" y1="86.5" x2="750" y2="86.5" class="lg"></line>
+<text x="70" y="90.5" class="end ms">diag 1</text>
+<line x1="78" y1="107.5" x2="750" y2="107.5" class="lg"></line>
+<text x="70" y="111.5" class="end ms">diag 2</text>
+<line x1="78" y1="128.5" x2="750" y2="128.5" class="lg"></line>
+<text x="70" y="132.5" class="end ms">diag 3</text>
+<line x1="78" y1="149.5" x2="750" y2="149.5" class="lg"></line>
+<text x="70" y="153.5" class="end ms">diag 4</text>
+<line x1="78" y1="170.5" x2="750" y2="170.5" class="lg"></line>
+<text x="70" y="174.5" class="end ms">push</text>
+<line x1="78" y1="191.5" x2="750" y2="191.5" class="lg"></line>
+<text x="70" y="195.5" class="end ms">retire</text>
+<line x1="78" y1="212.5" x2="750" y2="212.5" class="lg"></line>
+<text x="70" y="216.5" class="end ms">R commit</text>
+<text x="95.57894736842105" y="24" class="mid ms">0</text>
+<text x="130.73684210526315" y="24" class="mid ms">1</text>
+<text x="165.89473684210526" y="24" class="mid ms">2</text>
+<text x="201.05263157894734" y="24" class="mid ms">3</text>
+<text x="236.21052631578945" y="24" class="mid ms">4</text>
+<text x="271.36842105263156" y="24" class="mid ms">5</text>
+<text x="306.52631578947364" y="24" class="mid ms">6</text>
+<text x="341.6842105263158" y="24" class="mid ms">7</text>
+<text x="376.84210526315786" y="24" class="mid ms">8</text>
+<text x="412" y="24" class="mid ms">9</text>
+<text x="447.1578947368421" y="24" class="mid ms">10</text>
+<text x="482.31578947368416" y="24" class="mid ms">11</text>
+<text x="517.4736842105262" y="24" class="mid ms">12</text>
+<text x="552.6315789473683" y="24" class="mid ms">13</text>
+<text x="587.7894736842104" y="24" class="mid ms">14</text>
+<text x="622.9473684210526" y="24" class="mid ms">15</text>
+<text x="658.1052631578947" y="24" class="mid ms">16</text>
+<text x="693.2631578947368" y="24" class="mid ms">17</text>
+<text x="728.4210526315788" y="24" class="mid ms">18</text>
+<text x="70" y="24" class="end ms">edge</text>
+<polyline points="728.4210526315788,44.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="693.2631578947368,44.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="658.1052631578947,44.5 728.4210526315788,65.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="622.9473684210526,44.5 693.2631578947368,65.5 728.4210526315788,86.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="587.7894736842104,44.5 658.1052631578947,65.5 693.2631578947368,86.5 728.4210526315788,107.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="552.6315789473683,44.5 622.9473684210526,65.5 658.1052631578947,86.5 693.2631578947368,107.5 728.4210526315788,128.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="517.4736842105262,44.5 587.7894736842104,65.5 622.9473684210526,86.5 658.1052631578947,107.5 693.2631578947368,128.5 728.4210526315788,149.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="482.31578947368416,44.5 552.6315789473683,65.5 587.7894736842104,86.5 622.9473684210526,107.5 658.1052631578947,128.5 693.2631578947368,149.5 728.4210526315788,170.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="447.1578947368421,44.5 517.4736842105262,65.5 552.6315789473683,86.5 587.7894736842104,107.5 622.9473684210526,128.5 658.1052631578947,149.5 693.2631578947368,170.5 728.4210526315788,191.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="412,44.5 482.31578947368416,65.5 517.4736842105262,86.5 552.6315789473683,107.5 587.7894736842104,128.5 622.9473684210526,149.5 658.1052631578947,170.5 693.2631578947368,191.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="376.84210526315786,44.5 447.1578947368421,65.5 482.31578947368416,86.5 517.4736842105262,107.5 552.6315789473683,128.5 587.7894736842104,149.5 622.9473684210526,170.5 658.1052631578947,191.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="341.6842105263158,44.5 412,65.5 447.1578947368421,86.5 482.31578947368416,107.5 517.4736842105262,128.5 552.6315789473683,149.5 587.7894736842104,170.5 622.9473684210526,191.5" style="fill:none;stroke:var(--data);stroke-width:1.4;opacity:0.85"></polyline>
+<text x="345.6842105263158" y="38.5" class="ms">S7</text>
+<polyline points="306.52631578947364,44.5 376.84210526315786,65.5 412,86.5 447.1578947368421,107.5 482.31578947368416,128.5 517.4736842105262,149.5 552.6315789473683,170.5 587.7894736842104,191.5" style="fill:none;stroke:var(--ink-3);stroke-width:1.4;opacity:0.85"></polyline>
+<text x="310.52631578947364" y="38.5" class="ms">S6</text>
+<polyline points="271.36842105263156,44.5 341.6842105263158,65.5 376.84210526315786,86.5 412,107.5 447.1578947368421,128.5 482.31578947368416,149.5 517.4736842105262,170.5 552.6315789473683,191.5" style="fill:none;stroke:var(--ink-3);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="236.21052631578945,44.5 306.52631578947364,65.5 341.6842105263158,86.5 376.84210526315786,107.5 412,128.5 447.1578947368421,149.5 482.31578947368416,170.5 517.4736842105262,191.5" style="fill:none;stroke:var(--ink-3);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="201.05263157894734,44.5 271.36842105263156,65.5 306.52631578947364,86.5 341.6842105263158,107.5 376.84210526315786,128.5 412,149.5 447.1578947368421,170.5 482.31578947368416,191.5" style="fill:none;stroke:var(--ink-3);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="165.89473684210526,44.5 236.21052631578945,65.5 271.36842105263156,86.5 306.52631578947364,107.5 341.6842105263158,128.5 376.84210526315786,149.5 412,170.5 447.1578947368421,191.5" style="fill:none;stroke:var(--ink-3);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="130.73684210526315,44.5 201.05263157894734,65.5 236.21052631578945,86.5 271.36842105263156,107.5 306.52631578947364,128.5 341.6842105263158,149.5 376.84210526315786,170.5 412,191.5" style="fill:none;stroke:var(--ink-3);stroke-width:1.4;opacity:0.85"></polyline>
+<polyline points="95.57894736842105,44.5 165.89473684210526,65.5 201.05263157894734,86.5 236.21052631578945,107.5 271.36842105263156,128.5 306.52631578947364,149.5 341.6842105263158,170.5 376.84210526315786,191.5" style="fill:none;stroke:var(--ink);stroke-width:2.5;opacity:1"></polyline>
+<text x="99.57894736842105" y="38.5" class="ms">S0</text>
+<polyline points="376.84210526315786,191.5 394.4210526315789,65.5 429.57894736842104,86.5 464.7368421052631,107.5 499.8947368421052,128.5 535.0526315789473,149.5" style="fill:none;stroke:var(--panel);stroke-width:7"></polyline>
+<polyline points="376.84210526315786,191.5 394.4210526315789,65.5 429.57894736842104,86.5 464.7368421052631,107.5 499.8947368421052,128.5 535.0526315789473,149.5" style="fill:none;stroke:var(--learn);stroke-width:3;stroke-linejoin:round"></polyline>
+<line x1="376.84210526315786" y1="191.5" x2="552.6315789473683" y2="212.5" style="stroke:var(--learn);stroke-width:2;stroke-dasharray:5 4"></line>
+<circle cx="552.6315789473683" cy="212.5" r="5" class="fl"></circle>
+<circle cx="376.84210526315786" cy="191.5" r="5" class="fl"></circle>
+<text x="400.4210526315789" y="63.5" class="ms tlearn b">U0</text>
+<text x="464.7368421052631" y="228.5" class="mid ms tlearn">Δr pipe · 2N−1</text>
+<text x="78" y="249" class="ms muted">grey = old W · blue = updated W · bold = S0 · orange = S0's update (half a clock after the PE multiplies)</text>
+</svg>
