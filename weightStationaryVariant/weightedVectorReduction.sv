@@ -30,20 +30,12 @@ module weightedVectorReduction #(
     genvar term;
     generate
         for (term = 0; term < N; term = term + 1) begin : reduction_terms
-            logic signed [PRODUCT_WIDTH-1:0] extendedInput;
-            logic signed [PRODUCT_WIDTH-1:0] extendedWeight;
-
-            // Explicit signed extension makes the multiply expression
-            // PRODUCT_WIDTH wide, preserving every matrix/coefficient bit.
-            assign extendedInput =
-                {{REDUCTION_WEIGHT_WIDTH
-                   {inputData[term][MATRIX_RESULT_WIDTH-1]}},
-                 inputData[term]};
-            assign extendedWeight =
-                {{MATRIX_RESULT_WIDTH
-                   {reductionWeight[term][REDUCTION_WEIGHT_WIDTH-1]}},
-                 reductionWeight[term]};
-            assign product[term] = extendedInput * extendedWeight;
+            // A signed MATRIX_RESULT_WIDTH x REDUCTION_WEIGHT_WIDTH product
+            // is exactly PRODUCT_WIDTH bits, so every bit is preserved.
+            // Keep the operands at native width: explicit sign extension
+            // to PRODUCT_WIDTH makes synthesis build a truncated
+            // PRODUCT_WIDTH x PRODUCT_WIDTH multiplier instead.
+            assign product[term] = inputData[term] * reductionWeight[term];
             assign extendedProduct[term] =
                 {{(ACCUMULATOR_WIDTH-PRODUCT_WIDTH)
                    {product[term][PRODUCT_WIDTH-1]}},
