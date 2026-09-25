@@ -315,13 +315,13 @@ The September 24, 2026 fit with Quartus Prime 25.1std Lite, at the defaults
 
 | Metric | Post-fit |
 | --- | ---: |
-| Logic | 1,565 / 32,070 ALMs (5%) |
-| Registers | 1,168 |
+| Logic | 1,355 / 32,070 ALMs (4%) |
+| Registers | 1,169 |
 | Block memory | 1,048 / 4,065,280 bits (<1%), 5 / 397 RAM blocks |
-| DSP blocks | 18 / 87 (21%) |
+| DSP blocks | 15 / 87 (17%) |
 | Pins | 1 physical clock pin, 258 virtual pins |
-| Worst setup / hold slack | −3.665 ns / +0.143 ns |
-| Lowest reported Fmax | 73.18 MHz |
+| Worst setup / hold slack | −2.457 ns / +0.138 ns |
+| Lowest reported Fmax | 80.28 MHz |
 
 `NN_Acceleration.sdc` sets a **100 MHz implementation target** (10 ns), distinct
 from the board's 50 MHz oscillator. The fit does **not** meet the 100 MHz target.
