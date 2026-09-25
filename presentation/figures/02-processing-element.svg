@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 -16 572 362" width="572" height="362" role="img" aria-label="Processing element: x enters from the left and is registered out to the right. A tap feeds a multiplier with the weight register. The product is added to the partial sum entering from the top and registered out the bottom. In load mode the top input is written into the weight register. A learning update adds or subtracts one LSB with saturation.">
+<title>Processing element</title>
+<style>
+svg{--paper:#F3F5F3; --panel:#FFFFFF; --ink:#15191C; --ink-2:#48525A; --ink-3:#7A848B;
+  --rule:#D5DBD8; --grid:#E5E9E6;
+  --data:#2350C8; --data-soft:#DDE5FB; --learn:#CF4F16; --learn-soft:#FCE4D7;
+  --store:#56665C; --store-soft:#E3EAE5; --ok:#2F7D4F; --warn:#B7791F;
+  --display:"Arial Narrow","Roboto Condensed","Segoe UI",system-ui,sans-serif;
+  --body:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;}
+@media (prefers-color-scheme:dark){svg{--paper:#101315; --panel:#171B1E; --ink:#E6E9EB; --ink-2:#AEB7BD; --ink-3:#7D878E;
+    --rule:#2C3337; --grid:#20262A;
+    --data:#86A6FF; --data-soft:#1B2847; --learn:#FF8F57; --learn-soft:#3A2116;
+    --store:#A3B8AA; --store-soft:#1F2824; --ok:#63C28A; --warn:#E3B04B;}}
+text{font-family:var(--body);fill:var(--ink);font-size:13px}
+.m{font-family:var(--mono);font-size:12px}
+.s{font-size:11.5px;fill:var(--ink-2)}
+.ms{font-family:var(--mono);font-size:10.5px;fill:var(--ink-2)}
+.b{font-weight:600}
+.h{font-family:var(--display);font-weight:700;font-size:14px}
+.mid{text-anchor:middle}
+.end{text-anchor:end}
+.muted{fill:var(--ink-3)}
+.tdata{fill:var(--data)}
+.tlearn{fill:var(--learn)}
+.bx{fill:var(--panel);stroke:var(--ink);stroke-width:1.25}
+.bx2{fill:var(--paper);stroke:var(--ink-3);stroke-width:1}
+.bxd{fill:var(--data-soft);stroke:var(--data);stroke-width:1.25}
+.bxl{fill:var(--learn-soft);stroke:var(--learn);stroke-width:1.5}
+.bxs{fill:var(--store-soft);stroke:var(--store);stroke-width:1.25}
+.frame{fill:none;stroke:var(--ink-3);stroke-width:1;stroke-dasharray:5 4}
+.core{fill:var(--panel);stroke:var(--ink);stroke-width:1.5}
+.ld{fill:none;stroke:var(--data);stroke-width:2}
+.ll{fill:none;stroke:var(--learn);stroke-width:2.25}
+.ls{fill:none;stroke:var(--store);stroke-width:1.75}
+.lk{fill:none;stroke:var(--ink-2);stroke-width:1.5}
+.lg{fill:none;stroke:var(--grid);stroke-width:1}
+.lr{fill:none;stroke:var(--rule);stroke-width:1}
+.dash{stroke-dasharray:4 4}
+.halo{fill:none;stroke:var(--panel);stroke-width:9}
+.fd{fill:var(--data)} .fl{fill:var(--learn)} .fs{fill:var(--store)} .fk{fill:var(--ink-2)}
+.fsoftd{fill:var(--data-soft)} .fsoftl{fill:var(--learn-soft)} .fsofts{fill:var(--store-soft)}
+.fp{fill:var(--panel)} .fpp{fill:var(--paper)}
+.ghost{fill:none;stroke:var(--ink-3);stroke-width:1;stroke-dasharray:2 2}
+</style>
+<rect x="-15.5" y="-15.5" width="571" height="361" rx="10" style="fill:var(--panel);stroke:var(--rule)"/>
+<defs>
+          <marker id="f2d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="fd"/></marker>
+          <marker id="f2l" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="fl"/></marker>
+          <marker id="f2k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="fk"/></marker>
+        </defs>
+        <rect x="120" y="50" width="280" height="220" rx="10" class="core"/>
+        <text x="132" y="262" class="ms">PE(i, j)</text>
+        <!-- psum in -->
+        <line x1="330" y1="10" x2="330" y2="125" class="ld" marker-end="url(#f2d)"/>
+        <text x="340" y="24" class="s">partial sum in</text>
+        <!-- load path -->
+        <polyline points="330,83 222,83" class="lk dash" marker-end="url(#f2k)"/>
+        <text x="276" y="76" class="mid ms">load: w ← top</text>
+        <!-- update -->
+        <line x1="20" y1="83" x2="158" y2="83" class="ll" marker-end="url(#f2l)"/>
+        <text x="20" y="58" class="s tlearn">update, 1 LSB:</text><text x="20" y="74" class="s tlearn">w ← sat(w ± 1)</text>
+        <!-- w reg -->
+        <rect x="160" y="66" width="60" height="34" rx="4" class="bx"/>
+        <text x="190" y="88" class="mid m b">w</text>
+        <line x1="190" y1="100" x2="190" y2="125" class="lk" marker-end="url(#f2k)"/>
+        <!-- multiplier -->
+        <circle cx="190" cy="140" r="13" class="bx"/><text x="190" y="145" class="mid m">×</text>
+        <line x1="203" y1="140" x2="315" y2="140" class="ld" marker-end="url(#f2d)"/>
+        <text x="259" y="132" class="mid ms">x·w (2·WIDTH)</text>
+        <circle cx="330" cy="140" r="13" class="bx"/><text x="330" y="145" class="mid m">+</text>
+        <!-- x path -->
+        <line x1="20" y1="195" x2="118" y2="195" class="ld" marker-end="url(#f2d)"/>
+        <text x="20" y="186" class="s">x in (+ valid)</text>
+        <line x1="120" y1="195" x2="250" y2="195" class="ld"/>
+        <circle cx="190" cy="195" r="3.5" class="fd"/>
+        <line x1="190" y1="195" x2="190" y2="155" class="ld" marker-end="url(#f2d)"/>
+        <rect x="250" y="183" width="44" height="24" rx="3" class="bxd"/><text x="272" y="199" class="mid ms">reg</text>
+        <line x1="294" y1="195" x2="400" y2="195" class="halo"/>
+        <!-- psum down (under x) -->
+        <line x1="330" y1="153" x2="330" y2="224" class="ld" marker-end="url(#f2d)"/>
+        <line x1="316" y1="195" x2="344" y2="195" class="halo"/>
+        <line x1="294" y1="195" x2="520" y2="195" class="ld" marker-end="url(#f2d)"/>
+        <text x="520" y="186" class="end s">x out → PE(i, j+1)</text>
+        <rect x="306" y="226" width="48" height="24" rx="3" class="bxd"/><text x="330" y="242" class="mid ms">reg</text>
+        <line x1="330" y1="250" x2="330" y2="318" class="ld" marker-end="url(#f2d)"/>
+        <text x="340" y="300" class="s">partial sum out → PE(i+1, j)</text>
+</svg>

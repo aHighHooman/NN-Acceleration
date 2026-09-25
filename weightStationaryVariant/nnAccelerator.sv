@@ -307,11 +307,13 @@ module nnAccelerator #(
 
     // This is the sole activation operation.  It runs on the aligned raw
     // matrix result immediately before the result FIFO captures the entry;
-    // ReLU is closed at zero, matching the column gate above.
+    // ReLU is closed at zero, matching the column gate above.  Zero passes
+    // through as zero, so only the sign bit selects, not a full compare.
     always_comb begin
         for (int lane = 0; lane < N; lane++)
             activatedMatrixResultData[lane] =
-                (passThrough || rawResultData[lane] > 0) ? rawResultData[lane] : '0;
+                (passThrough || !rawResultData[lane][MATRIX_RESULT_WIDTH-1])
+                    ? rawResultData[lane] : '0;
     end
 
     weightedVectorReduction #(

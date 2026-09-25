@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-16 -16 1032 332" width="1032" height="332" role="img" aria-label="State diagram. Reset leads to Loading. After N rows, Loading leads to Quiescent with weights loaded. The first accepted sample moves to Streaming; when all results and updates have drained it returns to Quiescent. From Quiescent, reloadWeights with reloadReady goes back to Loading. Mode changes and loadReductionWeights happen only in Quiescent.">
+<title>Operating lifecycle</title>
+<style>
+svg{--paper:#F3F5F3; --panel:#FFFFFF; --ink:#15191C; --ink-2:#48525A; --ink-3:#7A848B;
+  --rule:#D5DBD8; --grid:#E5E9E6;
+  --data:#2350C8; --data-soft:#DDE5FB; --learn:#CF4F16; --learn-soft:#FCE4D7;
+  --store:#56665C; --store-soft:#E3EAE5; --ok:#2F7D4F; --warn:#B7791F;
+  --display:"Arial Narrow","Roboto Condensed","Segoe UI",system-ui,sans-serif;
+  --body:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;}
+@media (prefers-color-scheme:dark){svg{--paper:#101315; --panel:#171B1E; --ink:#E6E9EB; --ink-2:#AEB7BD; --ink-3:#7D878E;
+    --rule:#2C3337; --grid:#20262A;
+    --data:#86A6FF; --data-soft:#1B2847; --learn:#FF8F57; --learn-soft:#3A2116;
+    --store:#A3B8AA; --store-soft:#1F2824; --ok:#63C28A; --warn:#E3B04B;}}
+text{font-family:var(--body);fill:var(--ink);font-size:13px}
+.m{font-family:var(--mono);font-size:12px}
+.s{font-size:11.5px;fill:var(--ink-2)}
+.ms{font-family:var(--mono);font-size:10.5px;fill:var(--ink-2)}
+.b{font-weight:600}
+.h{font-family:var(--display);font-weight:700;font-size:14px}
+.mid{text-anchor:middle}
+.end{text-anchor:end}
+.muted{fill:var(--ink-3)}
+.tdata{fill:var(--data)}
+.tlearn{fill:var(--learn)}
+.bx{fill:var(--panel);stroke:var(--ink);stroke-width:1.25}
+.bx2{fill:var(--paper);stroke:var(--ink-3);stroke-width:1}
+.bxd{fill:var(--data-soft);stroke:var(--data);stroke-width:1.25}
+.bxl{fill:var(--learn-soft);stroke:var(--learn);stroke-width:1.5}
+.bxs{fill:var(--store-soft);stroke:var(--store);stroke-width:1.25}
+.frame{fill:none;stroke:var(--ink-3);stroke-width:1;stroke-dasharray:5 4}
+.core{fill:var(--panel);stroke:var(--ink);stroke-width:1.5}
+.ld{fill:none;stroke:var(--data);stroke-width:2}
+.ll{fill:none;stroke:var(--learn);stroke-width:2.25}
+.ls{fill:none;stroke:var(--store);stroke-width:1.75}
+.lk{fill:none;stroke:var(--ink-2);stroke-width:1.5}
+.lg{fill:none;stroke:var(--grid);stroke-width:1}
+.lr{fill:none;stroke:var(--rule);stroke-width:1}
+.dash{stroke-dasharray:4 4}
+.halo{fill:none;stroke:var(--panel);stroke-width:9}
+.fd{fill:var(--data)} .fl{fill:var(--learn)} .fs{fill:var(--store)} .fk{fill:var(--ink-2)}
+.fsoftd{fill:var(--data-soft)} .fsoftl{fill:var(--learn-soft)} .fsofts{fill:var(--store-soft)}
+.fp{fill:var(--panel)} .fpp{fill:var(--paper)}
+.ghost{fill:none;stroke:var(--ink-3);stroke-width:1;stroke-dasharray:2 2}
+</style>
+<rect x="-15.5" y="-15.5" width="1031" height="331" rx="10" style="fill:var(--panel);stroke:var(--rule)"/>
+<defs>
+        <marker id="f9k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="fk"/></marker>
+        <marker id="f9d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="fd"/></marker>
+      </defs>
+      <rect x="20" y="110" width="140" height="64" rx="10" class="bx2"/>
+      <text x="90" y="138" class="mid h">RESET</text><text x="90" y="158" class="mid ms">FIFOs, pipes, R = 0</text>
+      <rect x="230" y="110" width="170" height="64" rx="10" class="bx"/>
+      <text x="315" y="138" class="mid h">LOADING</text><text x="315" y="158" class="mid ms">weightReady · N rows</text>
+      <rect x="490" y="110" width="200" height="64" rx="10" class="bx" style="stroke-width:2.5"/>
+      <text x="590" y="138" class="mid h">QUIESCENT</text><text x="590" y="158" class="mid ms">loaded · nothing in flight</text>
+      <rect x="800" y="110" width="180" height="64" rx="10" class="bxd"/>
+      <text x="890" y="138" class="mid h">STREAMING</text><text x="890" y="158" class="mid ms">modes must stay stable</text>
+      <line x1="160" y1="142" x2="228" y2="142" class="lk" marker-end="url(#f9k)"/>
+      <text x="194" y="134" class="mid ms">rst_n = 1</text>
+      <line x1="400" y1="142" x2="488" y2="142" class="lk" marker-end="url(#f9k)"/>
+      <text x="444" y="134" class="mid ms">Nth row</text>
+      <text x="444" y="160" class="mid ms">weightsLoaded</text>
+      <path d="M690,126 C740,96 760,96 798,126" class="ld" marker-end="url(#f9d)"/>
+      <text x="745" y="92" class="mid ms">first accept</text>
+      <path d="M800,160 C760,190 740,190 692,160" class="lk" marker-end="url(#f9k)"/>
+      <text x="745" y="206" class="mid ms">all retired, Δr drained</text>
+      <path d="M560,174 C540,250 360,250 330,176" class="lk" marker-end="url(#f9k)"/>
+      <text x="445" y="262" class="mid ms">reloadWeights ∧ reloadReady</text>
+      <path d="M560,110 C540,50 640,50 620,108" class="lk" marker-end="url(#f9k)"/>
+      <text x="590" y="40" class="mid ms">set passThrough / reduceOutput</text>
+      <text x="590" y="54" class="mid ms">pulse loadReductionWeights</text>
+      <text x="20" y="290" class="ms">rst_n = 0 resets the core on a rising clk edge. Pending samples are discarded; reload matrix and reduction weights before streaming.</text>
+</svg>

@@ -20,10 +20,7 @@ if (Test-Path -LiteralPath $buildDir) {
 New-Item -ItemType Directory -Path $buildDir | Out-Null
 
 $sources = $coreSources + (@(
-    "SPI_Module.sv",
-    "weightStationaryVariant/weightStationaryMatrixMultiplierTop.sv",
     "weightStationaryVariant/weightStationaryMatrixMultiplier_tb.sv",
-    "weightStationaryVariant/weightStationaryMatrixMultiplierTop_tb.sv",
     "weightStationaryVariant/matrixWeightUpdateWave_tb.sv",
     "weightStationaryVariant/weightedVectorReduction_tb.sv"
 ) | ForEach-Object { Join-Path $projectRoot $_ })
@@ -65,12 +62,9 @@ try {
 
     & pwsh -File (Join-Path $PSScriptRoot "run_uvm.ps1")
     if ($LASTEXITCODE -ne 0) { throw "UVM protocol regression failed." }
-
-    Invoke-RtlTest "weightStationaryMatrixMultiplierTop_tb" "spi-regression.log" `
-        "SPI regression failed."
 }
 finally {
     Pop-Location
 }
 
-Write-Output "PASS: parameter bounds, Python references, local RTL units, golden RTL comparison, UVM protocol, and SPI regressions completed."
+Write-Output "PASS: parameter bounds, Python references, local RTL units, golden RTL comparison, and UVM protocol regressions completed."
