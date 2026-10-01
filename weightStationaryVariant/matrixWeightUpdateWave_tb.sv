@@ -1,295 +1,247 @@
 `timescale 1ns / 1ps
 
-module multiplierBlockWeightUpdate_testcase(
-    input  logic clk,
-    output logic done
-);
+// Exercise all PE roles, including the AD merge and loading suppression.
+module multiplierBlockWeightUpdate_testcase #(
+    parameter int ROLE = 0
+) (input logic clk, output logic done);
     localparam int WIDTH = 4;
-    localparam int RESULT_WIDTH = 2*WIDTH + 1;
-
-    logic rst_n, advance, loadWeight, updateWeight;
+    localparam int RESULT_WIDTH = 2*WIDTH+2;
+    logic rst_n, advance, loadWeight, captureWeight, updateWeight;
     logic signed [1:0] updateDirection;
-    logic signed [WIDTH-1:0] leftIn, rightOut;
-    logic leftValid, rightValid;
-    logic signed [RESULT_WIDTH-1:0] topIn, bottomOut;
-    logic topValid, bottomValid;
-
-    weightStationaryProcessingElement #(
-        .WIDTH(WIDTH), .RESULT_WIDTH(RESULT_WIDTH)
-    ) dut (
-        .clk(clk), .rst_n(rst_n), .advance(advance),
-        .loadWeight(loadWeight), .updateWeight(updateWeight),
-        .updateDirection(updateDirection),
-        .leftIn(leftIn), .leftValid(leftValid),
-        .topIn(topIn), .topValid(topValid),
-        .rightOut(rightOut), .rightValid(rightValid),
-        .bottomOut(bottomOut), .bottomValid(bottomValid)
+    logic signed [WIDTH-1:0] activationIn, activationOut;
+    logic signed [RESULT_WIDTH-1:0] psumIn, lowerPsumIn, psumOut;
+    weightStationaryProcessingElement #(.WIDTH(WIDTH), .RESULT_WIDTH(RESULT_WIDTH), .ROLE(ROLE)) dut (
+        .clk(clk), .rst_n(rst_n), .advance(advance), .loadWeight(loadWeight),
+        .captureWeight(captureWeight), .updateWeight(updateWeight), .updateDirection(updateDirection),
+        .activationIn(activationIn), .psumIn(psumIn), .lowerPsumIn(lowerPsumIn),
+        .activationOut(activationOut), .psumOut(psumOut)
     );
 
-    initial begin
-        done = 1'b0;
-        rst_n = 1'b0;
-        advance = 1'b1;
-        loadWeight = 1'b0;
-        updateWeight = 1'b0;
-        updateDirection = 2'sd0;
-        leftIn = '0;
-        leftValid = 1'b0;
-        topIn = '0;
-        topValid = 1'b0;
+    task automatic load_weight(input int value);
+        @(negedge clk);
+        advance = 1; loadWeight = 1; captureWeight = 0; updateWeight = 1;
+        updateDirection = 1; psumIn = value;
+        // Array boundaries force activation zero during loading. The AD lower
+        // chain must still be excluded from its downward weight shift.
+        activationIn = 0; lowerPsumIn = 123;
+        @(posedge clk); #1;
+        if (psumOut !== value || activationOut !== 0)
+            $fatal(1, "ROLE=%0d MAC load path did not suppress computation", ROLE);
+        @(negedge clk);
+        loadWeight = 0; captureWeight = 1; psumIn = 0;
+        @(posedge clk); #1;
+        if (dut.weightReg !== value) $fatal(1, "ROLE=%0d capture failed", ROLE);
+        @(negedge clk) begin captureWeight = 0; updateWeight = 0; lowerPsumIn = 0; end
+    endtask
 
+    task automatic apply_update(input int direction, input int expectedWeight);
+        @(negedge clk); updateWeight = 1; updateDirection = direction;
+        @(posedge clk); #1;
+        if (dut.weightReg !== expectedWeight)
+            $fatal(1, "ROLE=%0d saturated update got%0d expected%0d", ROLE, dut.weightReg, expectedWeight);
+        @(negedge clk) updateWeight = 0;
+    endtask
+
+    initial begin : test_pe
+        logic signed [WIDTH-1:0] heldAct, heldWeight;
+        logic signed [RESULT_WIDTH-1:0] heldPsum;
+        done = 0; rst_n = 0; advance = 1;
+        loadWeight = 0; captureWeight = 0; updateWeight = 0;
+        updateDirection = 0; activationIn = 0; psumIn = 0; lowerPsumIn = 0;
         repeat (3) @(posedge clk);
-        @(negedge clk) rst_n = 1'b1;
-
-        load_pe_weight(0);
-        apply_pe_update(2'sd1, 1);
-        apply_pe_update(2'sd0, 1);
-        apply_pe_update(-2'sd1, 0);
-
-        load_pe_weight(7);
-        apply_pe_update(2'sd1, 7);
-        load_pe_weight(-8);
-        apply_pe_update(-2'sd1, -8);
-
-        // No state, forwarded data, or valid bit may move while stalled.
-        load_pe_weight(2);
+        @(negedge clk) rst_n = 1;
+        load_weight(0);
+        apply_update(1, 1); apply_update(0, 1); apply_update(-1, 0);
+        load_weight(7); apply_update(1, 7);
+        load_weight(-8); apply_update(-1, -8);
+        load_weight(3);
         @(negedge clk);
-        advance = 1'b0;
-        updateWeight = 1'b1;
-        updateDirection = 2'sd1;
-        leftIn = 3;
-        leftValid = 1'b1;
-        topIn = 4;
-        topValid = 1'b1;
-        repeat (2) begin
+        activationIn = -2; psumIn = 5; lowerPsumIn = -7;
+        updateWeight = 1; updateDirection = 1;
+        @(posedge clk); #1;
+        if (psumOut !== ((ROLE == 1) ? -8 : -1) || dut.weightReg !== 4)
+            $fatal(1, "ROLE=%0d update edge did not compute with old weight", ROLE);
+        if (activationOut !== ((ROLE == 1) ? 0 : -2))
+            $fatal(1, "ROLE=%0d activation forwarding incorrect", ROLE);
+        @(negedge clk) updateWeight = 0;
+        @(posedge clk); #1;
+        if (psumOut !== ((ROLE == 1) ? -10 : -3))
+            $fatal(1, "ROLE=%0d next sample did not use updated weight", ROLE);
+        heldAct = activationOut; heldPsum = psumOut; heldWeight = dut.weightReg;
+        @(negedge clk);
+        advance = 0; captureWeight = 1; updateWeight = 1;
+        activationIn = 7; psumIn = 79; lowerPsumIn = 91;
+        repeat (3) begin
             @(posedge clk); #1;
-            if (dut.weightReg !== 2 || rightValid || bottomValid)
-                $fatal(1, "PE state advanced while advance was low");
+            if (activationOut !== heldAct || psumOut !== heldPsum || dut.weightReg !== heldWeight)
+                $fatal(1, "ROLE=%0d state changed while stalled", ROLE);
         end
-
-        // Loading wins over a simultaneous update request.
-        @(negedge clk);
-        advance = 1'b1;
-        loadWeight = 1'b1;
-        topIn = 3;
-        updateDirection = -2'sd1;
-        @(posedge clk); #1;
-        if (dut.weightReg !== 3)
-            $fatal(1, "loadWeight did not have priority over updateWeight");
-
-        // The multiply on the update edge sees 3; the following edge sees 4.
-        @(negedge clk);
-        loadWeight = 1'b0;
-        updateDirection = 2'sd1;
-        leftIn = 2;
-        leftValid = 1'b1;
-        topIn = 0;
-        topValid = 1'b1;
-        @(posedge clk); #1;
-        if (bottomOut !== 6 || dut.weightReg !== 4)
-            $fatal(1, "update edge did not multiply with the old weight");
-        @(negedge clk) updateWeight = 1'b0;
-        @(posedge clk); #1;
-        if (bottomOut !== 8)
-            $fatal(1, "sample after the update did not use the new weight");
-
-        $display("PASS: PE ternary updates, saturation, stalls, and weight-version edge.");
-        done = 1'b1;
+        $display("PASS: PE ROLE=%0d loading, capture, signed MAC, saturation, old-weight edge, freeze", ROLE);
+        done = 1;
     end
-
-    task load_pe_weight(input integer value);
-        @(negedge clk);
-        advance = 1'b1;
-        loadWeight = 1'b1;
-        updateWeight = 1'b0;
-        updateDirection = 2'sd0;
-        topIn = value;
-        leftValid = 1'b0;
-        topValid = 1'b0;
-        @(posedge clk); #1;
-        if (dut.weightReg !== value)
-            $fatal(1, "PE load got %0d, expected %0d", dut.weightReg, value);
-        @(negedge clk) loadWeight = 1'b0;
-    endtask
-
-    task apply_pe_update(
-        input logic signed [1:0] direction,
-        input integer expected
-    );
-        @(negedge clk);
-        advance = 1'b1;
-        updateWeight = 1'b1;
-        updateDirection = direction;
-        @(posedge clk); #1;
-        if (dut.weightReg !== expected)
-            $fatal(1, "PE direction %0d got %0d, expected %0d",
-                   direction, dut.weightReg, expected);
-        @(negedge clk) updateWeight = 1'b0;
-    endtask
 endmodule
 
-module systolicWeightUpdateWave_testcase(
-    input  logic clk,
-    output logic done
-);
+module systolicWeightUpdateWave_testcase #(
+    parameter int N = 3
+) (input logic clk, output logic done);
     localparam int WIDTH = 8;
-    localparam int N = 3;
-    localparam int RESULT_WIDTH = 2*WIDTH + $clog2(N);
-
-    logic rst_n, advance, loadWeight, updateValid;
-    logic signed [WIDTH-1:0] row[N], col[N];
-    logic rowValid[N];
+    localparam int RESULT_WIDTH = 2*WIDTH+$clog2(N);
+    logic rst_n, advance, loadWeight, captureWeight, updateValid, actValid;
+    logic signed [WIDTH-1:0] rowLeft[N], rowRight[N], colTop[N], colBottom[N];
     logic signed [1:0] rowDirection[N], columnDirection[N];
     logic signed [RESULT_WIDTH-1:0] result[N];
     logic resultValid[N], pipelineBusy;
-
+    wire signed [WIDTH-1:0] resident[N][N];
+    int expected[N][N];
+    bit historyValid[N-1];
+    int historyRow[N-1][N], historyCol[N-1][N];
     weightStationarySystolicArray #(.WIDTH(WIDTH), .N(N)) dut (
-        .clk(clk), .rst_n(rst_n), .advance(advance),
-        .loadWeight(loadWeight),
-        .rowDirection(rowDirection), .columnDirection(columnDirection),
-        .updateValid(updateValid),
-        .row(row), .rowValid(rowValid), .col(col),
-        .result(result), .resultValid(resultValid),
-        .pipelineBusy(pipelineBusy)
+        .clk(clk), .rst_n(rst_n), .advance(advance), .loadWeight(loadWeight),
+        .captureWeight(captureWeight), .rowDirection(rowDirection),
+        .columnDirection(columnDirection), .updateValid(updateValid),
+        .rowLeft(rowLeft), .rowRight(rowRight), .actValid(actValid),
+        .colTop(colTop), .colBottom(colBottom), .result(result),
+        .resultValid(resultValid), .pipelineBusy(pipelineBusy)
     );
-
-    initial begin
-        done = 1'b0;
-        rst_n = 1'b0;
-        advance = 1'b1;
-        loadWeight = 1'b0;
-        updateValid = 1'b0;
-        for (int lane = 0; lane < N; lane++) begin
-            row[lane] = '0;
-            rowValid[lane] = 1'b0;
-            col[lane] = '0;
-            rowDirection[lane] = 2'sd0;
-            columnDirection[lane] = 2'sd0;
+    for (genvar r = 0; r < N; r++) begin : read_row
+        for (genvar c = 0; c < N; c++) begin : read_col
+            assign resident[r][c] = dut.row_loop[r].col_loop[c].pe.weightReg;
         end
-
-        repeat (3) @(posedge clk);
-        @(negedge clk) rst_n = 1'b1;
-        load_uniform_weights(0);
-
-        // P0 produces +, -, and zero local directions. P1 is accepted on the
-        // following advance, proving packages can occupy adjacent stages.
-        set_directions(1, 0, -1, 1, -1, 0);
-        pulse_package();
-        set_directions(1, 1, 1, 1, 1, 1);
-        advance_package(1'b1);
-        check_weights(2, -1, 0, 0, 0, 0, 0, 0, 0,
-                      "overlapping packages at diagonal zero");
-
-        // Freeze while both a data register and two update stages are live.
-        @(negedge clk);
-        advance = 1'b0;
-        updateValid = 1'b0;
-        row[0] = 5;
-        rowValid[0] = 1'b1;
-        repeat (2) begin
-            @(posedge clk); #1;
-            if (!dut.updateValidPipe[0] || !dut.updateValidPipe[1] ||
-                dut.row_loop[0].col_loop[0].pe.weightReg !== 2 ||
-                dut.row_loop[0].col_loop[0].pe.rightValid !== 1'b0)
-                $fatal(1, "array stall did not freeze data and update waves");
-        end
-
-        rowValid[0] = 1'b0;
-        advance_package(1'b0);
-        check_weights(2, 0, 0, 1, 0, 0, -1, 0, 0,
-                      "overlapping anti-diagonal one/two");
-        advance_package(1'b0);
-        check_weights(2, 0, 1, 1, 1, 0, 0, 1, 0,
-                      "overlapping anti-diagonal two/three");
-        advance_package(1'b0);
-        check_weights(2, 0, 1, 1, 1, 1, 0, 2, 0,
-                      "overlapping anti-diagonal three/four");
-        advance_package(1'b0);
-        check_weights(2, 0, 1, 1, 1, 1, 0, 2, 1,
-                      "second package completion");
-        // The final anti-diagonal state above proves both packages completed.
-        if (pipelineBusy)
-            $fatal(1, "update stages remained busy after both packages drained");
-
-        $display("PASS: anti-diagonal ordering, overlap, stall/resume, and completion.");
-        done = 1'b1;
     end
 
-    task set_directions(
-        input integer r0, input integer r1, input integer r2,
-        input integer c0, input integer c1, input integer c2
-    );
-        rowDirection[0] = r0;
-        rowDirection[1] = r1;
-        rowDirection[2] = r2;
-        columnDirection[0] = c0;
-        columnDirection[1] = c1;
-        columnDirection[2] = c2;
-    endtask
-
-    task load_uniform_weights(input integer value);
+    task automatic load_zero();
         @(negedge clk);
-        updateValid = 1'b0;
-        loadWeight = 1'b1;
-        advance = 1'b1;
+        advance = 1; updateValid = 0; actValid = 0; loadWeight = 1;
         for (int lane = 0; lane < N; lane++) begin
-            col[lane] = value;
-            rowValid[lane] = 1'b0;
+            colTop[lane] = 0; colBottom[lane] = 0;
+            rowLeft[lane] = 23; rowRight[lane] = -31;
         end
         repeat (N) @(posedge clk);
-        #1;
-        @(negedge clk) loadWeight = 1'b0;
-        check_weights(value, value, value, value, value, value,
-                      value, value, value, "uniform load");
-    endtask
-
-    task pulse_package();
-        @(negedge clk) updateValid = 1'b1;
+        @(negedge clk); loadWeight = 0; captureWeight = 1;
         @(posedge clk); #1;
+        for (int r = 0; r < N; r++)
+            for (int c = 0; c < N; c++) begin
+                expected[r][c] = 0;
+                if (resident[r][c] !== 0) $fatal(1, "N=%0d zero load corrupted", N);
+            end
+        for (int stage = 0; stage < N-1; stage++) historyValid[stage] = 0;
+        @(negedge clk); captureWeight = 0;
     endtask
 
-    task advance_package(input logic acceptPackage);
-        @(negedge clk);
-        advance = 1'b1;
-        updateValid = acceptPackage;
+    // Independently model the inward update phase and ternary outer product.
+    task automatic update_edge(input bit stepAdvance, input bit acceptPackage);
+        @(negedge clk); advance = stepAdvance; updateValid = acceptPackage;
+        if (stepAdvance) begin
+            for (int r = 0; r < N; r++)
+                for (int c = 0; c < N; c++) begin
+                    int phase, rd, cd;
+                    bit live;
+                    phase = (r+c < N) ? r+c : 2*N-2-r-c;
+                    live = phase == 0 ? acceptPackage : historyValid[phase-1];
+                    rd = phase == 0 ? int'($signed(rowDirection[r])) : historyRow[phase-1][r];
+                    cd = phase == 0 ? int'($signed(columnDirection[c])) : historyCol[phase-1][c];
+                    if (live) expected[r][c] += rd * cd;
+                end
+            for (int stage = N-2; stage > 0; stage--) begin
+                historyValid[stage] = historyValid[stage-1];
+                for (int lane = 0; lane < N; lane++) begin
+                    historyRow[stage][lane] = historyRow[stage-1][lane];
+                    historyCol[stage][lane] = historyCol[stage-1][lane];
+                end
+            end
+            historyValid[0] = acceptPackage;
+            for (int lane = 0; lane < N; lane++) begin
+                historyRow[0][lane] = $signed(rowDirection[lane]);
+                historyCol[0][lane] = $signed(columnDirection[lane]);
+            end
+        end
         @(posedge clk); #1;
+        for (int r = 0; r < N; r++)
+            for (int c = 0; c < N; c++)
+                if (resident[r][c] !== expected[r][c])
+                    $fatal(1, "N=%0d inward update PE[%0d][%0d] got%0d expected%0d",
+                        N, r, c, resident[r][c], expected[r][c]);
     endtask
 
-    task check_weights(
-        input integer w00, input integer w01, input integer w02,
-        input integer w10, input integer w11, input integer w12,
-        input integer w20, input integer w21, input integer w22,
-        input string label
-    );
-        if (dut.row_loop[0].col_loop[0].pe.weightReg !== w00 ||
-            dut.row_loop[0].col_loop[1].pe.weightReg !== w01 ||
-            dut.row_loop[0].col_loop[2].pe.weightReg !== w02 ||
-            dut.row_loop[1].col_loop[0].pe.weightReg !== w10 ||
-            dut.row_loop[1].col_loop[1].pe.weightReg !== w11 ||
-            dut.row_loop[1].col_loop[2].pe.weightReg !== w12 ||
-            dut.row_loop[2].col_loop[0].pe.weightReg !== w20 ||
-            dut.row_loop[2].col_loop[1].pe.weightReg !== w21 ||
-            dut.row_loop[2].col_loop[2].pe.weightReg !== w22)
-            $fatal(1, "%s: matrix weights did not match expected diagonal state", label);
-    endtask
+    function automatic int sample_lane(input int sampleIndex, input int lane);
+        return $signed(WIDTH'((sampleIndex+1)*(lane+1)*((sampleIndex+lane)%2 ? -1 : 1)));
+    endfunction
 
+    initial begin : test_array
+        int sampleIndex, streams, sum, version;
+        done = 0; rst_n = 0; advance = 1;
+        loadWeight = 0; captureWeight = 0; updateValid = 0; actValid = 0;
+        for (int lane = 0; lane < N; lane++) begin
+            rowLeft[lane] = 0; rowRight[lane] = 0; colTop[lane] = 0; colBottom[lane] = 0;
+            rowDirection[lane] = 0; columnDirection[lane] = 0;
+        end
+        repeat (3) @(posedge clk);
+        @(negedge clk) rst_n = 1;
+        load_zero();
+        for (int lane = 0; lane < N; lane++) begin
+            rowDirection[lane] = (lane%3)-1;
+            columnDirection[lane] = ((lane+1)%3)-1;
+        end
+        update_edge(1, 1);
+        for (int lane = 0; lane < N; lane++) begin rowDirection[lane] = 1; columnDirection[lane] = 1; end
+        update_edge(1, 1);
+        update_edge(0, 1); update_edge(0, 0);
+        repeat (N) update_edge(1, 0);
+        if (pipelineBusy) $fatal(1, "N=%0d update tail did not drain", N);
+
+        // Every sample must use one generation, even while adjacent packages
+        // update both corners and converge at the AD. Include stalls mid-wave.
+        load_zero();
+        streams = 3*N+2;
+        for (int tick = 0; tick < streams+N; tick++) begin
+            @(negedge clk);
+            advance = 1; updateValid = tick < 2; actValid = tick < streams;
+            for (int lane = 0; lane < N; lane++) begin
+                rowDirection[lane] = 1; columnDirection[lane] = 1;
+                rowLeft[lane] = tick >= lane && tick-lane < streams ? sample_lane(tick-lane, lane) : 0;
+                rowRight[lane] = tick >= N-1-lane && tick-(N-1-lane) < streams ?
+                    sample_lane(tick-(N-1-lane), lane) : 0;
+            end
+            @(posedge clk); #1;
+            sampleIndex = tick-(N-1);
+            for (int col = 0; col < N; col++) begin
+                if (resultValid[col] !== (sampleIndex >= 0 && sampleIndex < streams))
+                    $fatal(1, "N=%0d aligned valid wrong at advance%0d lane%0d", N, tick, col);
+                if (resultValid[col]) begin
+                    version = sampleIndex < 2 ? sampleIndex : 2;
+                    sum = 0;
+                    for (int row = 0; row < N; row++) sum += version * sample_lane(sampleIndex, row);
+                    if (result[col] !== sum)
+                        $fatal(1, "N=%0d sample%0d lane%0d mixed generations got%0d expected%0d",
+                            N, sampleIndex, col, result[col], sum);
+                end
+            end
+            if (tick == 1 || tick == N) begin
+                @(negedge clk) advance = 0;
+                repeat (2) @(posedge clk);
+            end
+        end
+        $display("PASS: N=%0d inward phase, signed/zero directions, overlapping packages, stalls, coherent sample generations", N);
+        done = 1;
+    end
 endmodule
 
 module matrixWeightUpdateWave_tb;
-    logic clk;
-    logic peDone, arrayDone;
-
+    logic clk = 0;
+    logic pe0, pe1, pe2, array2, array3, array4, array5, array8;
+    always #5 clk = ~clk;
+    multiplierBlockWeightUpdate_testcase #(.ROLE(0)) tl(.clk(clk), .done(pe0));
+    multiplierBlockWeightUpdate_testcase #(.ROLE(1)) ad(.clk(clk), .done(pe1));
+    multiplierBlockWeightUpdate_testcase #(.ROLE(2)) br(.clk(clk), .done(pe2));
+    systolicWeightUpdateWave_testcase #(.N(2)) n2(.clk(clk), .done(array2));
+    systolicWeightUpdateWave_testcase #(.N(3)) n3(.clk(clk), .done(array3));
+    systolicWeightUpdateWave_testcase #(.N(4)) n4(.clk(clk), .done(array4));
+    systolicWeightUpdateWave_testcase #(.N(5)) n5(.clk(clk), .done(array5));
+    systolicWeightUpdateWave_testcase #(.N(8)) n8(.clk(clk), .done(array8));
     initial begin
-        clk = 1'b0;
-        forever #5 clk = ~clk;
-    end
-
-    multiplierBlockWeightUpdate_testcase peTest(.clk(clk), .done(peDone));
-    systolicWeightUpdateWave_testcase arrayTest(.clk(clk), .done(arrayDone));
-
-    initial begin
-        wait(peDone && arrayDone);
-        $display("PASS: PE and focused anti-diagonal update-wave tests completed.");
+        wait(pe0 && pe1 && pe2 && array2 && array3 && array4 && array5 && array8);
+        $display("PASS: all PE roles and N=2,3,4,5,8 inward update-wave suites completed.");
         $finish;
     end
+    initial begin #100000; $fatal(1, "PE/update suite timeout"); end
 endmodule

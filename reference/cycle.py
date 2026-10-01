@@ -163,7 +163,12 @@ class CycleSnapshot:
     cycle: int
     W: tuple[tuple[int, ...], ...]
     R: tuple[int, ...]
-    pending_weight_row: tuple[int, ...] | None
+    weight_buffer: tuple[tuple[int, ...], ...]
+    weights_loaded: bool
+    loaded_weight_rows: int
+    loading_weights: bool
+    load_step: int
+    capture_weights: bool
     input_stage: tuple[int, ...] | None
     sample_context_fifo: tuple[SampleContext, ...]
     result_fifo: tuple[ResultEntry, ...]
@@ -270,8 +275,9 @@ class CycleReference:
     @property
     def in_flight(self) -> bool:
         return bool(
-            self._pending_weight_row is not None
-            or (not self._weights_loaded and self._loaded_weight_count)
+            (not self._weights_loaded and self._loaded_weight_rows)
+            or self._loading_weights
+            or self._capture_weights
             or self._input_stage is not None
             or self._sample_context_fifo
             or self._data_tokens
@@ -302,9 +308,13 @@ class CycleReference:
 
         n = self.config.n
         self._next_sample_index = 0
-        self._pending_weight_row: tuple[int, ...] | None = None
-        self._weight_load_pipe: list[tuple[int, ...] | None] = [None] * n
-        self._reduction_pipe: list[_ReductionWave | None] = [None] * (2 * n - 1)
+        self._weight_buffer = _zero_matrix(n)
+        self._load_psums = _zero_matrix(n)
+        self._loaded_weight_rows = 0
+        self._loading_weights = False
+        self._capture_weights = False
+        self._load_step = 0
+        self._reduction_pipe: list[_ReductionWave | None] = [None] * n
         self._input_stage: _Sample | None = None
         self._sample_context_fifo: deque[_Sample] = deque()
         self._result_fifo: deque[_ResultEntry] = deque()
@@ -321,7 +331,7 @@ class CycleReference:
 
         self._W = [row[:] for row in self._initial_W] if loaded else _zero_matrix(self.config.n)
         self._weights_loaded = loaded
-        self._loaded_weight_count = self.config.n if loaded else 0
+        self._loaded_weight_rows = 0
 
     def reset(self) -> None:
         """Return to the constructor's initial state."""
@@ -416,12 +426,12 @@ class CycleReference:
         direction = _zero_matrix(self.config.n)
         for row in range(self.config.n):
             for column in range(self.config.n):
-                if row + column == diagonal:
+                if min(row + column, 2 * self.config.n - 2 - row - column) == diagonal:
                     direction[row][column] = wave.direction[row][column]
         self._W = apply_matrix_update(self._W, direction, self.config.width)
 
     def _advance_matrix_waves(self, injected: _MatrixWave | None) -> None:
-        last_diagonal = 2 * self.config.n - 2
+        last_diagonal = self.config.n - 1
         next_waves: list[_MatrixWave] = []
         for wave in self._matrix_waves:
             self._apply_matrix_diagonal(wave, wave.next_diagonal)
@@ -455,10 +465,10 @@ class CycleReference:
         accepted: _Sample | None,
         input_pop: bool,
     ) -> None:
-        """Advance the data array and fixed result alignment one slot."""
+        """Advance the inward array and its complete registered AD result one slot."""
 
         W_before = [row[:] for row in self._W]
-        final_age = 2 * self.config.n - 1
+        final_age = self.config.n
         active: list[_DataToken] = []
         for token in self._data_tokens:
             token.age += 1
@@ -466,7 +476,7 @@ class CycleReference:
                 diagonal = token.age - 1
                 for row in range(self.config.n):
                     for column in range(self.config.n):
-                        if row + column == diagonal:
+                        if min(row + column, 2 * self.config.n - 2 - row - column) == diagonal:
                             token.observed_weights[row][column] = W_before[row][column]
             if token.age == final_age:
                 observed = token.observed_weights
@@ -579,7 +589,12 @@ class CycleReference:
             cycle=self._cycle,
             W=_matrix_tuple(self._W),
             R=tuple(self._R),
-            pending_weight_row=self._pending_weight_row,
+            weight_buffer=_matrix_tuple(self._weight_buffer),
+            weights_loaded=self._weights_loaded,
+            loaded_weight_rows=self._loaded_weight_rows,
+            loading_weights=self._loading_weights,
+            load_step=self._load_step,
+            capture_weights=self._capture_weights,
             input_stage=(
                 self._input_stage.input_vector if self._input_stage is not None else None
             ),
@@ -617,15 +632,11 @@ class CycleReference:
         result_valid = result_head is not None and context_head is not None
         result_retired = bool(result_valid and cycle_inputs.result_ready)
 
-        pending_weight_consumed = bool(
-            not self._weights_loaded and self._pending_weight_row is not None
-        )
-        consuming_final_weight_row = bool(
-            pending_weight_consumed and self._loaded_weight_count == self.config.n - 1
-        )
         weight_ready = bool(
             not self._weights_loaded
-            and (self._pending_weight_row is None or not consuming_final_weight_row)
+            and not self._loading_weights
+            and not self._capture_weights
+            and self._loaded_weight_rows < self.config.n
         )
         weight_accepted = bool(cycle_inputs.weight_valid and weight_ready)
 
@@ -648,7 +659,8 @@ class CycleReference:
         aligned_head_ready = bool(self._alignment)
         output_blocked = bool(result_full and not result_retired and aligned_head_ready)
         datapath_advance = (
-            pending_weight_consumed if not self._weights_loaded else not output_blocked
+            (self._loading_weights or self._capture_weights)
+            if not self._weights_loaded else not output_blocked
         )
 
         input_pop = bool(
@@ -658,6 +670,7 @@ class CycleReference:
         sample_can_accept = not context_full or result_retired
         input_ready = (
             self._weights_loaded
+            and not reload_accepted
             and (self._input_stage is None or input_pop)
             and sample_can_accept
         )
@@ -697,32 +710,51 @@ class CycleReference:
             self._advance_matrix_waves(injected_matrix)
             self._advance_reduction_waves(injected_reduction, cycle_inputs.load_reduction_weights)
 
-        pushed_weight = self._normalize_weight(cycle_inputs.weight_data) if weight_accepted else None
-        if pending_weight_consumed:
-            loaded_row = self._pending_weight_row
-            assert loaded_row is not None
-            self._weight_load_pipe = [loaded_row] + self._weight_load_pipe[:-1]
-            for row in range(self.config.n):
-                self._W[row] = list(self._weight_load_pipe[row]) if self._weight_load_pipe[row] is not None else [0] * self.config.n
-            self._loaded_weight_count += 1
-            if self._loaded_weight_count >= self.config.n:
-                self._weights_loaded = True
-                self._loaded_weight_count = 0
+        # Simulate the two independent load chains. Each edge consumes the
+        # previous psum registers; the AD lower input is gated during loading.
+        # Resident W remains unchanged until the explicit capture edge.
+        if self._loading_weights:
+            n, q = self.config.n, self._load_step
+            before = [row[:] for row in self._load_psums]
+            for row in range(n):
+                for column in range(n):
+                    if row + column <= n - 1:
+                        top = self._weight_buffer[n - 1 - q][column] if q >= column else 0
+                        self._load_psums[row][column] = top if row == 0 else before[row - 1][column]
+                    else:
+                        bottom = self._weight_buffer[q][column] if q >= n - column else 0
+                        self._load_psums[row][column] = bottom if row == n - 1 else before[row + 1][column]
+            if q == n - 1:
+                self._loading_weights = False
+                self._capture_weights = True
+                self._load_step = 0
+            else:
+                self._load_step += 1
+        elif self._capture_weights:
+            self._W = [row[:] for row in self._load_psums]
+            self._weights_loaded = True
+            self._capture_weights = False
+            self._loaded_weight_rows = 0
 
         if cycle_inputs.load_reduction_weights:
             self._R = list(self._normalize_reduction(cycle_inputs.reduction_weight))
 
         if reload_accepted:
             self._weights_loaded = False
-            self._loaded_weight_count = 0
-            self._weight_load_pipe = [None] * self.config.n
-            self._pending_weight_row = None
+            self._loaded_weight_rows = 0
+            self._weight_buffer = _zero_matrix(self.config.n)
+            self._loading_weights = False
+            self._capture_weights = False
+            self._load_step = 0
 
         if weight_accepted:
-            assert pushed_weight is not None
-            self._pending_weight_row = pushed_weight
-        elif pending_weight_consumed:
-            self._pending_weight_row = None
+            self._weight_buffer[self.config.n - 1 - self._loaded_weight_rows] = list(
+                self._normalize_weight(cycle_inputs.weight_data)
+            )
+            self._loaded_weight_rows += 1
+            if self._loaded_weight_rows == self.config.n:
+                self._loading_weights = True
+                self._load_step = 0
 
         if input_pop:
             self._input_stage = None

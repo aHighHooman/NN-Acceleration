@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import unittest
 from dataclasses import fields, replace
 
@@ -55,7 +56,12 @@ class CycleReferenceTests(unittest.TestCase):
         return (
             snapshot.W,
             snapshot.R,
-            snapshot.pending_weight_row,
+            snapshot.weight_buffer,
+            snapshot.weights_loaded,
+            snapshot.loaded_weight_rows,
+            snapshot.loading_weights,
+            snapshot.load_step,
+            snapshot.capture_weights,
             snapshot.input_stage,
             snapshot.sample_context_fifo,
             snapshot.result_fifo,
@@ -67,14 +73,19 @@ class CycleReferenceTests(unittest.TestCase):
         model.step(CycleInputs(reload_weights=True, result_ready=True))
         return was_loaded and not model.weights_loaded
 
-    def test_snapshot_is_small_and_post_edge(self) -> None:
+    def test_snapshot_is_semantic_and_post_edge(self) -> None:
         self.assertEqual(
             [field.name for field in fields(CycleSnapshot)],
             [
                 "cycle",
                 "W",
                 "R",
-                "pending_weight_row",
+                "weight_buffer",
+                "weights_loaded",
+                "loaded_weight_rows",
+                "loading_weights",
+                "load_step",
+                "capture_weights",
                 "input_stage",
                 "sample_context_fifo",
                 "result_fifo",
@@ -181,38 +192,25 @@ class CycleReferenceTests(unittest.TestCase):
             model.config.sample_context_depth,
         )
 
-    def test_absolute_n3_latency_is_e0_e7_e8(self) -> None:
-        model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
-        samples = [(1, 2, 3), (2, 0, -1), (-1, 1, 2)]
-        snapshots = [
-            model.step(self.drive(x=x, target=0, training=False))
-            for x in samples
-        ]
-        for _ in range(4):
-            snapshots.append(model.step(self.drive(valid=False, training=False)))
-
-        # The first input is accepted at E0 and no complete result exists in
-        # the architectural output storage through E6.
-        self.assertEqual(model.timings[0].accepted_at, 0)
-        self.assertTrue(all(snapshot.result_fifo == () for snapshot in snapshots[:7]))
-
-        e7 = model.step(self.drive(x=(0, -2, 1), target=0, training=False))
-        self.assertEqual(e7.cycle, 7)
-        self.assertEqual(len(e7.result_fifo), 1)
-        self.assertEqual(
-            e7.result_fifo[0].activated_result,
-            tuple(matrix_multiply(samples[0], self.initial_W(), self.config().width)),
-        )
-
-        e8 = model.step(self.drive(x=(3, 1, 0), target=0, training=False))
-        self.assertEqual(e8.cycle, 8)
-        self.assertEqual([timing.enqueued_at for timing in model.timings[:2]], [7, 8])
-        self.assertEqual(model.timings[0].retired_at, 8)
-        self.assertEqual(len(e8.result_fifo), 1)
-        self.assertEqual(
-            e8.result_fifo[0].activated_result,
-            tuple(matrix_multiply(samples[1], self.initial_W(), self.config().width)),
-        )
+    def test_absolute_latency_and_single_vector_all_sizes(self) -> None:
+        for n in (1, 2, 3, 4, 5, 8):
+            with self.subTest(n=n):
+                W = [[(-1 if (r + c) % 2 else 1) * (r * n + c + 1)
+                      for c in range(n)] for r in range(n)]
+                x = tuple(2 * r - n for r in range(n))
+                model = CycleReference(self.config(n=n), W, [1] * n)
+                model.step(self.drive(x=x, training=False))
+                for _ in range(n + 1):
+                    snapshot = model.step(self.drive(valid=False, training=False))
+                    self.assertEqual(snapshot.result_fifo, ())
+                enqueued = model.step(self.drive(valid=False, training=False))
+                self.assertEqual(enqueued.cycle, n + 2)
+                self.assertEqual(enqueued.result_fifo[0].activated_result,
+                                 tuple(matrix_multiply(x, W, model.config.width)))
+                model.step(self.drive(valid=False, training=False))
+                self.assertEqual(model.timings[0].accepted_at, 0)
+                self.assertEqual(model.timings[0].enqueued_at, n + 2)
+                self.assertEqual(model.timings[0].retired_at, n + 3)
 
     def test_incomplete_observation_fails_at_result_boundary(self) -> None:
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
@@ -223,7 +221,7 @@ class CycleReferenceTests(unittest.TestCase):
             all(value is None for row in token.observed_weights for value in row)
         )
 
-        # Let the first anti-diagonal be observed, then model a missing PE
+        # Let the first inward shell be observed, then model a missing PE
         # observation before the token reaches its final anti-diagonal.
         model.step(self.drive(valid=False, training=False))
         token.observed_weights[0][0] = None
@@ -232,7 +230,7 @@ class CycleReferenceTests(unittest.TestCase):
             AssertionError,
             "sample reached result boundary without all PE weights",
         ):
-            for _ in range(2 * model.config.n - 2):
+            for _ in range(model.config.n - 1):
                 model.step(self.drive(valid=False, training=False))
 
     def test_continuous_throughput_is_one_result_per_cycle_after_fill(self) -> None:
@@ -243,10 +241,10 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertEqual([timing.accepted_at for timing in model.timings], list(range(12)))
         self.assertEqual([record.sample_index for record in model.records[:5]], list(range(5)))
         self.assertTrue(all(timing.retired_at is not None for timing in model.timings[:4]))
-        self.assertEqual([timing.enqueued_at for timing in model.timings[:5]], [7, 8, 9, 10, 11])
-        self.assertEqual([timing.retired_at for timing in model.timings[:4]], [8, 9, 10, 11])
+        self.assertEqual([timing.enqueued_at for timing in model.timings[:5]], [5, 6, 7, 8, 9])
+        self.assertEqual([timing.retired_at for timing in model.timings[:4]], [6, 7, 8, 9])
 
-    def test_feedback_visibility_is_s0_s7_s1_s8_s2_s9(self) -> None:
+    def test_feedback_visibility_is_s0_s5_s1_s6_s2_s7(self) -> None:
         initial_W = self.initial_W()
         initial_R = [16, 24, 32]
         model = CycleReference(self.config(), initial_W, initial_R)
@@ -257,10 +255,10 @@ class CycleReferenceTests(unittest.TestCase):
         records = model.records
         old_W = tuple(tuple(row) for row in initial_W)
         old_R = tuple(initial_R)
-        self.assertEqual([record.W_used for record in records[:7]], [old_W] * 7)
-        self.assertEqual([record.R_used for record in records[:7]], [old_R] * 7)
-        for sample_index in (7, 8, 9):
-            generation = sample_index - 6
+        self.assertEqual([record.W_used for record in records[:5]], [old_W] * 5)
+        self.assertEqual([record.R_used for record in records[:5]], [old_R] * 5)
+        for sample_index in (5, 6, 7):
+            generation = sample_index - 4
             self.assertEqual(
                 records[sample_index].W_used,
                 tuple(tuple(value + generation for value in row) for row in initial_W),
@@ -270,7 +268,7 @@ class CycleReferenceTests(unittest.TestCase):
     def test_buffer_snapshots_cover_startup_fill_and_drain(self) -> None:
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
         first = model.step(self.drive(x=(1, -2, 0), target=17, training=False))
-        self.assertIsNone(first.pending_weight_row)
+        self.assertEqual(first.loaded_weight_rows, 0)
         self.assertEqual(first.input_stage, (1, -2, 0))
         self.assertEqual(
             first.sample_context_fifo[0].input_signs,
@@ -285,7 +283,7 @@ class CycleReferenceTests(unittest.TestCase):
 
         for x in ((4, 1, 0), (0, 2, 2), (-2, 1, 3), (1, 1, -1)):
             model.step(self.drive(x=x, target=0, training=False))
-        result_storage = model.snapshots[7]
+        result_storage = model.snapshots[5]
         self.assertEqual(
             tuple(entry.activated_result for entry in result_storage.result_fifo),
             (tuple(matrix_multiply((1, -2, 0), self.initial_W(), self.config().width)),),
@@ -301,65 +299,76 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertEqual(drained.sample_context_fifo, ())
         self.assertEqual(drained.result_fifo, ())
 
-    def test_pending_weight_snapshot_is_logical_host_order(self) -> None:
-        model = CycleReference(self.config(), R=[16, 24, 32])
-        e0 = model.step(CycleInputs(weight_valid=True, weight_data=(7, 8, 9)))
-        e1 = model.step(CycleInputs(weight_valid=True, weight_data=(4, 5, 6)))
-        e2 = model.step(CycleInputs(weight_valid=True, weight_data=(1, 2, 3)))
-        self.assertEqual(e0.pending_weight_row, (7, 8, 9))
-        self.assertEqual(e1.pending_weight_row, (4, 5, 6))
-        self.assertEqual(e2.pending_weight_row, (1, 2, 3))
-        model.step(CycleInputs(result_ready=True))
-        self.assertEqual(model.W, [[1, 2, 3], [4, 5, 6], [7, 8, 9]])
-
-    def test_pending_weight_stage_supports_simultaneous_refill(self) -> None:
-        for n in (2, 3, 4):
+    def test_two_ended_loading_is_atomic_and_keeps_host_order(self) -> None:
+        for n in (1, 2, 3, 4, 5, 8):
             with self.subTest(n=n):
-                rows = tuple(
-                    tuple(row * n + lane + 1 for lane in range(n))
-                    for row in range(n)
-                )
+                rows = [[(-1 if (r + c) % 2 else 1) * (r * n + c + 1)
+                         for c in range(n)] for r in range(n)]
                 model = CycleReference(self.config(n=n), R=[1] * n)
+                expected_buffer = [[0] * n for _ in range(n)]
+                for index, row in enumerate(reversed(rows)):
+                    snap = model.step(CycleInputs(weight_valid=True, weight_data=tuple(row)))
+                    expected_buffer[n - 1 - index] = row
+                    self.assertEqual(snap.weight_buffer, tuple(map(tuple, expected_buffer)))
+                    self.assertEqual(snap.loaded_weight_rows, index + 1)
+                    self.assertEqual(model.W, [[0] * n for _ in range(n)])
+                    if index < n - 1:
+                        model.step(CycleInputs())  # Host gaps do not shift or capture.
+                        self.assertFalse(model._loading_weights)
+                self.assertTrue(snap.loading_weights)
+                for q in range(n):
+                    snap = model.step(CycleInputs(weight_valid=True, weight_data=(99,) * n))
+                    self.assertEqual(model.W, [[0] * n for _ in range(n)])
+                    self.assertFalse(snap.weights_loaded)
+                self.assertTrue(snap.capture_weights)
+                self.assertFalse(snap.loading_weights)
+                # Independent shift-chain simulation must produce every resident
+                # value before W can change on the subsequent capture edge.
+                self.assertEqual(model._load_psums, rows)
+                snap = model.step(CycleInputs(weight_valid=True, weight_data=(99,) * n))
+                self.assertEqual(model.W, rows)
+                self.assertTrue(snap.weights_loaded)
+                self.assertFalse(snap.capture_weights)
+                self.assertEqual(snap.loaded_weight_rows, 0)
+                reloaded = model.step(CycleInputs(reload_weights=True))
+                self.assertFalse(reloaded.weights_loaded)
+                self.assertEqual(reloaded.weight_buffer, tuple(tuple(0 for _ in range(n)) for _ in range(n)))
+                self.assertEqual(model.W, rows)  # Reload does not destroy resident W.
+                extra = (-3,) * n
+                model.step(CycleInputs(weight_valid=True, weight_data=extra))
+                self.assertEqual(model._weight_buffer[-1], list(extra))
 
-                snapshots = [
-                    model.step(CycleInputs(weight_valid=True, weight_data=row))
-                    for row in rows
-                ]
-                self.assertEqual(
-                    [snapshot.pending_weight_row for snapshot in snapshots],
-                    list(rows),
-                )
-                zero_row = [0] * n
-                for index, snapshot in enumerate(snapshots):
-                    expected_rows = [list(row) for row in reversed(rows[:index])]
-                    expected_rows.extend([zero_row] * (n - len(expected_rows)))
-                    self.assertEqual(snapshot.W, tuple(tuple(row) for row in expected_rows))
+    def test_accepted_reload_blocks_simultaneous_input(self) -> None:
+        model = CycleReference(self.config(), self.initial_W(), [1, 1, 1])
+        snap = model.step(CycleInputs(reload_weights=True, input_valid=True,
+                                     input_data=(3, -2, 1), result_ready=True))
+        self.assertFalse(snap.weights_loaded)
+        self.assertIsNone(snap.input_stage)
+        self.assertEqual(snap.sample_context_fifo, ())
+        self.assertEqual(model.timings, [])
+        replacement = [[-1, 2, 0], [3, 0, -2], [4, 1, 5]]
+        for row in reversed(replacement):
+            model.step(CycleInputs(weight_valid=True, weight_data=tuple(row)))
+        while not model.weights_loaded:
+            model.step(CycleInputs())
+        model.step(self.drive(x=(3, -2, 1), training=False))
+        model.flush()
+        self.assertEqual(len(model.records), 1)
+        self.assertEqual(model.records[0].raw_matrix_result,
+                         tuple(matrix_multiply((3, -2, 1), replacement, model.config.width)))
 
-    def test_pending_weight_stage_rejects_extra_row_on_final_consumption(self) -> None:
-        for n in (2, 3, 4):
-            with self.subTest(n=n):
-                rows = tuple(
-                    tuple(row * n + lane + 1 for lane in range(n))
-                    for row in range(n)
-                )
-                extra = tuple(90 + lane for lane in range(n))
-                model = CycleReference(self.config(n=n), R=[1] * n)
-
-                for row in rows:
-                    model.step(CycleInputs(weight_valid=True, weight_data=row))
-                final = model.step(CycleInputs(weight_valid=True, weight_data=extra))
-                self.assertTrue(model.weights_loaded)
-                self.assertIsNone(final.pending_weight_row)
-                self.assertEqual(model.W, [list(row) for row in reversed(rows)])
-
-                reloaded = model.step(CycleInputs(reload_weights=True, result_ready=True))
-                self.assertFalse(model.weights_loaded)
-                self.assertIsNone(reloaded.pending_weight_row)
-
-                first_reloaded = model.step(
-                    CycleInputs(weight_valid=True, weight_data=extra)
-                )
-                self.assertEqual(first_reloaded.pending_weight_row, extra)
+    def test_reset_clears_partial_loading_and_capture(self) -> None:
+        for n in (2, 3, 4, 5, 8):
+            for reset_age in range(2 * n + 1):
+                with self.subTest(n=n, reset_age=reset_age):
+                    model = CycleReference(self.config(n=n))
+                    for edge in range(reset_age):
+                        model.step(CycleInputs(weight_valid=edge < n, weight_data=(edge + 1,) * n))
+                    snap = model.step(CycleInputs(reset_n=False))
+                    self.assertEqual(model.W, [[0] * n for _ in range(n)])
+                    self.assertEqual(snap.loaded_weight_rows, 0)
+                    self.assertFalse(snap.loading_weights or snap.capture_weights or snap.weights_loaded)
+                    self.assertFalse(model.in_flight)
 
     def test_input_bubbles_do_not_stop_learning(self) -> None:
         initial_W = self.initial_W()
@@ -371,9 +380,9 @@ class CycleReferenceTests(unittest.TestCase):
             for _ in range(14)
         ]
 
-        self.assertEqual(bubble_snapshots[7].W[0][0], initial_W[0][0] + 1)
-        self.assertEqual(bubble_snapshots[11].W, tuple(tuple(v + 1 for v in row) for row in initial_W))
-        self.assertEqual(bubble_snapshots[12].R, tuple(value + 1 for value in initial_R))
+        self.assertEqual(bubble_snapshots[5].W[0][0], initial_W[0][0] + 1)
+        self.assertEqual(bubble_snapshots[7].W, tuple(tuple(v + 1 for v in row) for row in initial_W))
+        self.assertEqual(bubble_snapshots[8].R, tuple(value + 1 for value in initial_R))
 
     def test_output_backpressure_holds_architectural_state(self) -> None:
         model = CycleReference(
@@ -425,10 +434,10 @@ class CycleReferenceTests(unittest.TestCase):
         model = CycleReference(self.config(), [[0] * 3 for _ in range(3)], [64, 64, 64])
         snapshots = [model.step(self.drive()) for _ in range(10)]
 
-        self.assertEqual(snapshots[8].W[0][0], 1)
-        self.assertEqual(snapshots[9].W[0][0], 2)
-        self.assertEqual(snapshots[9].W[0][1], 1)
-        self.assertEqual(snapshots[9].W[1][0], 1)
+        self.assertEqual(snapshots[6].W[0][0], 1)
+        self.assertEqual(snapshots[7].W[0][0], 2)
+        self.assertEqual(snapshots[7].W[0][1], 1)
+        self.assertEqual(snapshots[7].W[1][0], 1)
 
     def test_saturation_is_sequential_under_overlapping_updates(self) -> None:
         config = self.config(width=4, target_width=8, reduction_weight_width=4)
@@ -451,11 +460,86 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertTrue(all(-8 <= value <= 7 for row in model.W for value in row))
         self.assertTrue(all(-8 <= value <= 7 for value in model.R))
 
+    def test_streaming_bubbles_stalls_learning_and_reload_all_sizes(self) -> None:
+        for n in (2, 3, 4, 5, 8):
+            with self.subTest(n=n):
+                rng = random.Random(8300 + n)
+                config = self.config(n=n, output_fifo_depth=2)
+                W = [[rng.randint(-8, 8) for _ in range(n)] for _ in range(n)]
+                R = [rng.randint(-8, 8) for _ in range(n)]
+                model = CycleReference(config, W, R)
+                samples = [Sample(tuple(rng.randint(-4, 4) for _ in range(n)),
+                                  rng.choice((-100, 0, 100)), i % 4 != 0)
+                           for i in range(4 * n + 12)]
+                source = 0
+                offered = False
+                stalls = 0
+                for edge in range(2000):
+                    if source < len(samples) and not offered:
+                        offered = rng.random() > 0.28
+                    ready = edge % 23 > 10  # Long held intervals force a true stall.
+                    sample = samples[source] if source < len(samples) else None
+                    before_count = len(model.timings)
+                    blocked = bool(len(model._result_fifo) == 2 and model._alignment and not ready)
+                    frozen = (tuple(t.age for t in model._data_tokens),
+                              tuple(model._matrix_waves), tuple(model._reduction_pipe))
+                    snap = model.step(CycleInputs(
+                        input_valid=offered and sample is not None,
+                        input_data=sample.x if sample else (),
+                        target_data=sample.target if sample else 0,
+                        training_enable=sample.training_enable if sample else False,
+                        result_ready=ready,
+                    ))
+                    if blocked:
+                        stalls += 1
+                        self.assertEqual(frozen, (tuple(t.age for t in model._data_tokens),
+                                                 tuple(model._matrix_waves), tuple(model._reduction_pipe)))
+                    if len(model.timings) > before_count:
+                        source += 1
+                        offered = False
+                    if source == len(samples) and not model.in_flight:
+                        break
+                self.assertGreater(stalls, 0)
+                self.assertEqual(source, len(samples))
+                self.assertEqual([r.input_vector for r in model.records], [s.x for s in samples])
+                self.assertTrue(all(t.retired_at is not None for t in model.timings))
+
+                # Independently replay issued arithmetic in retirement order.
+                # Every sample must observe a whole W/R generation despite gaps
+                # and held edges; mixed forward/update phases fail this check.
+                expected_W, expected_R = W, R
+                coherent = {(tuple(map(tuple, W)), tuple(R))}
+                for record in model.records:
+                    if record.update_generated:
+                        expected_W = apply_matrix_update(expected_W, record.matrix_update_directions, config.width)
+                        expected_R = apply_reduction_update(expected_R, record.reduction_update_directions,
+                                                             config.reduction_weight_width)
+                        coherent.add((tuple(map(tuple, expected_W)), tuple(expected_R)))
+                for record in model.records:
+                    self.assertIn((record.W_used, record.R_used), coherent)
+                self.assertEqual(model.W, expected_W)
+                self.assertEqual(model.R, expected_R)
+
+                self.assertTrue(self.attempt_matrix_reload(model))
+                replacement = [[rng.randint(-10, 10) for _ in range(n)] for _ in range(n)]
+                for row in reversed(replacement):
+                    model.step(CycleInputs(weight_valid=True, weight_data=tuple(row)))
+                    model.step(CycleInputs())
+                while not model.weights_loaded:
+                    model.step(CycleInputs())
+                self.assertEqual(model.W, replacement)
+                probe = tuple(rng.randint(-3, 3) for _ in range(n))
+                model.step(self.drive(x=probe, training=False))
+                model.flush()
+                self.assertEqual(model.records[-1].raw_matrix_result,
+                                 tuple(matrix_multiply(probe, replacement, config.width)))
+                self.assertEqual(model.R, expected_R)
+
     def test_closed_form_update_visibility_matches_wave_propagation(self) -> None:
-        """Cross-check weight visibility: functional derives the 2*N+1 sample delay
+        """Cross-check weight visibility: functional derives the N+2 sample delay
         in closed form; cycle derives it independently through wave propagation."""
 
-        for n in (2, 3, 4):
+        for n in (2, 3, 4, 5, 8):
             with self.subTest(n=n):
                 config = self.config(n=n)
                 functional_config = ReferenceConfig(
@@ -481,6 +565,7 @@ class CycleReferenceTests(unittest.TestCase):
                     ((1, -4, 3), 25, True),
                     ((2, -2, -1), 7, False),
                 ]
+                raw_samples = raw_samples * 2
                 samples = [
                     Sample(
                         tuple(x[lane % len(x)] for lane in range(n)),
@@ -510,6 +595,14 @@ class CycleReferenceTests(unittest.TestCase):
                     cycle.records,
                     [replace(record, update_visible_at=None) for record in functional_records],
                 )
+                self.assertEqual(
+                    [t.enqueued_at - t.accepted_at for t in cycle.timings],
+                    [n + 2] * len(samples),
+                )
+                self.assertEqual(
+                    [t.retired_at - t.accepted_at for t in cycle.timings],
+                    [n + 3] * len(samples),
+                )
                 self.assertEqual(cycle.W, functional.final_W)
                 self.assertEqual(cycle.R, functional.final_R)
 
@@ -521,7 +614,7 @@ class CycleReferenceTests(unittest.TestCase):
 
                 # The emergent delay must equal the closed form.
                 delay = functional_config.update_visibility_delay
-                self.assertEqual(delay, 2 * n + 1)
+                self.assertEqual(delay, n + 2)
                 self.assertEqual(functional_records[0].update_visible_at, delay)
                 self.assertEqual(
                     cycle.records[delay - 1].W_used,

@@ -2,45 +2,56 @@ module weightStationarySystolicArray #(
     parameter int WIDTH = 16,
     parameter int N = 3
 )(
-    input  logic                        clk,
-    input  logic                        rst_n,
-    input  logic                        advance,
-    input  logic                        loadWeight,
-    input  logic signed [1:0]           rowDirection [N],
-    input  logic signed [1:0]           columnDirection [N],
-    input  logic                        updateValid,
-    input  logic signed [WIDTH-1:0]     row [N],
-    input  logic                        rowValid [N],
-    input  logic signed [WIDTH-1:0]     col [N],
+    input  logic                            clk,
+    input  logic                            rst_n,
+    input  logic                            advance,
+    input  logic                            loadWeight,
+    input  logic                            captureWeight,
+    input  logic signed [1:0]               rowDirection [N],
+    input  logic signed [1:0]               columnDirection [N],
+    input  logic                            updateValid,
+    input  logic signed [WIDTH-1:0]         rowLeft [N],
+    input  logic signed [WIDTH-1:0]         rowRight [N],
+    input  logic                            actValid,
+    input  logic signed [WIDTH-1:0]         colTop [N],
+    input  logic signed [WIDTH-1:0]         colBottom [N],
     output logic signed [2*WIDTH+$clog2(N)-1:0] result [N],
-    output logic                        resultValid [N],
-    output logic                        pipelineBusy
+    output logic                            resultValid [N],
+    output logic                            pipelineBusy
 );
 
     localparam int FINAL_RESULT_WIDTH = 2*WIDTH + $clog2(N);
-    localparam int UPDATE_STAGES = 2*N - 1;
-    localparam int UPDATE_PIPE_STAGES = UPDATE_STAGES - 1;
-    localparam int UPDATE_PIPE_STORAGE = (UPDATE_PIPE_STAGES > 0) ?
-                                         UPDATE_PIPE_STAGES : 1;
+    localparam int ROLE_TL = 0;
+    localparam int ROLE_AD = 1;
+    localparam int ROLE_BR = 2;
+    localparam int UPDATE_PIPE_STAGES = N-1;
+    // Preserve elaboration of unsupported N=1 long enough to report the
+    // parameter contract above, rather than a zero-size storage error.
+    localparam int UPDATE_PIPE_STORAGE = (UPDATE_PIPE_STAGES > 0) ? UPDATE_PIPE_STAGES : 1;
 
     initial begin
         if (WIDTH < 1 || N < 2)
             $fatal(1, "WIDTH>=1 and N>=2");
     end
 
-    logic signed [WIDTH-1:0]                horizontalData [N][N+1];
-    logic                                   horizontalValid[N][N+1];
-    logic signed [FINAL_RESULT_WIDTH-1:0]   verticalData   [N+1][N];
-    logic                                   verticalValid  [N+1][N];
-    logic signed [1:0]                      updateRowPipe   [UPDATE_PIPE_STORAGE][N];
-    logic signed [1:0]                      updateColumnPipe[UPDATE_PIPE_STORAGE][N];
-    logic                                   updateValidPipe [UPDATE_PIPE_STORAGE];
+    // Indexed by producing PE, rather than by grid boundaries. TL links point
+    // right/down, BR links left/up, and each AD result goes directly to its lane.
+    // Load-mode zeroing is only at the activation edges. Downward weights start
+    // after j padded shifts, when column j's left-flowing activations are zero;
+    // upward weights start after N-j pads, after its right-flowing path clears.
+    logic signed [WIDTH-1:0]               horizontalData [N][N];
+    logic signed [FINAL_RESULT_WIDTH-1:0]  verticalData [N][N];
+    logic [N-1:0]                         validPipe;
+    logic signed [1:0]                    updateRowPipe [UPDATE_PIPE_STORAGE][N];
+    logic signed [1:0]                    updateColumnPipe [UPDATE_PIPE_STORAGE][N];
+    logic                                 updateValidPipe [UPDATE_PIPE_STORAGE];
 
-    // Diagonal zero uses the live package; the remaining 2N-2 use pipeline stages.
-    // Full vectors advance with the data array, allowing one package per advance;
-    // the last updateValidPipe stage applies the final PE update.
+    // Phase zero consumes the live update package at both corners. Delayed
+    // packages follow the same inward phase as the corresponding sample MAC.
+    // Bubbles advance; a stalled output freezes both compute and learning.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
+            validPipe <= '0;
             for (int stage = 0; stage < UPDATE_PIPE_STORAGE; stage++) begin
                 updateValidPipe[stage] <= 1'b0;
                 for (int lane = 0; lane < N; lane++) begin
@@ -49,55 +60,94 @@ module weightStationarySystolicArray #(
                 end
             end
         end else if (advance) begin
-            for (int stage = UPDATE_PIPE_STAGES-1; stage > 0; stage--) begin
-                updateValidPipe[stage] <= updateValidPipe[stage-1];
-                for (int lane = 0; lane < N; lane++) begin
-                    updateRowPipe[stage][lane] <= updateRowPipe[stage-1][lane];
-                    updateColumnPipe[stage][lane] <= updateColumnPipe[stage-1][lane];
+            if (loadWeight || captureWeight) begin
+                validPipe <= '0;
+                for (int stage = 0; stage < UPDATE_PIPE_STORAGE; stage++) begin
+                    updateValidPipe[stage] <= 1'b0;
+                    for (int lane = 0; lane < N; lane++) begin
+                        updateRowPipe[stage][lane] <= 2'sd0;
+                        updateColumnPipe[stage][lane] <= 2'sd0;
+                    end
                 end
-            end
-
-            updateValidPipe[0] <= updateValid;
-            for (int lane = 0; lane < N; lane++) begin
-                updateRowPipe[0][lane] <= rowDirection[lane];
-                updateColumnPipe[0][lane] <= columnDirection[lane];
+            end else begin
+                validPipe[0] <= actValid;
+                for (int stage = 1; stage < N; stage++)
+                    validPipe[stage] <= validPipe[stage-1];
+                for (int stage = UPDATE_PIPE_STAGES-1; stage > 0; stage--) begin
+                    updateValidPipe[stage] <= updateValidPipe[stage-1];
+                    for (int lane = 0; lane < N; lane++) begin
+                        updateRowPipe[stage][lane] <= updateRowPipe[stage-1][lane];
+                        updateColumnPipe[stage][lane] <= updateColumnPipe[stage-1][lane];
+                    end
+                end
+                updateValidPipe[0] <= updateValid;
+                for (int lane = 0; lane < N; lane++) begin
+                    updateRowPipe[0][lane] <= rowDirection[lane];
+                    updateColumnPipe[0][lane] <= columnDirection[lane];
+                end
             end
         end
     end
 
     genvar i, j;
     generate
-        for (i = 0; i < N; i++) begin : boundary_rows
-            assign horizontalData[i][0]  = row[i];
-            assign horizontalValid[i][0] = rowValid[i];
-        end
-
-        for (j = 0; j < N; j++) begin : boundary_cols
-            assign verticalData[0][j]  = loadWeight ?
-                {{(FINAL_RESULT_WIDTH-WIDTH){col[j][WIDTH-1]}}, col[j]} : '0;
-            assign verticalValid[0][j] = !loadWeight;
-        end
-
         for (i = 0; i < N; i++) begin : row_loop
             for (j = 0; j < N; j++) begin : col_loop
-                logic              localUpdateValid;
+                localparam int ROLE = (i+j < N-1) ? ROLE_TL :
+                                      (i+j == N-1) ? ROLE_AD : ROLE_BR;
+                localparam int UPDATE_PHASE = (i+j <= N-1) ? i+j : 2*N-2-i-j;
+                logic signed [WIDTH-1:0] localActivation;
+                logic signed [FINAL_RESULT_WIDTH-1:0] localPsum;
+                logic signed [FINAL_RESULT_WIDTH-1:0] localLowerPsum;
+                logic localUpdateValid;
                 logic signed [1:0] localRowDirection;
                 logic signed [1:0] localColumnDirection;
                 logic signed [1:0] localUpdateDirection;
 
-                if ((i+j) == 0) begin : live_update_entry
+                if (ROLE == ROLE_BR) begin : upward_path
+                    if (j == N-1) begin : right_boundary
+                        assign localActivation = (loadWeight || captureWeight) ? '0 : rowRight[i];
+                    end else begin : right_neighbor
+                        assign localActivation = horizontalData[i][j+1];
+                    end
+                    if (i == N-1) begin : bottom_boundary
+                        assign localPsum = loadWeight ?
+                            {{(FINAL_RESULT_WIDTH-WIDTH){colBottom[j][WIDTH-1]}}, colBottom[j]} : '0;
+                    end else begin : bottom_neighbor
+                        assign localPsum = verticalData[i+1][j];
+                    end
+                    assign localLowerPsum = '0;
+                end else begin : downward_path
+                    if (j == 0) begin : left_boundary
+                        assign localActivation = (loadWeight || captureWeight) ? '0 : rowLeft[i];
+                    end else begin : left_neighbor
+                        assign localActivation = horizontalData[i][j-1];
+                    end
+                    if (i == 0) begin : top_boundary
+                        assign localPsum = loadWeight ?
+                            {{(FINAL_RESULT_WIDTH-WIDTH){colTop[j][WIDTH-1]}}, colTop[j]} : '0;
+                    end else begin : top_neighbor
+                        assign localPsum = verticalData[i-1][j];
+                    end
+                    if (ROLE == ROLE_AD && i < N-1) begin : lower_merge
+                        assign localLowerPsum = verticalData[i+1][j];
+                    end else begin : no_lower_merge
+                        assign localLowerPsum = '0;
+                    end
+                end
+
+                if (UPDATE_PHASE == 0) begin : live_update_entry
                     assign localUpdateValid = updateValid;
                     assign localRowDirection = rowDirection[i];
                     assign localColumnDirection = columnDirection[j];
                 end else begin : piped_update_wave
-                    assign localUpdateValid = updateValidPipe[i+j-1];
-                    assign localRowDirection = updateRowPipe[i+j-1][i];
-                    assign localColumnDirection = updateColumnPipe[i+j-1][j];
+                    assign localUpdateValid = updateValidPipe[UPDATE_PHASE-1];
+                    assign localRowDirection = updateRowPipe[UPDATE_PHASE-1][i];
+                    assign localColumnDirection = updateColumnPipe[UPDATE_PHASE-1][j];
                 end
 
                 always_comb begin
-                    if ((localRowDirection == 2'sd0) ||
-                        (localColumnDirection == 2'sd0))
+                    if ((localRowDirection == 2'sd0) || (localColumnDirection == 2'sd0))
                         localUpdateDirection = 2'sd0;
                     else if (localRowDirection == localColumnDirection)
                         localUpdateDirection = 2'sd1;
@@ -106,32 +156,25 @@ module weightStationarySystolicArray #(
                 end
 
                 weightStationaryProcessingElement #(
-                    .WIDTH(WIDTH), .RESULT_WIDTH(FINAL_RESULT_WIDTH)
+                    .WIDTH(WIDTH), .RESULT_WIDTH(FINAL_RESULT_WIDTH), .ROLE(ROLE)
                 ) pe (
-                    .clk(clk), .rst_n(rst_n), .advance(advance), .loadWeight(loadWeight),
-                    .updateWeight(localUpdateValid),
-                    .updateDirection(localUpdateDirection),
-                    .leftIn(horizontalData[i][j]), .leftValid(horizontalValid[i][j]),
-                    .topIn(verticalData[i][j]), .topValid(verticalValid[i][j]),
-                    .rightOut(horizontalData[i][j+1]), .rightValid(horizontalValid[i][j+1]),
-                    .bottomOut(verticalData[i+1][j]), .bottomValid(verticalValid[i+1][j])
+                    .clk(clk), .rst_n(rst_n), .advance(advance),
+                    .loadWeight(loadWeight), .captureWeight(captureWeight),
+                    .updateWeight(localUpdateValid), .updateDirection(localUpdateDirection),
+                    .activationIn(localActivation), .psumIn(localPsum),
+                    .lowerPsumIn(localLowerPsum),
+                    .activationOut(horizontalData[i][j]), .psumOut(verticalData[i][j])
                 );
             end
         end
         for (j = 0; j < N; j++) begin : result_loop
-            assign result[j]      = verticalData[N][j];
-            assign resultValid[j] = verticalValid[N][j];
+            assign result[j] = verticalData[N-1-j][j];
+            assign resultValid[j] = validPipe[N-1];
         end
     endgenerate
 
     always_comb begin
-        pipelineBusy = 1'b0;
-        for (int r = 0; r <= N; r++)
-            for (int c = 0; c < N; c++)
-                pipelineBusy |= verticalValid[r][c] && (r != 0);
-        for (int r = 0; r < N; r++)
-            for (int c = 1; c <= N; c++)
-                pipelineBusy |= horizontalValid[r][c];
+        pipelineBusy = |validPipe;
         for (int stage = 0; stage < UPDATE_PIPE_STAGES; stage++)
             pipelineBusy |= updateValidPipe[stage];
     end

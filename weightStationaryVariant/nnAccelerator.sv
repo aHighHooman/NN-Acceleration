@@ -31,9 +31,9 @@ module nnAccelerator #(
 
     localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
-    // The resident reduction vector commits after the same 2N-1 advancing
-    // slots as the matrix update wave, from PE(0,0) through PE(N-1,N-1).
-    localparam int REDUCTION_UPDATE_DELAY = 2*N-1;
+    // Matrix updates reach the AD after N-1 advances; reduction observes the
+    // resulting registered vector one edge later at the result FIFO boundary.
+    localparam int REDUCTION_UPDATE_DELAY = N;
     localparam int SAMPLE_CONTEXT_WIDTH = TARGET_WIDTH + 2*N + 1;
     localparam int COMPARE_WIDTH = (PREDICTION_WIDTH > TARGET_WIDTH)
                                    ? PREDICTION_WIDTH : TARGET_WIDTH;
@@ -115,8 +115,7 @@ module nnAccelerator #(
         for (int stage = 0; stage < REDUCTION_UPDATE_DELAY; stage++)
             reductionUpdateBusy |= reductionUpdateValidPipe[stage];
     end
-    assign reloadReady = matrixReloadReady && resultFifoEmpty &&
-                         sampleContextEmpty && !reductionUpdateBusy;
+    assign reloadReady = matrixReloadReady && sampleContextEmpty && !reductionUpdateBusy;
 
     // Compare the rescaled architectural prediction with the aligned FIFO
     // head. Assignment to the wider signed signals sign-extends either side.

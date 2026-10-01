@@ -96,7 +96,7 @@ def _reset_and_load_weights(weight_matrix: Sequence[Sequence[int]],
                 result_ready=True,
             ), pass_through=pass_through, reduce_output=reduce_output)
         )
-    result.append(_idle_cycle(pass_through=pass_through, reduce_output=reduce_output))
+    result.extend(_idle_cycles(N + 1, pass_through=pass_through, reduce_output=reduce_output))
     return result
 
 
@@ -149,7 +149,7 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
             )
 
     # 1: continuous inference, including enough samples to demonstrate steady
-    # one-result-per-clock retirement after the E0 -> E7 -> E8 fill latency.
+    # one-result-per-clock retirement after the E0 -> E5 -> E6 fill latency.
     continuous_inference_samples = tuple(
         Sample((i + 1, (i % 3) - 1, 2 - (i % 4)), 20 - i, False) for i in range(12)
     )
@@ -158,7 +158,7 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
         *_sample_cycles(continuous_inference_samples),
         *_idle_cycles(24)], continuous_inference_samples)
 
-    # 2: the first three training updates become visible to samples 7, 8, 9.
+    # 2: the first three training updates become visible to samples 5, 6, 7.
     continuous_training_samples = tuple(Sample((1, 2, 3), 127, True) for _ in range(10))
     add_scenario("continuous_training", [
         *_reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS),
@@ -206,6 +206,16 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     reset_stall_cycles.append(_driven(CycleInputs(reset_n=False, result_ready=False)))
     add_scenario("reset_during_output_stall", reset_stall_cycles)
 
+    # Reset immediately after the sole training result retires, while both
+    # update waves are still in flight and its context has already been popped.
+    reset_tail_cycles = _reset_and_load_weights(
+        INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS
+    )
+    reset_tail_cycles.append(_input_cycle((1, 2, 3), 127, True))
+    reset_tail_cycles.extend(_idle_cycles(N + 3))
+    reset_tail_cycles.append(_driven(CycleInputs(reset_n=False)))
+    add_scenario("reset_during_learning_tail", reset_tail_cycles)
+
     # Retire a training result, then stall with both update paths live.
     # Result five saved R=(1,1,1); its matrix update must use those signs even
     # after the first retired package changes resident R to zero.
@@ -249,11 +259,13 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     reload_cycles = _reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
     reload_cycles.extend(_sample_cycles(pre_reload_samples))
     reload_cycles.extend(_idle_cycles(20))
-    reload_cycles.append(_driven(CycleInputs(reload_weights=True, result_ready=True)))
+    reload_cycles.append(_driven(CycleInputs(reload_weights=True, result_ready=True,
+        input_valid=True, input_data=post_reload_samples[0].x,
+        target_data=post_reload_samples[0].target, training_enable=False)))
     for row in reversed(RELOADED_WEIGHT_MATRIX):
         reload_cycles.append(_driven(CycleInputs(
             weight_valid=True, weight_data=tuple(row), result_ready=True)))
-    reload_cycles.append(_idle_cycle())
+    reload_cycles.extend(_idle_cycles(N + 1))
     post_start_offset = len(reload_cycles)
     reload_cycles.extend(_sample_cycles(post_reload_samples))
     reload_cycles.extend(_idle_cycles(24))
@@ -389,11 +401,21 @@ def read_trace(
             values = tuple(map(int, f[1:])); current["W"] = tuple(values[i:i+N] for i in range(0, N*N, N))
         elif f[0] == "R":
             current["R"] = tuple(map(int, f[1:]))
-        elif f[0] in ("PW", "IS"):
+        elif f[0] == "WB":
+            values = tuple(map(int, f[1:]))
+            if len(values) != N * N:
+                raise ValueError(f"bad WB payload at trace line {line_number}")
+            current["weight_buffer"] = tuple(values[i:i+N] for i in range(0, N*N, N))
+        elif f[0] == "WL":
+            if len(f) != 6:
+                raise ValueError(f"bad WL payload at trace line {line_number}")
+            names = ("weights_loaded", "loaded_weight_rows", "loading_weights", "load_step", "capture_weights")
+            current.update(zip(names, map(int, f[1:])))
+        elif f[0] == "IS":
             entries = _parse_counted(f, N)
             if len(entries) > 1:
                 raise ValueError(f"bad {f[0]} trace payload at line {line_number}")
-            name = "pending_weight_row" if f[0] == "PW" else "input_stage"
+            name = "input_stage"
             current[name] = entries[0] if entries else None
         elif f[0] == "SF":
             entries = _parse_counted(f, N + 2)
@@ -470,7 +492,12 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         for name, left, right in (
             ("W", exp.W, act.get("W", ())),
             ("R", tuple(exp.R), act.get("R", ())),
-            ("pending_weight_row", exp.pending_weight_row, act.get("pending_weight_row")),
+            ("weight_buffer", exp.weight_buffer, act.get("weight_buffer", ())),
+            ("weights_loaded", exp.weights_loaded, act.get("weights_loaded")),
+            ("loaded_weight_rows", exp.loaded_weight_rows, act.get("loaded_weight_rows")),
+            ("loading_weights", exp.loading_weights, act.get("loading_weights")),
+            ("load_step", exp.load_step, act.get("load_step")),
+            ("capture_weights", exp.capture_weights, act.get("capture_weights")),
             ("input_stage", exp.input_stage, act.get("input_stage")),
             ("sampleContextFifo",
              tuple((e.target, e.input_signs, e.training_enable)
