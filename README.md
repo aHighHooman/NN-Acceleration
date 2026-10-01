@@ -53,7 +53,7 @@ and UVM. See [Verification](#verification) for individual commands and coverage.
 
 ## Architecture
 
-![Block diagram of the nnAccelerator core and parallel interface](presentation/figures/01-architecture.svg)
+![nnAccelerator architecture: parallel ports, shared skew, 3×3 PE wiring, two-ended loading, anti-diagonal outputs, paired FIFOs, and learning feedback](presentation/figures/01-architecture.svg)
 
 In the diagrams, **blue** is forward data, **orange** is learning feedback,
 and **grey-green** is storage and control. Figures follow the system theme.

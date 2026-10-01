@@ -1,4 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 430" width="1120" height="430" role="img" aria-label="Corner-fed accelerator: forward data and learning"><title>Corner-fed accelerator: forward data and learning</title><style>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1560 1160" width="1560" height="1160" role="img" aria-labelledby="title desc">
+<title id="title">nnAccelerator architecture — corner-fed, anti-diagonal output</title>
+<desc id="desc">RTL architecture at N=3. A one-entry vector register feeds shared registered row skew chains. Left taps enter all rows; right taps enter rows one and two. Top-left PEs move activations right and partial sums down; bottom-right PEs move activations left and partial sums up. Anti-diagonal PEs w02, w11, w20 take their own activation from the left and merge upper and lower sums in their existing MAC registers. Their three results connect directly to activation, with no output alignment registers. Host weight rows are collected bottom-first into an N by N bank and shifted into the top and bottom column chains before simultaneous capture. Activation and weighted reduction feed a result FIFO containing the activated vector, prediction and reduction signs. A separate sample-context FIFO contains the target, original input signs and training enable. Both heads retire together. Error and update directions feed both array corners, N minus one matrix update delay stages, and an N-stage reduction update pipe connected to the resident reduction weights. Ready/valid backpressure holds computation and learning together.</desc>
+<style>
 svg{--paper:#F3F5F3; --panel:#FFFFFF; --ink:#15191C; --ink-2:#48525A; --ink-3:#7A848B;
   --rule:#D5DBD8; --grid:#E5E9E6;
   --data:#2350C8; --data-soft:#DDE5FB; --learn:#CF4F16; --learn-soft:#FCE4D7;
@@ -40,4 +43,292 @@ text{font-family:var(--body);fill:var(--ink);font-size:13px}
 .fsoftd{fill:var(--data-soft)} .fsoftl{fill:var(--learn-soft)} .fsofts{fill:var(--store-soft)}
 .fp{fill:var(--panel)} .fpp{fill:var(--paper)}
 .ghost{fill:none;stroke:var(--ink-3);stroke-width:1;stroke-dasharray:2 2}
-</style><rect x="1" y="1" width="1118" height="428" rx="10" style="fill:var(--panel);stroke:var(--rule)"/><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--ink-2)"/></marker></defs><text x="26" y="32" class="h">Corner-fed accelerator: forward data and learning</text><rect x="20" y="120" width="160" height="90" rx="6" class="bxd"/><text x="100.0" y="146" class="mid b">Input register</text><text x="100.0" y="168" class="mid s">1 complete vector</text><path d="M180,165 L201,165" class="ld" marker-end="url(#arrow)"/><rect x="202" y="120" width="160" height="90" rx="6" class="bxd"/><text x="282.0" y="146" class="mid b">Shared skew</text><text x="282.0" y="168" class="mid s">Left / right taps</text><path d="M362,165 L383,165" class="ld" marker-end="url(#arrow)"/><rect x="384" y="120" width="160" height="90" rx="6" class="bxd"/><text x="464.0" y="146" class="mid b">Inward array</text><text x="464.0" y="168" class="mid s">AD MAC registers</text><path d="M544,165 L565,165" class="ld" marker-end="url(#arrow)"/><rect x="566" y="120" width="160" height="90" rx="6" class="bxd"/><text x="646.0" y="146" class="mid b">Activation + sum</text><text x="646.0" y="168" class="mid s">Vector + prediction</text><path d="M726,165 L747,165" class="ld" marker-end="url(#arrow)"/><rect x="748" y="120" width="160" height="90" rx="6" class="bxd"/><text x="828.0" y="146" class="mid b">resultFifo</text><text x="828.0" y="168" class="mid s">Saved reduction signs</text><path d="M908,165 L929,165" class="ld" marker-end="url(#arrow)"/><rect x="930" y="120" width="160" height="90" rx="6" class="bxd"/><text x="1010.0" y="146" class="mid b">Retirement</text><text x="1010.0" y="168" class="mid s">Paired FIFO heads</text><rect x="380" y="50" width="340" height="50" rx="6" class="bxs"/><text x="550.0" y="76" class="mid b">Weight bank -&gt; N shifts -&gt; capture</text><rect x="200" y="260" width="340" height="65" rx="6" class="bxs"/><text x="370.0" y="286" class="mid b">sampleContextFifo</text><text x="370.0" y="308" class="mid s">Target, input signs, training bit</text><path d="M100,210 L100,292" class="ls" marker-end="url(#arrow)"/><path d="M100,292 L200,292" class="ls" marker-end="url(#arrow)"/><path d="M540,292 L1010,292" class="ls" marker-end="url(#arrow)"/><path d="M1010,292 L1010,210" class="ls" marker-end="url(#arrow)"/><rect x="560" y="345" width="520" height="60" rx="6" class="bxl"/><text x="820.0" y="371" class="mid b">Learning: inward W updates and N-stage R update pipe</text><path d="M1010,325 L1010,345" class="ll" marker-end="url(#arrow)"/><path d="M460,100 L460,120" class="ls" marker-end="url(#arrow)"/><path d="M560,375 L464,375 L464,210" class="ll" marker-end="url(#arrow)"/><text x="25" y="387" class="s">One accepted vector feeds both boundaries.</text></svg>
+
+text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{font-size:17px}.wire-label{paint-order:stroke;stroke:var(--panel);stroke-width:5px;stroke-linejoin:round}.ad{fill:var(--data-soft);stroke:var(--data);stroke-width:2}.corner{fill:none;stroke:var(--learn);stroke-width:2.5}.load{stroke-dasharray:6 4}
+
+text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{font-size:17px}.wire-label{paint-order:stroke;stroke:var(--panel);stroke-width:5px;stroke-linejoin:round}.ad{fill:var(--data-soft);stroke:var(--data);stroke-width:2}.corner{fill:none;stroke:var(--learn);stroke-width:2.5}.load{stroke-dasharray:6 4}
+
+text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{font-size:17px}.wire-label{paint-order:stroke;stroke:var(--panel);stroke-width:5px;stroke-linejoin:round}.ad{fill:var(--data-soft);stroke:var(--data);stroke-width:2}.corner{fill:none;stroke:var(--learn);stroke-width:2.5}.load{stroke-dasharray:6 4}
+
+text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{font-size:17px}.wire-label{paint-order:stroke;stroke:var(--panel);stroke-width:5px;stroke-linejoin:round}.ad{fill:var(--data-soft);stroke:var(--data);stroke-width:2}.corner{fill:none;stroke:var(--learn);stroke-width:2.5}.load{stroke-dasharray:6 4}
+</style>
+<defs>
+<marker id="d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fd"/></marker>
+<marker id="l" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fl"/></marker>
+<marker id="s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fs"/></marker>
+<marker id="k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fk"/></marker>
+</defs>
+<rect x="1" y="1" width="1558" height="1158" rx="10" class="bx2"/>
+<rect x="245" y="60" width="1060" height="1060" rx="9" class="core"/>
+<rect x="265" y="105" width="775" height="750" rx="8" class="frame"/>
+<rect x="20" y="151" width="200" height="65" rx="5" class="bx2"/>
+<rect x="535" y="150" width="395" height="65" rx="5" class="bxs"/>
+<path d="M220,183 L535,183" class="ls" marker-end="url(#s)"/>
+<rect x="285" y="229" width="230" height="55" rx="5" class="bxs"/>
+<path d="M220,838 L275,838 L275,255 L285,255" class="halo"/>
+<path d="M220,838 L275,838 L275,255 L285,255" class="ls" marker-end="url(#s)"/>
+<path d="M515,244 L530,244 L530,223 L732,223 L732,215" class="halo"/>
+<path d="M515,244 L530,244 L530,223 L732,223 L732,215" class="ls" marker-end="url(#s)"/>
+<path d="M510,284 L510,299 L588,299 L588,320" class="halo"/>
+<path d="M510,284 L510,299 L588,299 L588,320" class="ls dash" marker-end="url(#s)"/>
+<rect x="20" y="442" width="200" height="65" rx="5" class="bx2"/>
+<rect x="285" y="442" width="75" height="65" rx="5" class="bxd"/>
+<path d="M220,474 L285,474" class="ld" marker-end="url(#d)"/>
+<circle cx="255" cy="474" r="3.5" class="fs"/>
+<rect x="385" y="303" width="140" height="395" rx="5" class="bx2"/>
+<path d="M360,474 L375,474" class="ld"/>
+<path d="M375,366 L375,630" class="ld"/>
+<path d="M375,366 L395,366" class="ld" marker-end="url(#d)"/>
+<rect x="395" y="354" width="24" height="24" rx="2" class="bxd"/>
+<path d="M419,366 L570,366" class="ld" marker-end="url(#d)"/>
+<path d="M375,498 L395,498" class="ld" marker-end="url(#d)"/>
+<rect x="395" y="486" width="24" height="24" rx="2" class="bxd"/>
+<path d="M419,498 L441,498" class="ld" marker-end="url(#d)"/>
+<rect x="441" y="486" width="24" height="24" rx="2" class="bxd"/>
+<path d="M465,498 L570,498" class="ld" marker-end="url(#d)"/>
+<path d="M375,630 L395,630" class="ld" marker-end="url(#d)"/>
+<rect x="395" y="618" width="24" height="24" rx="2" class="bxd"/>
+<path d="M419,630 L441,630" class="ld" marker-end="url(#d)"/>
+<rect x="441" y="618" width="24" height="24" rx="2" class="bxd"/>
+<path d="M465,630 L487,630" class="ld" marker-end="url(#d)"/>
+<rect x="487" y="618" width="24" height="24" rx="2" class="bxd"/>
+<path d="M511,630 L570,630" class="ld" marker-end="url(#d)"/>
+<rect x="560" y="320" width="374" height="365" rx="6" class="frame"/>
+<rect x="570" y="330" width="92" height="72" rx="5" class="bx"/>
+<rect x="566" y="326" width="100" height="80" rx="7" class="corner"/>
+<path d="M662,366 L700,366" class="ld" marker-end="url(#d)"/>
+<path d="M616,402 L616,462" class="ld" marker-end="url(#d)"/>
+<rect x="700" y="330" width="92" height="72" rx="5" class="bx"/>
+<path d="M792,366 L830,366" class="ld" marker-end="url(#d)"/>
+<path d="M746,402 L746,462" class="ld" marker-end="url(#d)"/>
+<rect x="830" y="330" width="92" height="72" rx="5" class="ad"/>
+<rect x="570" y="462" width="92" height="72" rx="5" class="bx"/>
+<path d="M662,498 L700,498" class="ld" marker-end="url(#d)"/>
+<path d="M616,534 L616,594" class="ld" marker-end="url(#d)"/>
+<rect x="700" y="462" width="92" height="72" rx="5" class="ad"/>
+<rect x="830" y="462" width="92" height="72" rx="5" class="bx"/>
+<path d="M876,462 L876,402" class="ld" marker-end="url(#d)"/>
+<rect x="570" y="594" width="92" height="72" rx="5" class="ad"/>
+<rect x="700" y="594" width="92" height="72" rx="5" class="bx"/>
+<path d="M746,594 L746,534" class="ld" marker-end="url(#d)"/>
+<rect x="830" y="594" width="92" height="72" rx="5" class="bx"/>
+<rect x="826" y="590" width="100" height="80" rx="7" class="corner"/>
+<path d="M876,594 L876,534" class="ld" marker-end="url(#d)"/>
+<path d="M830,630 L792,630" class="ld" marker-end="url(#d)"/>
+<circle cx="466" cy="498" r="3.5" class="fd"/>
+<path d="M466,498 L466,446 L528,446 L528,292 L990,292 L990,498 L922,498" class="halo"/>
+<path d="M466,498 L466,446 L528,446 L528,292 L990,292 L990,498 L922,498" class="ld" marker-end="url(#d)"/>
+<circle cx="419" cy="630" r="3.5" class="fd"/>
+<path d="M419,630 L430,630 L430,705 L1022,705 L1022,630 L922,630" class="halo"/>
+<path d="M419,630 L430,630 L430,705 L1022,705 L1022,630 L922,630" class="ld" marker-end="url(#d)"/>
+<path d="M616,215 L616,330" class="halo"/>
+<path d="M616,215 L616,330" class="ls load" marker-end="url(#s)"/>
+<path d="M746,215 L746,330" class="halo"/>
+<path d="M746,215 L746,330" class="ls load" marker-end="url(#s)"/>
+<path d="M876,215 L876,330" class="halo"/>
+<path d="M876,215 L876,330" class="ls load" marker-end="url(#s)"/>
+<path d="M930,184 L967,184 L967,725 L746,725" class="halo"/>
+<path d="M930,184 L967,184 L967,725 L746,725" class="ls load"/>
+<path d="M746,725 L746,666" class="halo"/>
+<path d="M746,725 L746,666" class="ls load" marker-end="url(#s)"/>
+<circle cx="746" cy="725" r="3.5" class="fs"/>
+<path d="M876,725 L876,666" class="halo"/>
+<path d="M876,725 L876,666" class="ls load" marker-end="url(#s)"/>
+<circle cx="876" cy="725" r="3.5" class="fs"/>
+<path d="M922,366 L945,366 L945,790" class="halo"/>
+<path d="M922,366 L945,366 L945,790" class="ld" marker-end="url(#d)"/>
+<path d="M746,534 L746,557 L803,557 L803,790" class="halo"/>
+<path d="M746,534 L746,557 L803,557 L803,790" class="ld" marker-end="url(#d)"/>
+<path d="M616,666 L616,790" class="halo"/>
+<path d="M616,666 L616,790" class="ld" marker-end="url(#d)"/>
+<rect x="580" y="790" width="395" height="42" rx="5" class="bxd"/>
+<rect x="285" y="762" width="260" height="70" rx="5" class="bxl"/>
+<path d="M545,806 L555,806 L555,681 L560,681" class="halo"/>
+<path d="M545,806 L555,806 L555,681 L560,681" class="ll dash" marker-end="url(#l)"/>
+<path d="M750,832 L750,868" class="ld" marker-end="url(#d)"/>
+<rect x="580" y="868" width="330" height="60" rx="5" class="bxd"/>
+<rect x="1000" y="868" width="240" height="60" rx="5" class="bxd"/>
+<path d="M910,898 L1000,898" class="ld" marker-end="url(#d)"/>
+<rect x="1070" y="430" width="200" height="55" rx="5" class="bx"/>
+<path d="M1170,485 L1065,485 L1065,866" class="halo"/>
+<path d="M1170,485 L1065,485 L1065,866" class="lk" marker-end="url(#k)"/>
+<rect x="1340" y="423" width="195" height="65" rx="5" class="bx2"/>
+<path d="M1340,455 L1270,455" class="ls" marker-end="url(#s)"/>
+<rect x="1110" y="610" width="160" height="150" rx="5" class="bxs"/>
+<path d="M1120,868 L1120,779 L1190,779 L1190,760" class="halo"/>
+<path d="M1120,868 L1120,779 L1190,779 L1190,760" class="ld" marker-end="url(#d)"/>
+<path d="M860,928 L860,946 L1250,946 L1250,760" class="halo"/>
+<path d="M860,928 L860,946 L1250,946 L1250,760" class="ld" marker-end="url(#d)"/>
+<path d="M1270,457 L1285,457 L1285,689 L1270,689" class="halo"/>
+<path d="M1270,457 L1285,457 L1285,689 L1270,689" class="ls" marker-end="url(#s)"/>
+<rect x="1110" y="230" width="160" height="75" rx="5" class="bx"/>
+<path d="M1110,652 L1050,652 L1050,269 L1110,269" class="halo"/>
+<path d="M1110,652 L1050,652 L1050,269 L1110,269" class="ls" marker-end="url(#s)"/>
+<rect x="1340" y="223" width="195" height="83" rx="5" class="bx2"/>
+<path d="M1270,255 L1340,255" class="ld" marker-end="url(#d)"/>
+<rect x="1070" y="120" width="200" height="75" rx="5" class="bxl"/>
+<path d="M1190,230 L1190,195" class="ll" marker-end="url(#l)"/>
+<path d="M1070,154 L1005,154 L1005,275 L550,275 L550,349 L570,349" class="halo"/>
+<path d="M1070,154 L1005,154 L1005,275 L550,275 L550,349 L570,349" class="ll" marker-end="url(#l)"/>
+<circle cx="1005" cy="275" r="3.5" class="fl"/>
+<path d="M1005,275 L1005,612 L922,612" class="halo"/>
+<path d="M1005,275 L1005,612 L922,612" class="ll" marker-end="url(#l)"/>
+<path d="M550,275 L535,275 L535,747 L520,747 L520,762" class="halo"/>
+<path d="M550,275 L535,275 L535,747 L520,747 L520,762" class="ll" marker-end="url(#l)"/>
+<circle cx="550" cy="275" r="3.5" class="fl"/>
+<rect x="1070" y="315" width="200" height="65" rx="5" class="bxl"/>
+<path d="M1270,155 L1290,155 L1290,347 L1270,347" class="halo"/>
+<path d="M1270,155 L1290,155 L1290,347 L1270,347" class="ll" marker-end="url(#l)"/>
+<path d="M1170,380 L1170,430" class="ll" marker-end="url(#l)"/>
+<rect x="530" y="1000" width="400" height="65" rx="5" class="bxs"/>
+<path d="M255,474 L255,1034 L530,1034" class="halo"/>
+<path d="M255,474 L255,1034 L530,1034" class="ls" marker-end="url(#s)"/>
+<rect x="20" y="987" width="200" height="65" rx="5" class="bx2"/>
+<path d="M220,1015 L460,1015 L460,1020 L530,1020" class="halo"/>
+<path d="M220,1015 L460,1015 L460,1020 L530,1020" class="ls" marker-end="url(#s)"/>
+<path d="M930,1034 L980,1034 L980,954 L1298,954 L1298,286 L1270,286" class="halo"/>
+<path d="M930,1034 L980,1034 L980,954 L1298,954 L1298,286 L1270,286" class="ls" marker-end="url(#s)"/>
+<rect x="1000" y="970" width="270" height="90" rx="5" class="bxs"/>
+<path d="M1270,733 L1280,733 L1280,1000 L1270,1000" class="halo"/>
+<path d="M1270,733 L1280,733 L1280,1000 L1270,1000" class="ls dash" marker-end="url(#s)"/>
+<path d="M1000,1010 L988,1010 L988,849 L1040,849" class="halo"/>
+<path d="M1000,1010 L988,1010 L988,849 L1040,849" class="ls dash" marker-end="url(#s)"/>
+<rect x="20" y="800" width="200" height="76" rx="5" class="bx2"/>
+<text x="24" y="32" class="m muted">Parallel ready/valid interface · one clock domain · default N = 3</text>
+<text x="267" y="88" class="h">nnAccelerator</text>
+<text x="1284" y="88" class="m" text-anchor="end">clk / rst_n</text>
+<text x="282" y="130" class="m">matrixEngine · weightStationaryMatrixMultiplier</text>
+<text x="120.0" y="174" class="mid b">weightData[N]</text>
+<text x="120.0" y="195" class="mid ms">weightValid / weightReady</text>
+<text x="120.0" y="210" class="mid ms">rows 2 → 1 → 0</text>
+<text x="732.5" y="174" class="mid b">weightBuffer[N][N]</text>
+<text x="732.5" y="196" class="mid s">Collect N host rows, then N shifts + capture</text>
+<text x="300" y="172" class="ms wire-label">accepted rows</text>
+<text x="595" y="237" class="ms">LOAD: top ↓ / bottom ↑</text>
+<text x="400.0" y="251" class="mid b">Load / reload sequencer</text>
+<text x="400.0" y="272" class="mid ms">N shifts → atomic capture</text>
+<text x="293" y="302" class="ms wire-label">load / capture →</text>
+<text x="120.0" y="467" class="mid b">inputData[N]</text>
+<text x="120.0" y="489" class="mid ms">inputValid / inputReady</text>
+<text x="322.5" y="466" class="mid b">input</text>
+<text x="322.5" y="485" class="mid s">register</text>
+<text x="322.5" y="501" class="mid ms">1 vector</text>
+<text x="455" y="325" class="mid b">Shared row skew</text>
+<text x="407" y="345" class="mid ms">s0</text>
+<text x="538" y="384" class="ms wire-label">x0 L</text>
+<text x="407" y="477" class="mid ms">s0</text>
+<text x="453" y="477" class="mid ms">s1</text>
+<text x="538" y="488" class="ms wire-label">x1 L</text>
+<text x="407" y="609" class="mid ms">s0</text>
+<text x="453" y="609" class="mid ms">s1</text>
+<text x="499" y="609" class="mid ms">s2</text>
+<text x="538" y="620" class="ms wire-label">x2 L</text>
+<text x="455" y="680" class="mid ms">s0 = registered entry</text>
+<text x="390" y="719" class="ms">Left tap: s[i]</text>
+<text x="390" y="738" class="ms">Right tap: s[N−1−i]</text>
+<text x="740" y="314" class="mid b">N × N PE array · resident W</text>
+<text x="616" y="350" class="mid m b">w00 · TL</text>
+<text x="616" y="369" class="mid ms">x→   P↓</text>
+<text x="616" y="389" class="mid ms tlearn">update f = 0</text>
+<text x="746" y="350" class="mid m b">w01 · TL</text>
+<text x="746" y="369" class="mid ms">x→   P↓</text>
+<text x="746" y="389" class="mid ms tlearn">update f = 1</text>
+<text x="876" y="350" class="mid m b">w02 · AD</text>
+<text x="876" y="369" class="mid ms">xW + P↓ + P↑</text>
+<text x="876" y="389" class="mid ms tlearn">update f = 2</text>
+<text x="616" y="482" class="mid m b">w10 · TL</text>
+<text x="616" y="501" class="mid ms">x→   P↓</text>
+<text x="616" y="521" class="mid ms tlearn">update f = 1</text>
+<text x="746" y="482" class="mid m b">w11 · AD</text>
+<text x="746" y="501" class="mid ms">xW + P↓ + P↑</text>
+<text x="746" y="521" class="mid ms tlearn">update f = 2</text>
+<text x="876" y="482" class="mid m b">w12 · BR</text>
+<text x="876" y="501" class="mid ms">x←   P↑</text>
+<text x="876" y="521" class="mid ms tlearn">update f = 1</text>
+<text x="616" y="614" class="mid m b">w20 · AD</text>
+<text x="616" y="633" class="mid ms">xW + P↓ + P↑</text>
+<text x="616" y="653" class="mid ms tlearn">update f = 2</text>
+<text x="746" y="614" class="mid m b">w21 · BR</text>
+<text x="746" y="633" class="mid ms">x←   P↑</text>
+<text x="746" y="653" class="mid ms tlearn">update f = 1</text>
+<text x="876" y="614" class="mid m b">w22 · BR</text>
+<text x="876" y="633" class="mid ms">x←   P↑</text>
+<text x="876" y="653" class="mid ms tlearn">update f = 0</text>
+<text x="950" y="519" class="ms wire-label">x1 R</text>
+<text x="950" y="655" class="ms wire-label">x2 R</text>
+<text x="624" y="254" class="ms wire-label">top[0]</text>
+<text x="754" y="254" class="ms wire-label">top[1]</text>
+<text x="884" y="254" class="ms wire-label">top[2]</text>
+<text x="754" y="754" class="ms wire-label">bottom[1]</text>
+<text x="884" y="754" class="ms wire-label">bottom[2]</text>
+<text x="662" y="777" class="ms wire-label">LOAD: AD lower sum gated; bottom[0] unused</text>
+<text x="951" y="585" class="ms wire-label">lane 2</text>
+<text x="809" y="685" class="ms wire-label">lane 1</text>
+<text x="622" y="700" class="ms wire-label">lane 0</text>
+<text x="777.5" y="808" class="mid m">Direct wires: result[j] = PE(2−j, j).psumOut</text>
+<text x="777.5" y="825" class="mid ms">existing AD MAC registers · no alignment stage</text>
+<text x="415.0" y="783" class="mid b">W update delay pipe · N−1 stages</text>
+<text x="415.0" y="805" class="mid ms">D1 → f=1    D2 → f=2 (AD)</text>
+<text x="415.0" y="822" class="mid ms">f &gt; 0 → distributed PE update ports</text>
+<text x="745.0" y="892" class="mid b">Activation · ReLU or pass-through</text>
+<text x="745.0" y="914" class="mid s">a[N] · applied once, after AD registers</text>
+<text x="1120.0" y="891" class="mid b">weightedVectorReduction</text>
+<text x="1120.0" y="912" class="mid m">ŷ = (Σ rⱼ · aⱼ) ≫ 11</text>
+<text x="1170.0" y="451" class="mid b">Resident R[N]</text>
+<text x="1170.0" y="472" class="mid ms">residentReductionWeight</text>
+<text x="1073" y="568" class="m wire-label">R</text>
+<text x="1437.5" y="445" class="mid m">reductionWeight[N]</text>
+<text x="1437.5" y="466" class="mid ms">loadReductionWeights</text>
+<text x="1437.5" y="481" class="mid ms">loads resident R</text>
+<text x="1190.0" y="633" class="mid b">resultFifo</text>
+<text x="1190.0" y="655" class="mid ms">depth 2N = 6</text>
+<text x="1190.0" y="686" class="mid m">a[N]</text>
+<text x="1190.0" y="707" class="mid m">ŷ</text>
+<text x="1190.0" y="728" class="mid ms">saved sign(R)[N]</text>
+<text x="1130" y="807" class="ms wire-label">prediction</text>
+<text x="936" y="939" class="ms wire-label">activated vector a[N]</text>
+<text x="1294" y="583" class="ms wire-label" text-anchor="end">sign(R)</text>
+<text x="1190.0" y="253" class="mid h">retire</text>
+<text x="1190.0" y="274" class="mid ms">valid ∧ ready</text>
+<text x="1190.0" y="293" class="mid ms">pop both FIFO heads</text>
+<text x="1110" y="599" class="ms">head: a, ŷ, sign(R)</text>
+<text x="1437.5" y="246" class="mid b">resultData[N]</text>
+<text x="1437.5" y="267" class="mid ms">a[N] or {ŷ, 0, 0}</text>
+<text x="1437.5" y="287" class="mid ms">resultValid / resultReady</text>
+<text x="1372" y="323" class="ms">selection: reduceOutput</text>
+<text x="1170.0" y="142" class="mid m b">e = sign(t − ŷ)</text>
+<text x="1170.0" y="163" class="mid s">W / R update directions</text>
+<text x="1170.0" y="182" class="mid ms">enable: retire ∧ train</text>
+<text x="707" y="265" class="s tlearn wire-label">same W package → live at both corners</text>
+<text x="1170.0" y="338" class="mid b">R update pipe</text>
+<text x="1170.0" y="361" class="mid m">N = 3 advances → Δr</text>
+<text x="730.0" y="1023" class="mid b">sampleContextFifo · depth 2N+2 = 8</text>
+<text x="730.0" y="1047" class="mid m">{target t, sign(x)[N], trainingEnable}</text>
+<text x="282" y="1056" class="ms wire-label">push on input acceptance</text>
+<text x="120.0" y="1013" class="mid b">targetData</text>
+<text x="120.0" y="1035" class="mid m">trainingEnable</text>
+<text x="998" y="958" class="ms wire-label">context head → t, sign(x), train</text>
+<text x="1135.0" y="993" class="mid b">Common advance / capacity control</text>
+<text x="1135.0" y="1014" class="mid ms">result full + no pop → hold MAC/skew</text>
+<text x="1135.0" y="1032" class="mid ms">and both learning pipelines</text>
+<text x="1135.0" y="1050" class="mid ms">context full → gate input acceptance</text>
+<text x="901" y="859" class="ms wire-label">advance</text>
+<text x="120.0" y="823" class="mid ms">reloadWeights / reloadReady</text>
+<text x="120.0" y="845" class="mid m">weightsLoaded</text>
+<text x="120.0" y="865" class="mid ms">reload only when drained</text>
+<text x="284" y="880" class="ms">Load reuses P paths;</text>
+<text x="284" y="899" class="ms">capture psumOut → W.</text>
+<text x="284" y="923" class="ms">Valid: N stages; holds</text>
+<text x="284" y="942" class="ms">with arrayAdvance.</text>
+<text x="1340" y="548" class="ms">passThrough → activation</text>
+<text x="1340" y="571" class="ms">and learning gate</text>
+<text x="1340" y="805" class="ms">reloadReady checks:</text>
+<text x="1340" y="827" class="ms">input, skew, array,</text>
+<text x="1340" y="849" class="ms">contexts and updates</text>
+<text x="284" y="1086" class="ms">TL: right/down   BR: left/up   AD: local product + both sums; activation supplied from left</text>
+<text x="284" y="1105" class="ms">N=3: accept → result FIFO 5 edges → earliest retire 6. Row 0 has no right injection.</text>
+<text x="25" y="1137" class="s tdata">Blue: compute/data</text>
+<text x="235" y="1137" class="s tlearn">Orange: learning feedback</text>
+<text x="500" y="1137" class="s">Grey-green: storage/control; dashed top/bottom feeds = loading</text>
+<text x="1534" y="1137" class="ms" text-anchor="end">Crossovers have no dot; dots mark connections.</text>
+</svg>
