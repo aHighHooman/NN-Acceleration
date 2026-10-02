@@ -22,7 +22,8 @@ New-Item -ItemType Directory -Path $buildDir | Out-Null
 $sources = $coreSources + (@(
     "weightStationaryVariant/weightStationaryMatrixMultiplier_tb.sv",
     "weightStationaryVariant/matrixWeightUpdateWave_tb.sv",
-    "weightStationaryVariant/weightedVectorReduction_tb.sv"
+    "weightStationaryVariant/weightedVectorReduction_tb.sv",
+    "weightStationaryVariant/nnAcceleratorFeedback_tb.sv"
 ) | ForEach-Object { Join-Path $projectRoot $_ })
 
 Push-Location $projectRoot
@@ -56,6 +57,8 @@ try {
         "Core regression failed."
     Invoke-RtlTest "matrixWeightUpdateWave_tb" "matrix-update-regression.log" `
         "Matrix update-wave regression failed."
+    Invoke-RtlTest "nnAcceleratorFeedback_tb" "feedback-regression.log" `
+        "Formation-feedback regression failed."
 
     & pwsh -File (Join-Path $PSScriptRoot "run_rtl_reference_compare.ps1")
     if ($LASTEXITCODE -ne 0) { throw "Golden RTL comparison failed." }

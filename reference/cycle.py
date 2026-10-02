@@ -149,11 +149,10 @@ class SampleContext:
 
 @dataclass(frozen=True)
 class ResultEntry:
-    """Complete transaction retained until one result retires."""
+    """Output payload retained after learning has consumed its context."""
 
     activated_result: tuple[int, ...]
     prediction: int
-    reduction_weight_signs: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -205,7 +204,6 @@ class _ResultEntry:
     sample_index: int
     activated_result: tuple[int, ...]
     prediction: int
-    reduction_weight_signs: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -558,9 +556,8 @@ class CycleReference:
         else:
             matrix_direction = _zero_matrix_tuple(self.config.n)
             reduction_direction = (0,) * self.config.n
-        # The directions depend only on values frozen at enqueue, so the record
-        # is complete here and retirement issues it unchanged.  Visibility is
-        # not claimed: it emerges from the waves and shows up in W_used/R_used.
+        # Formation issues the directions immediately. Visibility is not claimed:
+        # it emerges from the waves and shows up in W_used/R_used.
         result = SampleRecord(
             sample_index=completed.sample.index,
             input_vector=completed.sample.input_vector,
@@ -606,7 +603,6 @@ class CycleReference:
                 ResultEntry(
                     entry.activated_result,
                     entry.prediction,
-                    entry.reduction_weight_signs,
                 )
                 for entry in self._result_fifo
             ),
@@ -629,7 +625,7 @@ class CycleReference:
             return snapshot
 
         result_head, context_head = self._result_head()
-        result_valid = result_head is not None and context_head is not None
+        result_valid = result_head is not None
         result_retired = bool(result_valid and cycle_inputs.result_ready)
 
         weight_ready = bool(
@@ -641,7 +637,9 @@ class CycleReference:
         weight_accepted = bool(cycle_inputs.weight_valid and weight_ready)
 
         reduction_update_entering = bool(
-            result_retired and context_head is not None and context_head.training_enable
+            self._alignment
+            and (len(self._result_fifo) < self.config.output_fifo_depth or result_retired)
+            and context_head is not None and context_head.training_enable
         )
         reduction_update_busy = bool(
             reduction_update_entering or any(wave is not None for wave in self._reduction_pipe)
@@ -666,8 +664,9 @@ class CycleReference:
         input_pop = bool(
             self._weights_loaded and self._input_stage is not None and datapath_advance
         )
+        result_enqueue = bool(datapath_advance and aligned_head_ready)
         context_full = len(self._sample_context_fifo) >= self.config.sample_context_depth
-        sample_can_accept = not context_full or result_retired
+        sample_can_accept = not context_full or result_enqueue
         input_ready = (
             self._weights_loaded
             and not reload_accepted
@@ -687,22 +686,17 @@ class CycleReference:
             self.timings.append(SampleTiming(accepted_at=cycle_number))
 
         input_for_array = self._input_stage if input_pop else None
-        result_enqueue = bool(datapath_advance and aligned_head_ready)
         injected_matrix: _MatrixWave | None = None
         injected_reduction: _ReductionWave | None = None
-        matrix_update_accepted = bool(
-            result_retired
-            and context_head is not None
-            and context_head.training_enable
-            and datapath_advance
-        )
-        if matrix_update_accepted:
-            assert context_head is not None
-            issued = self.records[context_head.index]
-            injected_matrix = _MatrixWave(issued.matrix_update_directions, 0)
-            injected_reduction = _ReductionWave(issued.reduction_update_directions)
-
-        resident_R_before = self._R[:]
+        result: SampleRecord | None = None
+        if result_enqueue:
+            completed = self._alignment[0]
+            if context_head is None or context_head.index != completed.sample.index:
+                raise AssertionError("completing result and sample-context order diverged")
+            result = self._make_result(completed, pass_through, self._R)
+            if context_head.training_enable:
+                injected_matrix = _MatrixWave(result.matrix_update_directions, 0)
+                injected_reduction = _ReductionWave(result.reduction_update_directions)
 
         if datapath_advance and self._weights_loaded:
             self._shift_data_and_alignment(input_for_array, input_pop)
@@ -764,17 +758,15 @@ class CycleReference:
 
         if result_enqueue:
             completed_to_enqueue = self._alignment.popleft()
-            result = self._make_result(
-                completed_to_enqueue,
-                pass_through,
-                resident_R_before,
-            )
+            assert result is not None
+            completed_context = self._sample_context_fifo.popleft()
+            if completed_context.index != completed_to_enqueue.sample.index:
+                raise AssertionError("completing result is missing its context")
             self._result_fifo.append(
                 _ResultEntry(
                     completed_to_enqueue.sample.index,
                     result.activated_result,
                     result.prediction,
-                    tuple(ternary_sign(value) for value in result.R_used),
                 )
             )
             timing = self.timings[completed_to_enqueue.sample.index]
@@ -783,13 +775,10 @@ class CycleReference:
             timing.enqueued_at = cycle_number
 
         if result_retired:
-            if not self._result_fifo or not self._sample_context_fifo:
-                raise AssertionError("retired result transaction is missing its context")
+            if not self._result_fifo:
+                raise AssertionError("retired result transaction is missing its payload")
             retired_result = self._result_fifo.popleft()
-            retired_context = self._sample_context_fifo.popleft()
-            if retired_result.sample_index != retired_context.index:
-                raise AssertionError("result and sample-context order diverged")
-            timing = self.timings[retired_context.index]
+            timing = self.timings[retired_result.sample_index]
             if timing.retired_at is not None or timing.enqueued_at is None:
                 raise AssertionError("sample retirement order diverged")
             timing.retired_at = cycle_number

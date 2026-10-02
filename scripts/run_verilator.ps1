@@ -56,6 +56,7 @@ try {
     Invoke-VerilatorTest "weightedVectorReduction_tb" "reduction"
     Invoke-VerilatorTest "weightStationaryMatrixMultiplier_tb" "core"
     Invoke-VerilatorTest "matrixWeightUpdateWave_tb" "wave"
+    Invoke-VerilatorTest "nnAcceleratorFeedback_tb" "feedback"
 
     $invalidBinary = Build-VerilatorTest "weightStationaryMatrixMultiplier" "invalid" @("-GN=1")
     $invalidLog = Join-Path $artifactDir "invalid-parameter.log"

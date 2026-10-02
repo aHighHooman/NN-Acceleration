@@ -1,6 +1,6 @@
 """Sample-indexed W/R reference with queued learning packages, without cycle state.
 Arithmetic is shared; the independent claim is update visibility after
-``N + 2`` sample positions, so arithmetic agreement alone proves little."""
+``N + 1`` sample positions, so arithmetic agreement alone proves little."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ class ReferenceConfig:
     def update_visibility_delay(self) -> int:
         """Number of samples between an update source and its visibility."""
 
-        return self.n + 2
+        return self.n + 1
 
 
 @dataclass(frozen=True)

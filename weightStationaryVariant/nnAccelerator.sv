@@ -32,7 +32,7 @@ module nnAccelerator #(
     localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
     // Matrix updates reach the AD after N-1 advances; reduction observes the
-    // resulting registered vector one edge later at the result FIFO boundary.
+    // resulting registered vector one edge later at result formation.
     localparam int REDUCTION_UPDATE_DELAY = N;
     localparam int SAMPLE_CONTEXT_WIDTH = TARGET_WIDTH + 2*N + 1;
     localparam int COMPARE_WIDTH = (PREDICTION_WIDTH > TARGET_WIDTH)
@@ -57,13 +57,11 @@ module nnAccelerator #(
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] residentReductionWeight[N];
     logic signed [PREDICTION_WIDTH-1:0] prediction;
     logic signed [PREDICTION_WIDTH-1:0] enqueuePrediction;
-    logic signed [2*N-1:0] reductionWeightSignPushData;
-    logic signed [2*N-1:0] reductionWeightSignHead;
     localparam int RESULT_ENTRY_WIDTH = N*MATRIX_RESULT_WIDTH +
-                                        PREDICTION_WIDTH + 2*N;
+                                        PREDICTION_WIDTH;
     logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoPushData;
     logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoHead;
-    // The retired target and prediction comparison feed the internal update package.
+    // The completing sample's target and live prediction feed the update package.
     logic signed [TARGET_WIDTH-1:0] resultTargetData;
     logic signed [1:0] learningDirection;
     logic signed [COMPARE_WIDTH-1:0] comparePrediction, compareTarget;
@@ -103,9 +101,10 @@ module nnAccelerator #(
     assign matrixResultReady  = resultFifoCanAccept;
     assign matrixResultPush   = matrixResultValid && matrixResultReady;
     assign resultFifoPush     = matrixResultPush;
-    // Every result entry's sample context is still buffered until it retires.
+    // Learning and context completion happen before output storage. Consumption
+    // only frees output capacity; it never issues a learning package.
     assign resultValid        = !resultFifoEmpty;
-    assign samplePop          = resultFifoPop;
+    assign samplePop          = matrixResultPush;
     assign matrixUpdateValid = samplePop && trainingEnableHead;
     assign applyReductionUpdate = arrayAdvance &&
                                   reductionUpdateValidPipe[REDUCTION_UPDATE_DELAY-1];
@@ -115,16 +114,17 @@ module nnAccelerator #(
         for (int stage = 0; stage < REDUCTION_UPDATE_DELAY; stage++)
             reductionUpdateBusy |= reductionUpdateValidPipe[stage];
     end
-    assign reloadReady = matrixReloadReady && sampleContextEmpty && !reductionUpdateBusy;
+    assign reloadReady = matrixReloadReady && sampleContextEmpty &&
+                         resultFifoEmpty && !reductionUpdateBusy;
 
-    // Compare the rescaled architectural prediction with the aligned FIFO
-    // head. Assignment to the wider signed signals sign-extends either side.
-    assign comparePrediction = prediction;
+    // Compare the live rescaled prediction with the oldest incomplete context.
+    // Assignment to the wider signed signals sign-extends either side.
+    assign comparePrediction = enqueuePrediction;
     assign compareTarget     = resultTargetData;
 
     always_comb begin
         learningDirection = 2'sd0;
-        if (resultValid) begin
+        if (matrixResultValid) begin
             if (compareTarget > comparePrediction)
                 learningDirection = 2'sd1;
             else if (compareTarget < comparePrediction)
@@ -146,24 +146,24 @@ module nnAccelerator #(
         end
     end
 
-    // Both updates use the same FIFO head's activated vector, prediction, and saved
-    // reduction signs; only a training-enabled result handshake emits a package.
+    // Both updates use the completing vector and the resident coefficients that
+    // produced its live prediction, before any same-edge coefficient update.
     always_comb begin
         for (int lane = 0; lane < N; lane++) begin
             rowDirection[lane] = $signed(inputSignHead[2*lane +: 2]);
             columnDirection[lane] = 2'sd0;
             reductionDirection[lane] = 2'sd0;
 
-            if (activatedData[lane] != '0) begin
-                if (activatedData[lane][MATRIX_RESULT_WIDTH-1])
+            if (activatedMatrixResultData[lane] != '0) begin
+                if (activatedMatrixResultData[lane][MATRIX_RESULT_WIDTH-1])
                     reductionDirection[lane] = -learningDirection;
                 else
                     reductionDirection[lane] = learningDirection;
             end
 
-            if ((passThrough || activatedData[lane] != '0) &&
-                ($signed(reductionWeightSignHead[2*lane +: 2]) != 0)) begin
-                if ($signed(reductionWeightSignHead[2*lane +: 2]) < 0)
+            if ((passThrough || activatedMatrixResultData[lane] != '0) &&
+                (residentReductionWeight[lane] != '0)) begin
+                if (residentReductionWeight[lane][REDUCTION_WEIGHT_WIDTH-1])
                     columnDirection[lane] = -learningDirection;
                 else
                     columnDirection[lane] = learningDirection;
@@ -179,26 +179,15 @@ module nnAccelerator #(
             reductionUpdateData[2*lane +: 2] = reductionDirection[lane];
     end
 
-    // Capture resident reduction signs, activation, and prediction together on a
-    // matrix-result handshake, keeping updates paired with results through bubbles.
+    // Store only the output payload. Learning has already consumed the live
+    // activation, prediction, and reduction signs on this same handshake.
     always_comb begin
-        reductionWeightSignPushData = '0;
-        for (int lane = 0; lane < N; lane++) begin
-            if (residentReductionWeight[lane][REDUCTION_WEIGHT_WIDTH-1])
-                reductionWeightSignPushData[2*lane +: 2] = -2'sd1;
-            else if (residentReductionWeight[lane] != '0)
-                reductionWeightSignPushData[2*lane +: 2] = 2'sd1;
-            else
-                reductionWeightSignPushData[2*lane +: 2] = 2'sd0;
-        end
         resultFifoPushData = '0;
         for (int lane = 0; lane < N; lane++)
             resultFifoPushData[lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH] =
                 activatedMatrixResultData[lane];
         resultFifoPushData[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH] =
             enqueuePrediction;
-        resultFifoPushData[N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH +: 2*N] =
-            reductionWeightSignPushData;
     end
 
     assign sampleContextPushData = {
@@ -214,10 +203,8 @@ module nnAccelerator #(
                 resultFifoHead[lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH];
     end
     assign prediction = resultFifoHead[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH];
-    assign reductionWeightSignHead =
-        resultFifoHead[N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH +: 2*N];
 
-    // FIFO order pairs each input's sample context with its result transaction.
+    // FIFO order pairs each completing vector with its original sample context.
     signedFifo #(
         .WIDTH(SAMPLE_CONTEXT_WIDTH),
         .DEPTH(IN_FLIGHT_DEPTH)
@@ -228,8 +215,8 @@ module nnAccelerator #(
         .full(sampleContextFull), .empty(sampleContextEmpty)
     );
 
-    // One result entry carries every field needed at retirement.  The raw
-    // matrix vector is not persistent state after this FIFO accepts it.
+    // Output buffering is a side branch of learning. Preserve the prediction
+    // actually computed even if resident coefficients change before consumption.
     signedFifo #(
         .WIDTH(RESULT_ENTRY_WIDTH),
         .DEPTH(OUTPUT_FIFO_DEPTH)

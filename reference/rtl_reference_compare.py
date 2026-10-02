@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from .arithmetic import apply_matrix_update, matrix_update_directions
 from .cycle import CycleConfig, CycleInputs, CycleReference, CycleSnapshot
 from .functional import FunctionalReference, ReferenceConfig, Sample
 
@@ -186,7 +185,7 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     bubble_cycles.extend(_idle_cycles(28))
     add_scenario("input_bubbles", bubble_cycles)
 
-    # 5: eight accepted contexts and six buffered outputs force an array stall;
+    # 5: enough accepted samples to fill six outputs and force an array stall;
     # releasing ready must drain them in order.
     backpressure_cycles = _reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
     backpressure_cycles.extend(_input_cycle((i + 1, 1, -1), 0, False, ready=False) for i in range(12))
@@ -216,40 +215,48 @@ def define_cycle_inputs_and_comparisons() -> ComparisonInputs:
     reset_tail_cycles.append(_driven(CycleInputs(reset_n=False)))
     add_scenario("reset_during_learning_tail", reset_tail_cycles)
 
-    # Retire a training result, then stall with both update paths live.
-    # Result five saved R=(1,1,1); its matrix update must use those signs even
-    # after the first retired package changes resident R to zero.
-    saved_sign_samples = (
+    # Form updates while the consumer is held, including a result on the same
+    # edge R changes from positive to zero, then fill the output FIFO and stall.
+    formation_samples = (
         Sample((1, 1, 1), -128, True),
         Sample((0, 0, 0), 0, False),
         Sample((0, 0, 0), 0, False),
-        Sample((0, 0, 0), 0, False),
         Sample((1, 1, 1), -128, True),
-        Sample((0, 0, 0), 0, False),
+        Sample((1, 1, 1), -128, True),
+        Sample((1, 1, 1), -128, True),
         Sample((0, 0, 0), 0, False),
         Sample((0, 0, 0), 0, False),
         Sample((0, 0, 0), 0, False),
         Sample((0, 0, 0), 0, False),
     )
-    saved_sign_cycles = _reset_and_load_weights(
+    formation_cycles = _reset_and_load_weights(
         INITIAL_WEIGHT_MATRIX, SAVED_SIGN_INITIAL_REDUCTION_WEIGHTS
     )
-    # Accept eight samples, then idle three cycles to buffer four results.
-    # One ready cycle retires the first result and starts its learning package.
-    saved_sign_cycles.extend(_sample_cycles(saved_sign_samples[:8], ready=False))
-    saved_sign_cycles.extend(_idle_cycles(3, ready=False))
-    saved_sign_cycles.extend(_sample_cycles(saved_sign_samples[8:9], ready=True))
+    # Accept eight samples, then idle three cycles to fill all six output slots.
+    # Learning has already started before the first consumer handshake.
+    formation_cycles.extend(_sample_cycles(formation_samples[:8], ready=False))
+    formation_cycles.extend(_idle_cycles(3, ready=False))
+    formation_cycles.extend(_sample_cycles(formation_samples[8:9], ready=True))
     # Two held cycles occur after the result FIFO becomes full.  The second
     # input is accepted on the first advancing edge after the stall.
-    saved_sign_cycles.extend(_idle_cycles(4, ready=False))
-    saved_sign_cycles.extend(_sample_cycles(saved_sign_samples[9:10], ready=True))
-    saved_sign_cycles.extend(_idle_cycles(32, ready=True))
+    formation_cycles.extend(_idle_cycles(4, ready=False))
+    formation_cycles.extend(_sample_cycles(formation_samples[9:10], ready=True))
+    formation_cycles.extend(_idle_cycles(32, ready=True))
     add_scenario(
-        "saved_reduction_signs_under_backpressure",
-        saved_sign_cycles,
-        saved_sign_samples,
-        initial_reduction_weights=SAVED_SIGN_INITIAL_REDUCTION_WEIGHTS,
+        "formation_learning_under_backpressure",
+        formation_cycles,
     )
+
+    # A single result remains buffered after all learning drains. Repeated
+    # reload offers must be rejected until that output is consumed.
+    buffered_cycles = _reset_and_load_weights(INITIAL_WEIGHT_MATRIX, INITIAL_REDUCTION_WEIGHTS)
+    buffered_cycles.append(_input_cycle((1, 2, 3), 127, True, ready=False))
+    buffered_cycles.extend(_idle_cycles(12, ready=False))
+    buffered_cycles.extend(_driven(CycleInputs(reload_weights=True, result_ready=False))
+                           for _ in range(3))
+    buffered_cycles.extend(_idle_cycles(3, ready=True))
+    buffered_cycles.append(_driven(CycleInputs(reload_weights=True, result_ready=True)))
+    add_scenario("buffered_output_reload_interlock", buffered_cycles)
 
     # 6: drain one sample, legally reload, stream a second matrix, and run a
     # separately checkable no-stall post-reload stream.
@@ -377,23 +384,26 @@ def read_trace(
             current = {"cycle": int(f[1])}
             snapshots.append(current)
         elif f[0] == "ENQ":
-            if len(f) != N + 2:
+            if len(f) != 2*N + 6:
                 raise ValueError(f"bad ENQ record at trace line {line_number}")
             enqueues.append({
                 "cycle": int(f[1]),
-                "raw": tuple(map(int, f[2:])),
+                "raw": tuple(map(int, f[2:2+N])),
+                "activated": tuple(map(int, f[2+N:2+2*N])),
+                "prediction": int(f[2+2*N]),
+                "direction": int(f[3+2*N]),
+                "target": int(f[4+2*N]),
+                "training": bool(int(f[5+2*N])),
             })
         elif f[0] == "RT":
-            if len(f) != 2*N + 5:
+            if len(f) != 2*N + 3:
                 raise ValueError(f"bad RT record at trace line {line_number}")
             v = [int(field) for field in f[1:]]
             retirements.append({
                 "cycle": v[0],
                 "activated": tuple(v[1:1 + N]),
                 "prediction": v[1 + N],
-                "direction": v[2 + N],
-                "target": v[3 + N],
-                "result": tuple(v[4 + N:4 + 2 * N]),
+                "result": tuple(v[2 + N:2 + 2 * N]),
             })
         elif current is None:
             raise ValueError(f"trace data before C at line {line_number}")
@@ -421,9 +431,9 @@ def read_trace(
             entries = _parse_counted(f, N + 2)
             current["sample_context_fifo"] = tuple((e[0], tuple(e[1:1+N]), bool(e[-1])) for e in entries)
         elif f[0] == "RF":
-            entries = _parse_counted(f, 2*N + 1)
+            entries = _parse_counted(f, N + 1)
             current["result_fifo"] = tuple(
-                (tuple(entry[:N]), entry[N], tuple(entry[N+1:]))
+                (tuple(entry[:N]), entry[N])
                 for entry in entries
             )
         elif f[0] == "STALL":
@@ -480,6 +490,11 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
             expected_enqueues.append({
                 "cycle": snapshot.cycle,
                 "raw": cycle_model.records[-1].raw_matrix_result,
+                "activated": cycle_model.records[-1].activated_result,
+                "prediction": cycle_model.records[-1].prediction,
+                "direction": cycle_model.records[-1].learning_direction,
+                "target": cycle_model.records[-1].target,
+                "training": cycle_model.records[-1].update_generated,
             })
     actual, enqueues, retirements = read_trace(trace_path)
     if len(actual) != len(expected):
@@ -504,7 +519,7 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
                    for e in exp.sample_context_fifo),
              act.get("sample_context_fifo", ())),
             ("resultFifo",
-             tuple((e.activated_result, e.prediction, e.reduction_weight_signs)
+             tuple((e.activated_result, e.prediction)
                    for e in exp.result_fifo),
              act.get("result_fifo", ())),
         ):
@@ -521,12 +536,34 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
         cycle = int(expected_enqueue["cycle"])
         if actual_enqueue.get("cycle") != cycle:
             _fail(cycle, "matrix-result enqueue cycle", cycle, actual_enqueue.get("cycle"))
-        if actual_enqueue.get("raw") != expected_enqueue["raw"]:
-            _fail(cycle, "raw matrix result at matrix-result handshake",
-                  expected_enqueue["raw"], actual_enqueue.get("raw"))
+        for field in ("raw", "activated", "prediction", "direction", "target", "training"):
+            if actual_enqueue.get(field) != expected_enqueue[field]:
+                _fail(cycle, f"{field} at result formation",
+                      expected_enqueue[field], actual_enqueue.get(field))
+
+    # Compare every consumer payload with its earlier formation, including stalled
+    # training scenarios where the functional model's sample-distance rule cannot apply.
+    pending_outputs = []
+    enqueue_by_cycle = {int(row["cycle"]): row for row in enqueues}
+    retired_by_cycle = {int(row["cycle"]): row for row in retirements}
+    for cycle, driven in enumerate(inputs):
+        if not driven.inputs.reset_n:
+            pending_outputs.clear()
+            continue
+        if cycle in retired_by_cycle:
+            rtl = retired_by_cycle[cycle]
+            if not pending_outputs:
+                raise AssertionError("output consumed without an earlier formation")
+            formed = pending_outputs.pop(0)
+            output = ((formed["prediction"], 0, 0) if driven.reduce_output else formed["activated"])
+            for field, wanted in (("prediction", formed["prediction"]),
+                                  ("activated", formed["activated"]), ("result", output)):
+                if rtl[field] != wanted:
+                    _fail(cycle, f"buffered output {field}", wanted, rtl[field])
+        if cycle in enqueue_by_cycle:
+            pending_outputs.append(enqueue_by_cycle[cycle])
 
     functional_comparisons = 0
-    functional_records = {}
     for comparison in comparison_inputs.functional_comparisons:
         model = FunctionalReference(
             ReferenceConfig(
@@ -538,7 +575,6 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
             comparison.W, comparison.R,
         )
         records = model.run(comparison.samples)
-        functional_records[comparison.name] = records
         window = [
             [r for r in rows
              if comparison.start_cycle <= int(r["cycle"]) <= comparison.end_cycle]
@@ -558,8 +594,8 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
                 (int(enq["cycle"]), "raw matrix result", record.raw_matrix_result, enq["raw"]),
                 (cycle, "activated result", record.activated_result, rtl["activated"]),
                 (cycle, "prediction", record.prediction, rtl["prediction"]),
-                (cycle, "learning direction", record.learning_direction, rtl["direction"]),
-                (cycle, "target", record.target, rtl["target"]),
+                (int(enq["cycle"]), "learning direction", record.learning_direction, enq["direction"]),
+                (int(enq["cycle"]), "target", record.target, enq["target"]),
                 (cycle, "external result", expected_output, rtl["result"]),
             ):
                 functional_comparisons += 1
@@ -607,52 +643,51 @@ def compare(stimulus_path: Path, trace_path: Path) -> tuple[int, int]:
             "stall_pending" in actual[reset_cycle]):
         raise AssertionError("reset-during-stall scenario did not reset a blocked datapath")
 
-    saved_signs = next(
+    formation_stall = next(
         scenario for scenario in comparison_inputs.scenarios
-        if scenario.name == "saved_reduction_signs_under_backpressure"
+        if scenario.name == "formation_learning_under_backpressure"
     )
     stalled_cycles = [
-        cycle for cycle in range(saved_signs.start_cycle, saved_signs.end_cycle + 1)
+        cycle for cycle in range(formation_stall.start_cycle, formation_stall.end_cycle + 1)
         if "stall_pending" in actual[cycle]
     ]
     if len(stalled_cycles) < 2 or stalled_cycles != list(range(stalled_cycles[0], stalled_cycles[-1] + 1)):
-        raise AssertionError("saved-sign scenario did not hold an output stall for multiple cycles")
+        raise AssertionError("formation scenario did not hold an output stall for multiple cycles")
     if actual[stalled_cycles[0]]["stall_pending"] != (1, 1):
-        raise AssertionError("saved-sign stall did not begin with matrix and reduction updates pending")
+        raise AssertionError("formation stall did not begin with matrix and reduction updates pending")
     if len(actual[stalled_cycles[0]]["result_fifo"]) != config.output_fifo_depth:
-        raise AssertionError("saved-sign stall did not fill the result buffer")
+        raise AssertionError("formation stall did not fill the result buffer")
 
-    records = functional_records[saved_signs.name]
-    scenario_retirements = [
-        int(row["cycle"]) for row in retirements
-        if saved_signs.start_cycle <= int(row["cycle"]) <= saved_signs.end_cycle
-    ]
-    buffered_result_index = 4
-    before_retirement = expected[scenario_retirements[buffered_result_index] - 1]
-    stored_signs = before_retirement.result_fifo[0].reduction_weight_signs
-    resident_signs = tuple((value > 0) - (value < 0) for value in before_retirement.R)
-    if stored_signs != (1, 1, 1) or resident_signs != (0, 0, 0):
-        raise AssertionError("buffered training result lost the reduction signs captured at enqueue")
+    formed = [row for row in enqueues
+              if formation_stall.start_cycle <= int(row["cycle"]) <= formation_stall.end_cycle]
+    transition = int(formed[3]["cycle"])
+    if (actual[transition - 1]["R"] != (1, 1, 1) or
+            actual[transition]["R"] != (0, 0, 0) or
+            actual[transition]["W"][0][0] != actual[transition - 1]["W"][0][0] - 1 or
+            actual[transition + 1]["W"][0][0] != actual[transition]["W"][0][0]):
+        raise AssertionError("formation learning did not use pre-edge R on its sign transition")
 
-    buffered_record = records[buffered_result_index]
-    _, _, current_sign_direction = matrix_update_directions(
-        buffered_record.input_vector, buffered_record.activated_result,
-        before_retirement.R, buffered_record.learning_direction,
-        WIDTH, REDUCTION_WEIGHT_WIDTH, True,
-    )
-    counterfactual_W = [list(row) for row in INITIAL_WEIGHT_MATRIX]
-    for index, record in enumerate(records):
-        if record.update_generated:
-            direction = current_sign_direction if index == buffered_result_index else record.matrix_update_directions
-            counterfactual_W = apply_matrix_update(counterfactual_W, direction, WIDTH)
-    if tuple(map(tuple, counterfactual_W)) == expected[saved_signs.end_cycle].W:
-        raise AssertionError("saved reduction signs did not affect final matrix weights")
+    buffered = next(s for s in comparison_inputs.scenarios
+                    if s.name == "buffered_output_reload_interlock")
+    formed_at = next(int(row["cycle"]) for row in enqueues
+                     if buffered.start_cycle <= int(row["cycle"]) <= buffered.end_cycle)
+    consumed_at = next(int(row["cycle"]) for row in retirements
+                       if buffered.start_cycle <= int(row["cycle"]) <= buffered.end_cycle)
+    if (actual[formed_at]["W"][0][0] != INITIAL_WEIGHT_MATRIX[0][0] + 1 or
+            actual[formed_at + N]["R"] != tuple(r + 1 for r in INITIAL_REDUCTION_WEIGHTS) or
+            consumed_at <= formed_at + N):
+        raise AssertionError("learning waited for the output consumer")
+    before_consume = actual[consumed_at - 1]
+    if (before_consume["sample_context_fifo"] or not before_consume["result_fifo"] or
+            not before_consume["weights_loaded"] or actual[buffered.end_cycle]["weights_loaded"]):
+        raise AssertionError("buffered outputs did not interlock reload until consumption")
     print(
-        "PASS: saved reduction signs under backpressure: "
+        "PASS: formation learning and full-buffer hold: "
         f"stall={stalled_cycles[0]}..{stalled_cycles[-1]}, "
-        f"stored={stored_signs}, resident={resident_signs}, "
-        f"retired={scenario_retirements[buffered_result_index]}"
+        f"pre-edge reduction signs checked at {transition}"
     )
+    print(f"PASS: independent learning: W at {formed_at}, R at {formed_at + N}, "
+          f"output consumed at {consumed_at}; buffered-output reload interlock")
     return len(expected), functional_comparisons
 
 

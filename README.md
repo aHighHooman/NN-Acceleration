@@ -15,7 +15,7 @@ domain. It sustains one sample per clock when the consumer keeps up.
 | Array | 3 × 3 PEs, weight-stationary |
 | Numbers | signed Q12.4 inputs and weights, Q1.7 reduction weights |
 | Throughput | 1 sample per clock, sustained |
-| Latency | accept to result in N+2 = 5 edges, retire and first weight update on edge N+3 = 6 |
+| Latency | accept to result and first weight update in N+2 = 5 edges; earliest output consumption on edge N+3 = 6 |
 | Learning | SSLMS, −1 / 0 / +1 LSB per weight per training sample, saturating |
 | Target | Cyclone V `5CSEMA5F31C6`; 100 MHz implementation target, not yet timing-closed |
 | Verification | Python golden models, per-edge RTL comparison, UVM, directed benches |
@@ -53,7 +53,27 @@ and UVM. See [Verification](#verification) for individual commands and coverage.
 
 ## Architecture
 
-![nnAccelerator architecture: parallel ports, shared skew, 3×3 PE wiring, two-ended loading, anti-diagonal outputs, paired FIFOs, and learning feedback](presentation/figures/01-architecture.svg)
+```mermaid
+flowchart LR
+    Inputs[Accepted input] --> Buffer[Input register]
+    Buffer --> Skew[Shared skew]
+    Skew --> Array[Inward PE array]
+    Array --> Activation[Activation]
+    Activation --> Reduction[Weighted reduction]
+    Inputs --> Context[Sample context FIFO]
+    Context --> Learning[Error and update directions]
+    Reduction --> Learning
+    Activation --> Learning
+    Activation --> Output[Output FIFO]
+    Reduction --> Output
+    Output --> Consumer[Consumer]
+    Learning --> Wave[Inward matrix update wave]
+    Wave --> Array
+    Learning --> Pipe[Reduction update pipe]
+    Pipe --> R[Resident reduction weights]
+    R --> Reduction
+    R --> Learning
+```
 
 In the diagrams, **blue** is forward data, **orange** is learning feedback,
 and **grey-green** is storage and control. Figures follow the system theme.
@@ -75,16 +95,16 @@ The forward path:
    separate output alignment or additional output register.
 5. **Activation** (ReLU or pass-through) is applied exactly once. The
    **weighted reduction** `Σ rⱼ·aⱼ` then forms the prediction `ŷ`.
-6. The activated vector, `ŷ`, and the signs of `r` are pushed together into
-   `resultFifo`.
+6. The activated vector and `ŷ` are pushed into `resultFifo` for output
+   buffering. Learning uses the live result before this storage boundary.
 
 Each sample's target, input signs, and training bit take a separate route into
-`sampleContextFifo` when the sample is accepted. A result **retires** when the
-consumer takes it, which pops the head of both FIFOs together. Nothing counts
-cycles to pair a prediction with its target. Order alone does it, so bubbles
-and stalls can't misalign them.
+`sampleContextFifo` when the sample is accepted. Result formation pops that
+context and pairs its target with the live prediction. A result **retires** when
+the consumer takes the output FIFO head; its context has already been consumed.
+Order pairs predictions with targets through bubbles and stalls.
 
-Retirement is also the only source of learning. A training sample's retirement
+Result formation is the only source of learning. A training sample's completion
 computes `e = sign(t − ŷ)` and sends one package into both opposite corners.
 Updates converge inward with the same phase as computation:
 `f(i,j) = min(i+j, 2N−2−i−j)`. A matching reduction update goes through an
@@ -137,21 +157,22 @@ and an always-ready consumer. Every edge below assumes the datapath advances.
 | E0 | accepted: vector into the input register, context into `sampleContextFifo` | 0 |
 | E1 | leaves the input register and enters the registered skew entry | 1 |
 | E2 … E(N+1) | multiplies along inward phases 0 … N−1 | 2 … 4 |
-| E(N+2) | registered AD vector activated and reduced to `ŷ`, pushed into `resultFifo` | 5 |
-| E(N+3) | retires: `e` is formed and both opposite corner PEs update | 6 |
-| E(N+4) … E(2N+2) | the update crosses inward phases 1 … N−1 | 7 … 8 |
-| E(2N+3) | the reduction update commits to `r` | 9 |
+| E(N+2) | result forms, context pops, output enqueues, `e` is formed, and both corner PEs update | 5 |
+| E(N+3) | earliest output retirement; learning is already in flight | 6 |
+| E(N+3) … E(2N+1) | the update crosses inward phases 1 … N−1 | 6 … 7 |
+| E(2N+2) | the reduction update commits to `r` | 8 |
 
-A PE multiply always uses the weight held *before* the edge. S4 (S(N+1))
+A PE multiply always uses the weight held *before* the edge. S3 (S(N))
 meets the corner PEs on the same edge as S0's update, so it still uses the old
-weights. **S5 (S(N+2)) is the first sample to see the updated matrix**, and it
+weights. **S4 (S(N+1)) is the first sample to see the updated matrix**, and it
 also sees the updated `r`. Data and matrix updates visit each PE at the same
 inward phase, so a sample observes a coherent generation throughout W.
 
-An update from sample S first affects sample S + N + 2 during continuous,
+An update from sample S first affects sample S + N + 1 during continuous,
 unstalled traffic. Input bubbles and consumer backpressure change the sample
 spacing; they preserve W/R coherence but do not retain this sample-index delay.
-Updates start at retirement, so holding `resultReady` also delays learning.
+Holding `resultReady` does not delay learning while output storage has space.
+Once a waiting result meets a full output FIFO, compute and learning hold together.
 The faster feedback intentionally changes training trajectories from the
 conventional array's S + 2N + 1 schedule.
 
@@ -175,11 +196,11 @@ The matrix update is the outer product of two ternary vectors:
 
 Each PE receives two ternary directions. Every step saturates at the signed limits.
 
-- The update uses the `sign(r)` **snapshotted when that result was formed**, so
-  it matches the `r` that produced `ŷ`, even if `r` has changed since.
+- The update uses the **live pre-edge `sign(r)` when the result forms**, matching
+  the coefficients that produced `ŷ`, including simultaneous resident updates.
 - `e` compares the target with the full-width prediction, with both
   sign-extended to a common width. It is `+1`, `0`, or `−1`.
-- Inference samples (`trainingEnable = 0`) retire the same way but launch no
+- Inference samples (`trainingEnable = 0`) complete and consume context the same way but launch no
   update.
 
 ## Fixed-point arithmetic
@@ -209,17 +230,17 @@ sign bit plus seven fraction bits.
 
 ![Bit layouts of the two FIFO entries and their steady-state occupancy](presentation/figures/07-transaction-storage.svg)
 
-Everything retirement needs is packed into two words:
+Metadata for learning and buffered output have separate lifetimes:
 
 - `sampleContextFifo` holds `{target, sign x[N], trainingEnable}` from
-  acceptance until retirement.
-- `resultFifo` holds `{activated vector, ŷ, sign r[N]}` from the moment the
+  acceptance until result formation.
+- `resultFifo` holds `{activated vector, ŷ}` from the moment the
   result forms until retirement.
 
 The result FIFO does not retain the raw pre-activation vector.
 
-At full speed with default depths, the context FIFO holds `N+3` outstanding
-samples and the result FIFO holds one entry. `N+3` context slots suffice for
+At full speed with default depths, the context FIFO holds `N+2` incomplete
+samples and the result FIFO holds one entry. `N+2` context slots suffice for
 unstalled one-sample-per-clock throughput. The default depths remain
 `IN_FLIGHT_DEPTH = 2N+2` and `OUTPUT_FIFO_DEPTH = 2N`; the extra capacity absorbs
 consumer stalls without changing unstalled latency.
@@ -238,7 +259,7 @@ When `resultReady` returns, the core can retire a result, enqueue the waiting
 result, accept a new input, and advance on the same edge.
 
 ```text
-inputReady   = weightsLoaded ∧ ¬acceptedReload ∧ (input register empty ∨ it is leaving) ∧ (context not full ∨ retire)
+inputReady   = weightsLoaded ∧ ¬acceptedReload ∧ (input register empty ∨ it is leaving) ∧ (context not full ∨ resultFormation)
 arrayAdvance = ¬(AD result valid ∧ resultFifo full ∧ ¬retire)  [while weightsLoaded]
 ```
 
@@ -300,7 +321,7 @@ Interface details:
 | `FRACTION_BITS` | `4` | Fraction bits of inputs, weights, targets, and predictions, ≥ 0 |
 | `TARGET_WIDTH` | `WIDTH` | Signed target width, ≥ 1, sign-extended for the comparison |
 | `REDUCTION_WEIGHT_WIDTH` | `8` | Width of each `rⱼ`, ≥ 1, one sign bit plus `REDUCTION_WEIGHT_WIDTH − 1` fraction bits |
-| `IN_FLIGHT_DEPTH` | `2*N+2` | Accepted but unretired samples, which is the `sampleContextFifo` depth, ≥ 1 |
+| `IN_FLIGHT_DEPTH` | `2*N+2` | Accepted samples awaiting result formation, which is the `sampleContextFifo` depth, ≥ 1 |
 | `OUTPUT_FIFO_DEPTH` | `2*N` | `resultFifo` depth, ≥ 1 |
 
 The input register holds at most one vector. The generic `signedFifo`
@@ -313,11 +334,11 @@ backs both transaction FIFOs and supports any `DEPTH ≥ 1`.
 | Layer | Checks |
 | --- | --- |
 | `reference/arithmetic.py` | Numerical semantics: widths, rescale, saturation, ternary signs. Pinned by `test_arithmetic.py`. |
-| `FunctionalReference` | End-to-end numbers and learning, one sample at a time. Update visibility in closed form, `N+2`, for continuous unstalled traffic. |
+| `FunctionalReference` | End-to-end numbers and learning, one sample at a time. Update visibility in closed form, `N+1`, for continuous unstalled traffic. |
 | `CycleReference` | Latency, W/R evolution, two-ended load shifts and capture, FIFO contents, bubbles, backpressure, reset, and reconfiguration. Derives update visibility by wave propagation for comparison with `FunctionalReference`. |
-| Golden RTL comparison | Ten deterministic scenarios through `nnAcceleratorStateTrace_tb`; W, R, the staging bank and loader state, input stage, and both FIFOs compared with `CycleReference` on every edge. |
+| Golden RTL comparison | Eleven deterministic scenarios through `nnAcceleratorStateTrace_tb`; W, R, the staging bank and loader state, input stage, and both FIFOs compared with `CycleReference` on every edge. Formation arithmetic and buffered output consumption are checked separately. |
 | UVM (`uvm/`) | Seeded public-port traffic at N = 3, WIDTH = 8: ordering, loss/duplication, backpressure, reset/reload recovery, and exact pass-through inference while matrix weights are known. Training and inference with learned weights are checked for ordering and liveness. |
-| Directed benches | Reduction arithmetic, the matrix core at N = 2/3/4/5/8, and update-wave propagation, saturation, and stalls. |
+| Directed benches | Reduction arithmetic, the matrix core at N = 2/3/4/5/8, and update-wave propagation, saturation, and stalls. `nnAcceleratorFeedback_tb` checks integrated formation feedback with one-entry FIFOs at all five sizes, context replacement, full-buffer holds, reload interlocks, and signed targets. |
 
 Run individual checks:
 
@@ -358,7 +379,9 @@ characterize the core. A board integration needs its own interface and pin assig
 Fresh September 30, 2026 fits with Quartus Prime 25.1std Lite use the same
 device, settings, and constraints at the defaults (N = 3, WIDTH = 16).
 The conventional baseline is the core at `09a4097` with the pre-existing local
-reload-ready simplification; the inward fit uses the current implementation.
+reload-ready simplification; the inward fit uses the September 30 implementation.
+These historical fits predate the October 2 removal of output storage from the
+learning loop; that follow-up has not been fitted yet.
 
 | Metric | Conventional baseline | Inward / anti-diagonal |
 | --- | ---: | ---: |
@@ -377,7 +400,7 @@ acceptance to result formation falls from 140 ns to 100 ns. At each design's
 reported Fmax, it is approximately 87.1 ns versus 61.6 ns. One fit per design
 does not establish a repeatable clock-frequency improvement.
 
-The worst internal path remains the activation/reduction path into the result
+The worst internal path in that fit was the activation/reduction path into the result
 FIFO. At the slow 85°C corner the inward design's worst path ending at a PE
 psum register has −0.244 ns slack, versus −2.307 ns for the full core at that
 corner. No extra AD/output register was added.
@@ -388,8 +411,7 @@ The clock pin is unassigned and the fitter reports non-dedicated clock routing;
 these figures characterize this fit, not a completed board implementation.
 The comparison reports are under `build/fpga-baseline/output_files/` and
 `build/fpga-final/output_files/` (ignored). Normal project builds generate
-`Quartus Stuff/output_files/`. See [the implementation report](LATENCY_SLASH_IMPLEMENTATION.md)
-for validation results and the loading/learning tradeoffs.
+`Quartus Stuff/output_files/`.
 
 ## Repository layout
 

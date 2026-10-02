@@ -33,11 +33,13 @@ module nnAcceleratorStateTrace_tb;
     integer scanned_load_reduction_weights, scanned_reload_weights;
     integer scanned_pass_through, scanned_reduce_output;
     integer entry, lane, index;
-    integer accepted, retired, retired_prediction, retired_direction, retired_target;
-    integer accepted_count, retired_count;
-    logic last_training_retired;
+    integer accepted, retired, retired_prediction, completed_direction, completed_target;
+    integer completed_prediction, completed_training;
+    integer accepted_count, completed_count, retired_count;
+    logic last_training_completed;
     integer retired_activated[0:N-1], retired_result[0:N-1];
     integer enqueued_raw[0:N-1];
+    integer completed_activated[0:N-1];
     string stimulus_path, trace_path;
     // Stream quiescence covers accepted samples, buffered results, and learning
     // updates; weight loading is outside this verification boundary.
@@ -170,8 +172,6 @@ module nnAcceleratorStateTrace_tb;
                 for (lane = 0; lane < N; lane++)
                     $fwrite(trace_fd, " %0d", $signed(dut.resultFifo.data[index][lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH]));
                 $fwrite(trace_fd, " %0d", $signed(dut.resultFifo.data[index][N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH]));
-                for (lane = 0; lane < N; lane++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.resultFifo.data[index][N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH+2*lane +: 2]));
             end
             $fwrite(trace_fd, "\n");
         end
@@ -235,7 +235,7 @@ module nnAcceleratorStateTrace_tb;
         resultReady = 0; loadReductionWeights = 0; reloadWeights = 0;
         passThrough = 1; reduceOutput = 0; targetData = 0;
         for (lane = 0; lane < N; lane++) begin weightData[lane] = 0; inputData[lane] = 0; reductionWeight[lane] = 0; end
-        accepted_count = 0; retired_count = 0;
+        accepted_count = 0; completed_count = 0; retired_count = 0;
 
         for (integer c = 0; c < cycle_count; c++) begin
             @(negedge clk);
@@ -272,20 +272,23 @@ module nnAcceleratorStateTrace_tb;
             // Sample after stimulus but before the rising edge; the post-edge snapshot
             // reflects FIFO changes and describes the next edge's contract.
             #1ps;
-            accepted = inputValid && inputReady;
-            retired = resultValid && resultReady;
-            if (rst_n && retired && dut.sampleContextEmpty)
-                $fatal(1, "result retired without a context at cycle %0d", c);
-            last_training_retired = rst_n && retired &&
+            accepted = rst_n && inputValid && inputReady;
+            retired = rst_n && resultValid && resultReady;
+            trace_matrix_result_handshake = rst_n && dut.matrixResultValid && dut.matrixResultReady;
+            if (trace_matrix_result_handshake && dut.sampleContextEmpty)
+                $fatal(1, "result completed without a context at cycle %0d", c);
+            last_training_completed = trace_matrix_result_handshake &&
                 dut.sampleContextFifo.values == 1 && dut.trainingEnableHead;
             retired_prediction = $signed(dut.prediction);
-            retired_direction = $signed(dut.learningDirection);
-            retired_target = $signed(dut.resultTargetData);
+            completed_prediction = $signed(dut.enqueuePrediction);
+            completed_direction = $signed(dut.learningDirection);
+            completed_target = $signed(dut.resultTargetData);
+            completed_training = dut.matrixUpdateValid;
             for (lane = 0; lane < N; lane++) begin
                 retired_activated[lane] = $signed(dut.activatedData[lane]);
                 retired_result[lane] = $signed(resultData[lane]);
+                completed_activated[lane] = $signed(dut.activatedMatrixResultData[lane]);
             end
-            trace_matrix_result_handshake = dut.matrixResultValid && dut.matrixResultReady;
             for (lane = 0; lane < N; lane++)
                 enqueued_raw[lane] = $signed(dut.rawResultData[lane]);
             trace_stalled = rst_n && dut.matrixEngine.outputBlocked && !dut.matrixEngine.arrayAdvance;
@@ -301,17 +304,22 @@ module nnAcceleratorStateTrace_tb;
             #1ps;
             if (!rst_n) begin
                 accepted_count = 0;
+                completed_count = 0;
                 retired_count = 0;
             end else begin
                 accepted_count += accepted;
+                completed_count += trace_matrix_result_handshake;
                 retired_count += retired;
             end
-            if (dut.sampleContextFifo.values !== accepted_count - retired_count)
-                $fatal(1, "context occupancy differs from accepted minus retired at cycle %0d", c);
+            if (dut.sampleContextFifo.values !== accepted_count - completed_count)
+                $fatal(1, "context occupancy differs from accepted minus completed at cycle %0d", c);
+            if (dut.resultFifo.values !== completed_count - retired_count)
+                $fatal(1, "output occupancy differs from completed minus retired at cycle %0d", c);
+            if (!dut.resultFifoEmpty && reloadReady)
+                $fatal(1, "reload allowed with buffered output at cycle %0d", c);
             if (dut.sampleContextEmpty) begin
                 if (dut.matrixEngine.inputVectorValid || dut.matrixEngine.skewBusy ||
-                    dut.matrixEngine.resultValid ||
-                    !dut.resultFifoEmpty)
+                    dut.matrixEngine.resultValid)
                     $fatal(1, "sample datapath live with empty context at cycle %0d", c);
                 for (int stage = 0; stage < N; stage++)
                     if (dut.matrixEngine.systolicArray.validPipe[stage])
@@ -325,11 +333,11 @@ module nnAcceleratorStateTrace_tb;
                     if (dut.reductionUpdateValidPipe[stage])
                         $fatal(1, "reset retained reduction update at cycle %0d", c);
             end
-            if (last_training_retired && dut.sampleContextEmpty) begin
+            if (last_training_completed && dut.sampleContextEmpty) begin
                 if (!dut.matrixEngine.systolicArray.updateValidPipe[0] ||
                     !dut.reductionUpdateValidPipe[0] ||
                     dut.matrixReloadReady || reloadReady)
-                    $fatal(1, "last training retirement lost update-tail interlock at cycle %0d", c);
+                    $fatal(1, "last training completion lost update-tail interlock at cycle %0d", c);
             end
             if (trace_stalled)
                 check_stalled_pipelines(c);
@@ -340,12 +348,14 @@ module nnAcceleratorStateTrace_tb;
             if (trace_reset_stalled)
                 $fwrite(trace_fd, "RESET_STALL %0d\n", c);
             if (trace_matrix_result_handshake) $fwrite(trace_fd,
-                "ENQ %0d %0d %0d %0d\n", c,
-                enqueued_raw[0], enqueued_raw[1], enqueued_raw[2]);
+                "ENQ %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\n", c,
+                enqueued_raw[0], enqueued_raw[1], enqueued_raw[2],
+                completed_activated[0], completed_activated[1], completed_activated[2],
+                completed_prediction, completed_direction, completed_target, completed_training);
             if (retired) $fwrite(trace_fd,
-                "RT %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
+                "RT %0d %0d %0d %0d %0d %0d %0d %0d\n",
                 c, retired_activated[0], retired_activated[1], retired_activated[2],
-                retired_prediction, retired_direction, retired_target,
+                retired_prediction,
                 retired_result[0], retired_result[1], retired_result[2]);
         end
         $fclose(stimulus_fd); $fclose(trace_fd);

@@ -152,11 +152,13 @@ class CycleReferenceTests(unittest.TestCase):
 
         def check_accounting() -> None:
             accepted = len(model.timings)
+            completed = sum(timing.enqueued_at is not None for timing in model.timings)
             retired = sum(timing.retired_at is not None for timing in model.timings)
             self.assertEqual(
-                accepted - retired,
+                accepted - completed,
                 len(model._sample_context_fifo),
             )
+            self.assertEqual(completed - retired, len(model._result_fifo))
 
         for index in range(9):
             model.step(self.drive(x=(index + 1, 1, -1), ready=True))
@@ -182,11 +184,12 @@ class CycleReferenceTests(unittest.TestCase):
 
         snapshots = [
             model.step(self.drive(x=(index + 1, 0, 0), training=False, ready=False))
-            for index in range(12)
+            for index in range(24)
         ]
 
         self.assertEqual(model.config.sample_context_depth, 3)
-        self.assertEqual(len(model.timings), 3)
+        self.assertEqual(len(model.timings), 3 + model.config.output_fifo_depth)
+        self.assertEqual(len(snapshots[-1].result_fifo), model.config.output_fifo_depth)
         self.assertLessEqual(
             max(len(snapshot.sample_context_fifo) for snapshot in snapshots),
             model.config.sample_context_depth,
@@ -211,6 +214,32 @@ class CycleReferenceTests(unittest.TestCase):
                 self.assertEqual(model.timings[0].accepted_at, 0)
                 self.assertEqual(model.timings[0].enqueued_at, n + 2)
                 self.assertEqual(model.timings[0].retired_at, n + 3)
+
+    def test_training_finishes_with_consumer_held_and_empty_context_all_sizes(self) -> None:
+        for n in (2, 3, 4, 5, 8):
+            with self.subTest(n=n):
+                W = [[1] * n for _ in range(n)]
+                R = [1] * n
+                model = CycleReference(self.config(n=n, in_flight_depth=1, output_fifo_depth=1), W, R)
+                snapshots = [model.step(self.drive(x=(1,) * n, ready=False))]
+                snapshots.extend(model.step(self.drive(valid=False, ready=False))
+                                 for _ in range(2*n + 5))
+                self.assertEqual(snapshots[n+1].W[0][0], 1)
+                self.assertEqual(snapshots[n+2].W[0][0], 2)
+                self.assertFalse(snapshots[n+2].sample_context_fifo)
+                self.assertEqual(snapshots[2*n+1].R, (1,) * n)
+                self.assertEqual(snapshots[2*n+2].R, (2,) * n)
+                self.assertEqual(model.W, [[2] * n for _ in range(n)])
+                self.assertIsNone(model.timings[0].retired_at)
+                with self.assertRaisesRegex(RuntimeError, "quiescent"):
+                    model.reconfigure(reduce_output=True)
+                held = model.step(CycleInputs(reload_weights=True, result_ready=False))
+                self.assertTrue(held.weights_loaded)
+                self.assertEqual(len(held.result_fifo), 1)
+                model.flush()
+                self.assertEqual(model.W, [[2] * n for _ in range(n)])
+                self.assertEqual(model.R, [2] * n)
+                self.assertTrue(self.attempt_matrix_reload(model))
 
     def test_incomplete_observation_fails_at_result_boundary(self) -> None:
         model = CycleReference(self.config(), self.initial_W(), [16, 24, 32])
@@ -244,7 +273,7 @@ class CycleReferenceTests(unittest.TestCase):
         self.assertEqual([timing.enqueued_at for timing in model.timings[:5]], [5, 6, 7, 8, 9])
         self.assertEqual([timing.retired_at for timing in model.timings[:4]], [6, 7, 8, 9])
 
-    def test_feedback_visibility_is_s0_s5_s1_s6_s2_s7(self) -> None:
+    def test_feedback_visibility_is_s0_s4_s1_s5_s2_s6(self) -> None:
         initial_W = self.initial_W()
         initial_R = [16, 24, 32]
         model = CycleReference(self.config(), initial_W, initial_R)
@@ -255,10 +284,10 @@ class CycleReferenceTests(unittest.TestCase):
         records = model.records
         old_W = tuple(tuple(row) for row in initial_W)
         old_R = tuple(initial_R)
-        self.assertEqual([record.W_used for record in records[:5]], [old_W] * 5)
-        self.assertEqual([record.R_used for record in records[:5]], [old_R] * 5)
-        for sample_index in (5, 6, 7):
-            generation = sample_index - 4
+        self.assertEqual([record.W_used for record in records[:4]], [old_W] * 4)
+        self.assertEqual([record.R_used for record in records[:4]], [old_R] * 4)
+        for sample_index in (4, 5, 6):
+            generation = sample_index - 3
             self.assertEqual(
                 records[sample_index].W_used,
                 tuple(tuple(value + generation for value in row) for row in initial_W),
@@ -288,10 +317,7 @@ class CycleReferenceTests(unittest.TestCase):
             tuple(entry.activated_result for entry in result_storage.result_fifo),
             (tuple(matrix_multiply((1, -2, 0), self.initial_W(), self.config().width)),),
         )
-        self.assertEqual(
-            result_storage.result_fifo[0].reduction_weight_signs,
-            (1, 1, 1),
-        )
+        self.assertEqual(len(result_storage.sample_context_fifo), 5)
 
         model.flush()
         drained = model.snapshots[-1]
@@ -380,9 +406,9 @@ class CycleReferenceTests(unittest.TestCase):
             for _ in range(14)
         ]
 
-        self.assertEqual(bubble_snapshots[5].W[0][0], initial_W[0][0] + 1)
-        self.assertEqual(bubble_snapshots[7].W, tuple(tuple(v + 1 for v in row) for row in initial_W))
-        self.assertEqual(bubble_snapshots[8].R, tuple(value + 1 for value in initial_R))
+        self.assertEqual(bubble_snapshots[4].W[0][0], initial_W[0][0] + 1)
+        self.assertEqual(bubble_snapshots[6].W, tuple(tuple(v + 1 for v in row) for row in initial_W))
+        self.assertEqual(bubble_snapshots[7].R, tuple(value + 1 for value in initial_R))
 
     def test_output_backpressure_holds_architectural_state(self) -> None:
         model = CycleReference(
@@ -434,10 +460,10 @@ class CycleReferenceTests(unittest.TestCase):
         model = CycleReference(self.config(), [[0] * 3 for _ in range(3)], [64, 64, 64])
         snapshots = [model.step(self.drive()) for _ in range(10)]
 
-        self.assertEqual(snapshots[6].W[0][0], 1)
-        self.assertEqual(snapshots[7].W[0][0], 2)
-        self.assertEqual(snapshots[7].W[0][1], 1)
-        self.assertEqual(snapshots[7].W[1][0], 1)
+        self.assertEqual(snapshots[5].W[0][0], 1)
+        self.assertEqual(snapshots[6].W[0][0], 2)
+        self.assertEqual(snapshots[6].W[0][1], 1)
+        self.assertEqual(snapshots[6].W[1][0], 1)
 
     def test_saturation_is_sequential_under_overlapping_updates(self) -> None:
         config = self.config(width=4, target_width=8, reduction_weight_width=4)
@@ -504,7 +530,7 @@ class CycleReferenceTests(unittest.TestCase):
                 self.assertEqual([r.input_vector for r in model.records], [s.x for s in samples])
                 self.assertTrue(all(t.retired_at is not None for t in model.timings))
 
-                # Independently replay issued arithmetic in retirement order.
+                # Independently replay issued arithmetic in completion order.
                 # Every sample must observe a whole W/R generation despite gaps
                 # and held edges; mixed forward/update phases fail this check.
                 expected_W, expected_R = W, R
@@ -614,7 +640,7 @@ class CycleReferenceTests(unittest.TestCase):
 
                 # The emergent delay must equal the closed form.
                 delay = functional_config.update_visibility_delay
-                self.assertEqual(delay, n + 2)
+                self.assertEqual(delay, n + 1)
                 self.assertEqual(functional_records[0].update_visible_at, delay)
                 self.assertEqual(
                     cycle.records[delay - 1].W_used,
