@@ -1,10 +1,10 @@
 # Fountain Systolic Array Architecture Specification
 
-Version 0.3 | 16 October 2026 | Repository-aligned design proposal
+Version 0.4 | 17 October 2026 | In-place RTL implementation and validation
 
-Reviewed baseline: `219a081441f041aae0a83c4f44b0fc8ae266ec03`.
+Pre-Fountain comparison baseline: `219a081441f041aae0a83c4f44b0fc8ae266ec03`.
 
-Status: specification and analysis only. Fountain is the proposed replacement for the current matrix dataflow. The existing RTL is the implemented baseline. Replacing the complete public accelerator also requires the interface, numerical, configuration, and learning work identified below.
+Status: Fountain is implemented in the existing RTL hierarchy. The default accelerator has three matrix stages and one final scalar readout. Exact-width inference and serialized full-sensitivity sign learning are implemented and simulation-verified. The pre-Fountain inward design is preserved in Git at the reviewed baseline below. Physical build status is recorded in section 14; no speedup over that baseline is claimed.
 
 ## 1 Purpose and changes from version 0.1
 
@@ -12,7 +12,7 @@ Fountain is a weight-stationary matrix-vector dataflow with a center-first input
 
 The architectural objective is to reduce the delay added by each dedicated layer while retaining a regular local PE network and a target initiation interval of one vector per enabled step. This changes timing constants. It does not reduce the number of dense products, the quadratic hardware of a fully spatial square layer, or the bandwidth needed to sustain that throughput.
 
-This revision retains the version 0.1 center-out computation and registered joining adder. Version 0.2 aligned the proposal with the repository; version 0.3 adds the explicit three-stage/final-readout target and a companion analysis of multilayer sign-based learning. The accumulated corrections and additions are:
+This revision retains the version 0.1 center-out computation and registered joining adder. Version 0.2 aligned the proposal with the repository; version 0.3 added the three-stage/final-readout target and companion learning analysis; version 0.4 records the in-place implementation. The accumulated corrections and additions are:
 
 | Topic | Revision |
 | --- | --- |
@@ -22,21 +22,40 @@ This revision retains the version 0.1 center-out computation and registered join
 | Joining and transport | Include physical route stages and their effect on the proposed latency advantage |
 | Arithmetic | Preserve current fixed-point semantics at compatible public boundaries; make inter-layer width and binary-point conversion explicit |
 | Weight loading | Preserve the existing public row-loading contract as a migration requirement; do not assume its internal shift schedule survives |
-| Learning | Treat fixed-weight Fountain as an initial datapath milestone, with a separate requirement to derive and verify online learning before a full accelerator replacement |
+| Learning | Implement and verify full backward sensitivities with serialized training admission |
 | Scaling | Distinguish depth, width, rectangular layers, and fixed-resource tiling |
 | Three-stage target | Three Fountain matrix stages, with one scalar weighted readout at the final stage |
 | Multilayer learning | Derive a full-sensitivity sign-update reference and distinguish it from ternary backward and direct-feedback approximations |
-| Verification status | Remove claims that a supplied or checked-in Fountain reference model already exists |
+| Verification status | Update the existing functional/cycle models and RTL regressions; record measured coverage |
 
-The initial future implementation target remains an odd square tile, starting with N = 5, signed integer arithmetic, one complete MAC per PE step, preloaded weights, and one registered joining adder per output column. Later milestones establish integration and physical timing. Nothing in this document is a measured Fountain FPGA or ASIC result.
+The implemented bringup target is an odd square tile, starting with N = 5, signed integer arithmetic, one complete MAC per PE step, preloaded weights, and one registered joining adder per output column. Routing, resource use and achieved frequency require separate physical reports; architectural cycle counts remain distinct from those measurements.
 
-## 2 What the repository implements today
+### 1.1 Implemented decisions
 
-### 2.1 Current dataflow and module boundaries
+The five existing RTL files are updated in place. There is no parallel Fountain source tree. `weightStationaryProcessingElement` holds each tagged MAC and weight; `weightStationarySystolicArray` contains the center-out grid, balanced routes and column joins; `weightStationaryMatrixMultiplier` contains the source adapter, direct layer chain, row loader, activation and final collector; `nnAccelerator` retains the public control/FIFO and final readout and adds the serial backward engine. `weightedVectorReduction` accepts the explicit final shift. A shared lane-delay helper is defined in the existing array source.
 
-The existing accelerator is already an inward, two-corner-fed design. It must not be described as the older single-corner conventional systolic baseline.
+The following decisions resolve the prototype choices discussed in later design-analysis sections:
 
-| Existing file | Current responsibility | Consequence for Fountain |
+- `LAYERS=3` by default, with one scalar readout after the final matrix. `LAYERS=1` retains the original inference port width, numerical behavior and N-row host load format.
+- Exact widening between layers, without requantization. Stage k (starting at 1) has width `WIDTH+k*(WIDTH+ceil(log2(N)))` and `(k+1)*FRACTION_BITS` fractional bits. The public vector/scalar port width is the final raw width plus `ceil(log2(N))`.
+- One combinational activation per layer, after its complete column join. `passThrough` applies globally to every stage. The final collector is the only vector-alignment barrier.
+- Source and final-collector depth-zero lanes bypass storage. From an unstalled acceptance edge E0, final raw lane j is ready at `LAYERS*D+q[j]`, result-FIFO formation at `LAYERS*D+h+1`, and earliest retirement at the next edge. N=5/LAYERS=3/G=0/J=1 gives raw [14,13,12,13,14], formation 15, retirement 16.
+- Host loading is layer 0 rows N-1 through 0, then layer 1 and subsequent layers in the same order. After `LAYERS*N` accepted rows, explicit row-parallel writes take `LAYERS*N` clocks, followed by one commit edge. No layer selector port is required.
+- A training sample blocks later admission. It launches learning at retirement, after earlier samples have drained. Full sensitivities from the companion analysis are computed with one time-shared multiplier/accumulator; matrix and readout weights then update together while all forward pipelines are empty. This preserves the sample's parameter generation without weight stashing.
+- For nonzero error, backward work takes `(LAYERS-1)*N*N` enabled steps after retirement, followed by one commit edge. Zero error or a single layer skips the backward sums. Inference retains the II=1 target; training is serialized and deliberately differs from the old delayed SSLMS stream.
+- The shared backward multiplier requests general logic through Quartus `multstyle="logic"`, reserving DSP capacity for the forward stages. Arithmetic and cycle semantics are unchanged by that mapping preference.
+- Busy mode changes and readout loads are rejected and recorded in an internal sticky `configurationError`. Reload requires the complete pipeline/FIFO/training context to drain and excludes simultaneous input admission.
+- The existing Quartus project selects N=5/WIDTH=8/LAYERS=3/FRACTION_BITS=0/G=0/J=1. RTL defaults remain WIDTH=16/N=3/LAYERS=3/FRACTION_BITS=4. Only odd N>=3 is supported.
+
+Sections describing the old inward implementation refer to commit `219a081`, not the updated working tree. Remaining candidate designs, especially requantization, ternary feedback, elastic lanes and tiling, are extensions rather than implemented options.
+
+## 2 Pre-Fountain repository baseline
+
+### 2.1 Baseline dataflow and module boundaries
+
+At the reviewed baseline, the accelerator was an inward, two-corner-fed design. This section records that historical behavior for comparison. It is distinct from the still older single-corner conventional baseline.
+
+| Existing file | Historical responsibility | Consequence for Fountain |
 | --- | --- | --- |
 | `weightStationaryVariant/weightStationaryProcessingElement.sv` | Stationary weight, activation forwarding, MAC, saturating ternary weight update; the anti-diagonal role combines its product and two partial sums using carry-save compression followed by a carry-propagate addition | Arithmetic primitives may be useful, but PE roles and connections change |
 | `weightStationaryVariant/weightStationarySystolicArray.sv` | Top-left PEs forward right/down; bottom-right PEs forward left/up; anti-diagonal PEs produce simultaneous full-column sums | Replace the topology for a Fountain candidate; the current join is local to its anti-diagonal PE |
@@ -45,7 +64,7 @@ The existing accelerator is already an inward, two-corner-fed design. It must no
 | `weightStationaryVariant/nnAccelerator.sv` | Admission, paired context/result FIFOs, activation, scalar readout, retirement, SSLMS packages, reduction-weight update pipeline | Keep these responsibilities distinct from the proposed matrix dataflow |
 | `memory/signedFifo.sv` | Generic signed FIFO | May be reused at transaction boundaries after capacity and timing are recalculated |
 
-For the current inward array, the computation and matrix update phase at PE(i,j) is:
+For the historical inward array, the computation and matrix update phase at PE(i,j) was:
 
 ```text
 f_inward(i,j) = min(i+j, 2*N-2-i-j)
@@ -55,11 +74,11 @@ All output lanes finish at anti-diagonal PEs, where i+j = N-1. The matrix wrappe
 
 Fountain moves the two vertical sums away from each other. Its joining network is additional explicit work compared with this existing local merge. A lower center-output cycle count alone is insufficient evidence of a faster implementation.
 
-### 2.2 Current end-to-end timing
+### 2.2 Baseline end-to-end timing
 
-The existing unstalled timing, with an always-ready consumer, is documented and represented in the repository as follows. E0 is the input acceptance edge.
+The historical unstalled timing, with an always-ready consumer, was as follows. E0 is the input acceptance edge.
 
-| Edge | Current behavior |
+| Edge | Historical behavior |
 | --- | --- |
 | E0 | Input vector enters the one-entry input register; context enters `sampleContextFifo` |
 | E1 | The registered skew entry captures that vector |
@@ -119,7 +138,7 @@ An output is ready when the complete sum is available at the specified registere
 
 Use synchronous active-low `rst_n`, consistent with the repository. Reset takes priority over `advance` and clears every valid pipeline and the configuration-loaded state, including when `advance` is low. Weight bits need not be reset if unloaded weights cannot be used.
 
-The initial contract has one shared `advance` for the complete connected compute domain. It freezes source skew, PE data, valids, tags, join routes, arithmetic pipeline stages, inter-layer processing, and output alignment together. Any future learning pipeline in that domain must also freeze consistently.
+The contract has one shared `advance` for the complete connected compute domain. It freezes source skew, PE data, valids, tags, join routes, arithmetic pipeline stages, inter-layer processing, and output alignment together. The backward engine and weight-update commit also obey that enable.
 
 All formulas count enabled steps. Wall-clock cycles also include disabled cycles. Input admission and output FIFO retirement need their own explicit handshake rules; a wrapper must not count an unaccepted input as a center injection or consume a held internal output repeatedly during a stall.
 
@@ -245,7 +264,7 @@ AW >= PW + ceil(log2(N))
 
 Explicitly sign-extend each product before accumulation. Retain AW bits in both half sums and the joining addition. The initial core has no intermediate truncation or saturation. Signedness, expression widths, and constants must be explicit in SystemVerilog.
 
-The bringup example uses XW = WW = 8 and AW at least 19 for N = 5. The current repository instead defaults to WIDTH = 16 and N = 3, with matrix-result width 34. An 8-bit Fountain prototype is not an equal-precision area or timing comparison with that default implementation.
+The bringup example uses XW = WW = 8 and AW at least 19 for N = 5 in its first stage. The historical repository default was WIDTH = 16 and N = 3, with single-matrix result width 34. An 8-bit Fountain prototype is not an equal-precision area or timing comparison with that implementation. The current three-stage RTL default has raw result width 70 and public result width 72.
 
 ### 7.2 Public numerical behavior
 
@@ -274,14 +293,14 @@ ReLU of U and L independently is incorrect. Bias, if introduced, is a new featur
 
 Timing-front compatibility does not imply numeric compatibility. A current raw vector with 2F fractional bits cannot be fed to a WIDTH-bit, F-fractional-bit input by merely connecting or slicing its bits.
 
-Choose and record one of the following for every boundary:
+The implementation selects exact widening at every boundary. The alternatives are:
 
 - Exact widened arithmetic: the next input keeps the previous layer's output width and fractional-bit count. This avoids narrowing but increases subsequent multiplier and sum widths.
 - Explicit requantization: specify the next input width, next binary point, shift, rounding rule, and saturation or wrap behavior. Its uniform registered latency contributes to A_k.
 
 For example, exact integer N = 5 layers with 8-bit weights and an 8-bit first input need conservative output widths 19, 30, and 41 bits for the first three layers. Identical topology therefore does not imply identical arithmetic cost.
 
-A possible fixed-width policy is an arithmetic right shift followed by signed saturation. With input fractional bits F_x, weight fractional bits F_w, and next-layer fractional bits F_next, its shift is F_x+F_w-F_next. For nonnegative shifts, arithmetic right shift rounds negative nonintegral values toward negative infinity. This is a candidate policy, not existing inter-layer behavior or a selected rounding requirement. A concrete chain must resolve the policy before numerical acceptance tests are defined.
+A possible future fixed-width policy is an arithmetic right shift followed by signed saturation. With input fractional bits F_x, weight fractional bits F_w, and next-layer fractional bits F_next, its shift is F_x+F_w-F_next. For nonnegative shifts, arithmetic right shift rounds negative nonintegral values toward negative infinity. This policy is not implemented; it would need its own numerical acceptance tests.
 
 Apply any elementwise processing with equal latency to all lanes. Global operations such as normalization across a vector need separate buffering or streaming algorithms and are outside the direct chaining contract.
 
@@ -289,7 +308,7 @@ Apply any elementwise processing with equal latency to all lanes. Global operati
 
 ### 8.1 Internal streaming interface
 
-The proposed names below describe a contract, not existing modules.
+The names below describe the lane contract. The existing array ports use `in_data`, `in_valid`, `in_tag`, `result`, `resultValid`, and `resultTag` for these roles.
 
 | Signal | Shape | Meaning |
 | --- | --- | --- |
@@ -316,7 +335,7 @@ lane index:      0  1  2  3  4
 vector index:    0  1  2  1  0
 ```
 
-The current matrix wrapper's AND of lane valids would accept a mixture of vectors at such a boundary. The existing scalar readout would then combine unrelated elements. Whole-vector validity must be formed only after alignment, with all valid tags checked for equality.
+The historical matrix wrapper's AND of lane valids would accept a mixture of vectors at such a boundary. A scalar readout would then combine unrelated elements. The updated wrapper forms whole-vector validity only after alignment, with all valid tags checked for equality.
 
 ### 8.3 Source and collector adapters
 
@@ -344,11 +363,11 @@ Do not place a collector followed by a new source-skew adapter between Fountain 
 
 Preserving the current inference API requires the existing parallel input/result ready-valid transactions, vector/scalar output modes, weight-loading format, and quiescent reconfiguration rules. Internal tags need not become public ports.
 
-An initial integration candidate is:
+The implemented chain is:
 
 ```text
-public vector admission -> source adapter -> Fountain core and column joins
-    -> final collector -> existing numerical activation/readout behavior
+public vector admission -> source adapter -> matrix and joins -> activation
+    -> further matrix/join/activation stages -> final collector -> scalar readout
     -> result FIFO -> public retirement
 ```
 
@@ -360,11 +379,11 @@ When a public result is valid and its consumer is not ready, that transaction re
 
 ## 9 Weight loading, configuration, and draining
 
-The current public interface accepts N rows in reverse order, row N-1 first, through `weightData[N]` and `weightValid/weightReady`. It stages the complete matrix, performs N internal shifts, then captures resident PE weights. Arbitrary gaps between host row handshakes are allowed.
+The historical public interface accepted N rows in reverse order, row N-1 first, through `weightData[N]` and `weightValid/weightReady`. It staged the complete matrix, performed N internal shifts, then captured resident PE weights. The updated host interface keeps that row order and arbitrary handshake gaps, repeated for each layer in ascending layer order.
 
 Retain that public row order and gap tolerance as the compatibility target. Fountain's outward partial-sum connections do not support the current two-ended shift sequence unchanged. Reusing the staging bank is independent of reusing those transfer paths.
 
-The resident-weight transfer mechanism is still a design decision:
+Row-parallel resident writes are selected. The alternatives and their costs per matrix are:
 
 | Candidate | Transfer cost after complete row collection | Required analysis |
 | --- | --- | --- |
@@ -376,7 +395,7 @@ A private `cfg_we/cfg_row/cfg_col/cfg_data` port is acceptable for an isolated c
 
 Keep a loaded mask or equivalent state that proves all N squared resident weights were initialized. A commit makes a complete configuration available to computation. Partial row or scalar writes must not admit input vectors. Internal writes may update resident storage while computation is disabled; the externally visible configuration remains unavailable until commit.
 
-For the fixed-weight contract, accept a reload only after all associated source lanes, PEs, join routes, inter-layer stages, collectors, input holding registers, context, and result buffers have drained. For an eventual learning implementation, pending update packages also count as busy. A temporarily quiet output is not proof of quiescence.
+Accept a reload only after all associated source lanes, PEs, join routes, inter-layer stages, collectors, input holding registers, context, and result buffers have drained. Pending training and backward/update work also count as busy. A temporarily quiet output is not proof of quiescence.
 
 An accepted reload blocks an input acceptance on the same edge. No old-configuration vector may enter after that epoch boundary. In a shared chain, establish a chain-wide drain/commit protocol before changing any layer that could still receive old inputs.
 
@@ -518,7 +537,7 @@ With Q active one-product-per-step paths, an R by C dense product needs at least
 
 Fixed-size tiling is a separate architecture milestone if the main goal is larger models within a fixed device budget. The present proposal primarily improves overlap between dedicated layers.
 
-## 12 Online learning: required redesign before replacement
+## 12 Online learning and the selected serialized implementation
 
 The current accelerator supports inference and on-chip sign-sign LMS. A training result launches updates only when it retires. Matrix directions are the outer product of saved input signs and column directions derived from error sign, activation gates, and the signs of the readout coefficients used for that result. Updates saturate by at most one LSB. The current result FIFO preserves the activated vector, prediction, and readout-coefficient signs together.
 
@@ -545,44 +564,44 @@ Before enabling learning, the revised design must establish:
 6. Context/result pairing and training retirement semantics consistent with the public interface.
 7. A new, independently checked update-visibility result. No fixed Fountain sample-index delay is claimed here.
 
-The initial fixed-weight core and chain are therefore inference milestones. They are not permission to discard the repository's learning feature. A full replacement remains incomplete until learning is resolved or a separate product-scope decision is made.
+The implementation resolves coherence with the admission barrier in section 1.1. The single pending training sample prevents later forward work until full backward sensitivities and all updates finish. No weights change while a vector is in flight. This replaces the old wave-scheduled streaming learning rather than reusing its phase or N+2 sample-visibility formula. Continuous online-training throughput remains a future schedule problem.
 
 For the proposed three-stage network, a sign-gradient extension is mathematically defined by a backward sensitivity for each hidden unit. The final matrix retains the current error-sign/readout-sign/gate form. Earlier matrices need weighted combinations of downstream sensitivities, whose signs can depend on magnitudes even though the final weight updates are ternary.
 
-`Fountain_Three_Layer_Learning_Analysis.md` derives that reference, a cheaper ternary-error backward candidate, and the context/version requirements. It also gives a checked example where ternary error quantization reverses an earlier layer's update direction. Multilayer sign-based training is possible; the approximation, convergence behavior on the workload, and streaming update schedule remain decisions requiring experiments. No learning rule is selected as implemented by this specification.
+`Fountain_Three_Layer_Learning_Analysis.md` derives that reference, a cheaper ternary-error backward candidate, and the context/version requirements. It also gives a checked example where ternary error quantization reverses an earlier layer's update direction. The implemented rule is the full-sensitivity sign update with serialized training. The ternary backward and direct-feedback alternatives remain unimplemented experiments. Convergence on a workload and a continuous streaming-training schedule remain separate evaluations.
 
-## 13 Proposed module responsibilities and migration boundaries
+## 13 Implemented module responsibilities
 
-All names in the Fountain column are proposals; no such RTL is introduced by this document.
+| Existing source | Implemented responsibility |
+| --- | --- |
+| `weightStationaryVariant/weightStationaryProcessingElement.sv` | Stationary weight, tagged MAC, activation forwarding, explicit configuration and saturated ternary update |
+| `weightStationaryVariant/weightStationarySystolicArray.sv` | Center-out grid, per-column route balancing and registered joins, validity checks, loaded-row tracking, shared enabled-step lane-delay helper |
+| `weightStationaryVariant/weightStationaryMatrixMultiplier.sv` | Center-first source, configurable direct chain, per-layer activation and learning taps, multi-layer staged row writes, final collector and common advance |
+| `weightStationaryVariant/nnAccelerator.sv` | Original public signal names, admission credits, one final readout, result FIFO, training context, serial full-sensitivity backward computation and atomic updates |
+| `weightStationaryVariant/weightedVectorReduction.sv` | Full product/accumulator widths and one final explicit scalar shift |
+| `memory/signedFifo.sv` | Reused result buffer |
+| `reference/functional.py` | Independent whole-network exact inference and atomic sign-learning reference |
+| `reference/cycle.py` | Registered neighboring PE dependencies, source/join/collector state, loading, backpressure and training schedule |
+| Existing directed/UVM/trace files and regression scripts | Updated validation within the original repository structure |
 
-| Proposed module | Responsibility | Relationship to current code |
-| --- | --- | --- |
-| `fountain_input_adapter` | Flat vector to center-first data/valid/tag lanes | Replaces the two-sided skew for a Fountain path |
-| `fountain_pe` | Stationary weight, one MAC, activation forwarding, local valid/tag checks | Reconsider the existing TL/AD/BR PE roles and update ports |
-| `fountain_core` | N by N center-out local connections | Alternative to the current inward array |
-| `fountain_reduce` | Per-column upper/lower route balance and registered joining addition | Additional explicit matrix-column reduction; distinct from scalar readout |
-| `fountain_layer` | Configuration state, core, column joins, optional uniform output processing | Defines a staggered internal layer boundary |
-| `fountain_chain` | Direct lane-index-preserving connections with one advance domain | New composition; no internal collect-and-reskew barrier |
-| `fountain_output_adapter` | Optional alignment into complete tagged vectors | Required before reusing current flat-vector consumers |
-| Public integration wrapper | Existing API, host configuration adaptation, admission, FIFO boundaries, final readout and eventual learning | Retain current behavior only where it has been explicitly verified |
+The previous sample-context FIFO and delayed update waves are superseded by one retained training context and the serialized barrier. The readout remains a different operation from the matrix-column joins. The former inward implementation is available through Git; there is no second checked-in RTL family.
 
-`fountain_reduce` adds the two halves of each matrix output. `weightedVectorReduction` computes a different operation, the scalar sum of activated outputs multiplied by r. Their arithmetic, timing, and verification must remain distinct.
+## 14 Verification status and acceptance checks
 
-The current `reference/arithmetic.py` can provide compatible arithmetic oracles where the widths and binary points agree. `reference/cycle.py`, `reference/functional.py`, the state-trace comparison, and the current UVM timing/control assumptions describe the inward accelerator and cannot be relabeled as Fountain models.
+### 14.1 Completed simulation evidence
 
-Keep the implemented inward design available as the numerical, protocol, learning, and physical baseline while evaluating a candidate. This specification does not change the Quartus top-level entity or regression source lists.
+The existing regression entry point, `pwsh -File scripts/run_modelsim.ps1`, passes:
 
-## 14 Verification status and future acceptance checks
+- 68 Python tests, including the hand-worked dot product, exact-width chains, single-layer fixed-point compatibility, finite-difference hidden update signs, lane timing, host loading, bubbles, stalls, reset, capacity, tag wrap and all-layer training.
+- Seven directed matrix profiles at N=3/5/9, WIDTH=8/16, one/three layers, G=0/1 and J=1/2. The default N=3/WIDTH=16/LAYERS=3 case includes extreme dense results beyond 64 bits, checked with a bound-sized signed scoreboard. The worked timing fronts, dense arithmetic, full-vector collector, continuous inference, host gaps, downstream stalls and reset/reload pass.
+- Seed/non-seed PE tests for signed arithmetic, one-LSB saturation, same-edge old-weight reads, configuration priority, global enable and reset priority.
+- Expected-failure tests for invalid dimensions, missing/mistagged MAC operands, mismatched join tags, busy writes and unconfigured input.
+- Four integrated per-edge comparisons totaling 3,167 RTL edges. Profiles are N=3/LAYERS=3/F=0/G=0/J=1 (749 edges, 120 state fields), N=5/LAYERS=3/F=0/G=0/J=1 (1,086 edges, 210 fields), N=3/LAYERS=3/F=2/G=1/J=2 (869 edges, 120 fields), and N=3/LAYERS=1/F=4/G=0/J=1 (463 edges, 66 fields). State covers handshakes, tags, raw lane fronts, all resident weights, readout coefficients, gates, saved signs, sensitivities, loader, FIFO and training controller.
+- The existing public-port UVM regression at LAYERS=1, with zero UVM errors/fatals. Exact multi-layer learned state is covered by the trace comparison.
 
-### 14.1 Evidence available in this revision
+The original text's `Fountain_Reference_Model.py` was not supplied. Its role is now fulfilled by the updated existing `reference/functional.py` and `reference/cycle.py`; there is no additional standalone reference file. Simulation and algebra checks establish the defined implementation behavior, not learning convergence or a speedup over the historical inward design.
 
-The supplied version 0.1 mentions `Fountain_Reference_Model.py`, but that file was not supplied with the text and was not found in the repository. Consequently, its stated coverage is not carried forward as completed work.
-
-For this analysis, independent in-session calculations checked 336 tagged column dot products across square dimensions 3, 5, 9, and 17 and rectangular dimensions 3 by 5, 5 by 3, 5 by 9, and 9 by 5, using signed 8-bit values and vector starts [0,1,2,5,6,10]. They checked arithmetic and one-step neighboring activation/partial-sum dependencies, including half-sum alignment. The worked example, latency table and inequalities, mixed-vector tag example, and adapter storage counts were also recalculated. The existing cycle model confirmed the current N+2 result-formation and N+3 retirement anchors at N = 3 and 5. These calculations are not a checked-in Fountain reference model, clocked Fountain RTL simulation, finite-width/control regression, or physical implementation result.
-
-No Fountain reset, stall, loader, multi-layer RTL, or post-fit result is claimed. Existing inward regressions remain evidence for the existing design only.
-
-### 14.2 Future functional and timing checks
+### 14.2 Functional and timing acceptance contract
 
 | Check | Required result |
 | --- | --- |
@@ -605,44 +624,49 @@ No Fountain reset, stall, loader, multi-layer RTL, or post-fit result is claimed
 | Capacity | Admission never exceeds reserved context/output capacity; simultaneous pop/push and long stalls remain correct |
 | Tag reuse | Wraparound cannot alias two live vectors or leave an old epoch visible |
 | Public inference | Vector/scalar modes and current fixed-point behavior agree with the existing arithmetic reference |
-| Eventual learning | Coherent W/r generations, ternary saturation, retirement semantics, and newly derived visibility pass independent checks |
+| Learning | Coherent W/r generations, ternary saturation, retirement semantics, and serialized visibility pass independent checks |
 
 Use comparisons keyed by tag and element index rather than scalar output arrival order. Distinguish arithmetic correctness, enabled-step timing, wall-clock stalls, public transactions, and physical timing in test reports.
 
-### 14.3 Physical comparison requirements
+### 14.3 Physical build and comparison requirements
 
-Compare current inward and candidate Fountain implementations at the same precision, device, constraints, workload, public endpoints, and output mode. Report cycle count and achieved clock frequency together. Also report multiplier/DSP mapping, logic, registers, memory, route stages, tag/control overhead, loading time, and sustained throughput under the available I/O bandwidth.
+The N=5/WIDTH=8/LAYERS=3/F=0/G=0/J=1 prototype completed synthesis, fit and assembly using the existing Cyclone V `5CSEMA5F31C6` project and Quartus Lite 25.1. The initial all-DSP mapping exceeded the device budget (89 required versus 87 available); assigning the shared backward multiplier to general logic allowed the final fit.
+
+| Final post-fit metric | Result |
+| --- | ---: |
+| Logic utilization | 6,532 / 32,070 ALMs (20%) |
+| Registers | 6,591 |
+| DSP blocks | 87 / 87 (100%) |
+| Block memory | 2,650 bits in 7 RAM blocks |
+| Slow 85 C core Fmax | 71.25 MHz |
+| Slow 0 C core Fmax | 70.73 MHz |
+| Worst setup slack at the 100 MHz target | -4.138 ns |
+| Minimum hold slack across reported corners | +0.108 ns |
+
+Full compilation succeeded, but the 100 MHz timing requirement did not close. The clock pin remains unassigned and uses non-dedicated routing. Data/control pins are virtual, with 137 input and 225 output ports unconstrained for external timing. These figures characterize the core under the existing project constraints; they are not board sign-off or a demonstrated operating frequency. The design also has no remaining DSP headroom on this device.
+
+A post-fit path report at the slow 85 C corner identifies the five worst paths from `backwardColumn[1]` to `sensitivity[1][4][18]`, with worst data delay 13.503 ns. The shared backward selection/multiply/accumulation path limits the complete core clock in this build, even during inference. Pipelining that engine is a concrete follow-up; it would change the documented backward schedule and require new cycle/state checks and another fit.
+
+Reports are generated under the existing ignored `Quartus Stuff/output_files/` directory (`NN_Acceleration.fit.summary`, `.sta.summary` and `.sta.rpt`); the captured compile log and path report are `build/fountain-inplace/quartus-prototype.log` and `critical-paths.rpt`. No matched historical-versus-Fountain physical comparison has been run. Such a comparison must use the same precision, device, constraints, workload, public endpoints, and output mode. Report cycle count and achieved clock frequency together, including multiplier/DSP mapping, logic, registers, memory, route stages, tag/control overhead, loading time, and sustained throughput under available I/O bandwidth.
 
 Inspect source feeding, PE paths, column joins, inter-layer wiring, and final activation/readout separately. The existing scalar-readout timing bottleneck can remain even if the matrix path improves. Repeat at multiple tile dimensions; a fit at N = 5 does not establish how G or transport grows with size.
 
-## 15 Remaining decisions and future milestones
+## 15 Implemented scope and remaining extensions
 
-| Item | Current specification position | Work still required |
+| Item | Implemented scope | Remaining work |
 | --- | --- | --- |
-| Local dataflow | Center-out activations and split outward sums; center counted in lower half | Clocked model and RTL |
-| First tile | Odd N = 5; signed 8-bit bringup; exact sums | Wider matched-precision comparison afterward |
-| Column joining | Separate registered adder; J = 1; G explicit | Placement, routing, balancing, and timing |
-| Internal interface | Staggered tagged lanes, one shared advance domain | Admission, stall, and busy proofs |
-| Public interface | Preserve existing inference transactions and modes as integration target | Collector, wrapper timing, and capacity derivation |
-| Weight loading | Preserve reverse-row host format; internal transfer undecided | Choose transfer architecture and state exact load latency |
-| Inter-layer numerics | Exact widening or fully specified requantization | Select widths, binary points, rounding, and overflow for each chain |
-| Online learning | Required analysis for full replacement; absent from initial core contract | New update distribution, r alignment, visibility, and tests |
-| Rectangular layers | Odd-dimension timing extension derived | Model, RTL, and physical validation |
-| Even dimensions | Outside initial contract | Center convention and chain balancing |
-| Fixed-resource large models | Outside direct fully spatial chain contract | Tiling, storage, reduction, and global-front schedule |
-| Independent backpressure | Outside initial contract | Elastic storage and new alignment/timing proof |
+| Dataflow and joins | Center-out MACs, center counted once, explicit G/J, tagged outputs | Physical tradeoffs across larger tile dimensions |
+| Direct chain | One/three-stage RTL verified; wider depth exercised by the clocked model | Deep hardware resource/frequency characterization |
+| Numerics | Exact signed widening, per-stage ReLU/pass-through, one final scalar rescale | Explicit fixed-width requantization option |
+| Configuration | Layer-major reverse-row host format, row-parallel transfer and common commit | Overlapped loading/double buffering |
+| Public control | Original signal names, layer-dependent result width, credit admission, common stalls and final collector | Independently elastic lane boundaries |
+| Learning | Full-sensitivity one-LSB sign updates, retirement trigger, serialized admission barrier | Workload convergence measurements and continuous streaming training |
+| Learning alternatives | Counterexample and derivation recorded | Ternary backward and direct-feedback comparisons |
+| Rectangular layers | Odd-dimension schedule derived | Model/RTL/physical implementation |
+| Even dimensions | Rejected by the initial contract | Center convention and chain balancing |
+| Fixed-resource larger models | Scaling analysis recorded | Tiling, storage, global reduction/front schedule |
 
-Future implementation milestones are:
-
-1. Create an independent clocked Fountain reference that makes lane events, arithmetic widths, valids, and tags explicit.
-2. Build an isolated N = 5 fixed-weight core plus column joins and reproduce the worked example and readiness times.
-3. Verify overlapping traffic, bubbles, reset, common stalls, configuration safety, and the final collector.
-4. Build a three-layer inference chain with one final scalar readout and an explicit numerical-boundary contract; verify the expected front without internal collectors.
-5. Fit the candidate and current inward baseline at matched precision; determine actual G, boundary transport, clock rate, and resource cost.
-6. Specify and verify public loading/FIFO integration and online learning before considering a feature-complete accelerator replacement.
-7. Pursue rectangular dimensions or fixed-resource tiling according to whether the scaling target is network shape or device-limited model size.
-
-These milestones describe later work. This revision delivers the updated specification only.
+The implementation does not claim a twofold speedup, training convergence, fixed-resource model scaling, or timing closure at 100 MHz. Matched-profile performance and power studies remain separate from functional implementation.
 
 ## 16 Sources and scope of claims
 
@@ -656,4 +680,4 @@ The following external references provide background. They do not establish Foun
 
 The companion `Fountain_Three_Layer_Learning_Analysis.md` records the learning derivation and its primary references for sign-sign LMS, backpropagation, sign-gradient updates, direct feedback alignment, and pipelined weight-version consistency.
 
-The rectangular schedule, storage counts, latency comparisons, and resource-capacity bound in this revision are derivations under the stated assumptions. This is not an exhaustive prior-art search. No claim is made of novelty, patent status, measured Fountain frequency, area advantage, energy advantage, or achieved speedup.
+The rectangular schedule, storage counts, latency comparisons, and resource-capacity bound in this revision are derivations under the stated assumptions. This is not an exhaustive prior-art search. No claim is made of novelty, patent status, area advantage, energy advantage, or achieved speedup. Any Fountain frequency reported in section 14 applies only to that explicitly identified physical build.

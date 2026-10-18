@@ -1,8 +1,8 @@
 # Fountain Three-Layer Learning Analysis
 
-Version 0.1 | 16 October 2026 | Analysis only
+Version 0.2 | 17 October 2026 | Derivation and selected implementation
 
-Companion to `Fountain_Architecture_Specification.md`, version 0.3. No RTL, training model, or learning algorithm is implemented by this note.
+Companion to `Fountain_Architecture_Specification.md`, version 0.4. The existing RTL and Python models now implement the full-sensitivity sign-update rule below with a serialized training barrier. Ternary backward and direct feedback remain alternatives for later experiments.
 
 ## 1 Proposed forward network
 
@@ -20,6 +20,14 @@ The ideal N = 5 raw output times remain [14,13,12,13,14], with G = 0, J = 1, and
 
 Use nonlinear activations between stages when the aim is a more expressive model. If all stages pass their values through linearly, with no quantization or other nonlinear operation, the complete map collapses algebraically to x*(W1*W2*W3*r). Three matrices still cost hardware but represent a linear predictor. A ReLU at every matrix output is the analysis case below; individual stages may instead be configured as pass-through if that is part of the intended network.
 
+### 1.1 Selected implementation
+
+`nnAccelerator` now keeps the three forward matrix stages in the existing hierarchy. One accepted training sample prevents subsequent admission. Learning starts at that sample's public retirement, computes full sensitivities using the unchanged resident weights and saved gates/signs, then commits all matrix and readout one-LSB updates on one edge while forward pipelines are empty. The shared backward multiplier/accumulator takes `(LAYERS-1)*N*N` enabled steps for nonzero error, followed by the update edge. Single-layer or zero-error updates skip the backward sums.
+
+Exact widening was selected between layers, so there is no intermediate requantization derivative. The scalar error uses the actual rescaled integer prediction and target. The gradient-direction interpretation remains the unquantized underlying network with a positive scalar rescale; a finite stored-LSB step is not guaranteed to decrease loss.
+
+The forward inference pipeline can stream at II=1; this training schedule is serialized. The shared backward multiplier requests general logic in Quartus so DSP resources remain available to the forward stages. This mapping changes resources and timing, not update arithmetic or cycle semantics.
+
 ## 2 What SSLMS provides and what depth changes
 
 Classic sign-sign LMS updates a linear predictor using the signs of its input and output error:
@@ -29,7 +37,7 @@ e = target - prediction
 weight[i] += mu * sign(input[i]) * sign(e)
 ```
 
-This is the linear-filter rule documented by [MathWorks](https://www.mathworks.com/help/dsp/ref/dsp.lmsfilter-system-object.html). The repository extends a sign-based update to its matrix plus scalar readout by multiplying the output error sign by the readout-coefficient sign and the activation gate.
+This is the linear-filter rule documented by [MathWorks](https://www.mathworks.com/help/dsp/ref/dsp.lmsfilter-system-object.html). The pre-Fountain repository extended a sign-based update to its matrix plus scalar readout by multiplying the output error sign by the readout-coefficient sign and the activation gate.
 
 That shallow structure makes the matrix's error direction simple: every hidden unit has one direct scalar-readout connection. With more layers, a hidden unit reaches the output through multiple weighted paths. Their contributions can cancel. The final scalar error sign alone does not identify which earlier weights should increase or decrease.
 
@@ -153,15 +161,15 @@ Forward II = 1 is not a training-throughput guarantee. At that rate, every fully
 
 Preserve the chosen public learning trigger, currently result retirement, or specify a deliberate change. Include backward context, version storage, and pending updates in stall, reset, reload, and busy accounting. The existing N+2 sample update-visibility delay does not carry over to this deeper network.
 
-## 7 Proposed study before hardware changes
+## 7 Learning validation and remaining experiments
 
 1. Fix the three-stage activation and inter-layer numeric formats. Begin with a real-valued reference so rounding does not hide the credit-assignment question.
 2. Compare the fixed-prefix baseline, full-sensitivity sign updates, and ternary backward candidate on the same tasks, initializations, and data order. Treat direct feedback alignment as an additional experiment if needed.
 3. Measure error versus processed samples, variation across seeds, exact/candidate update-direction agreement, inactive units, weight saturation, and sensitivity to layer step sizes. Include a task that benefits from nonlinear hidden features.
 4. Add the intended fixed-point formats and requantization policy. Specify any surrogate derivative and compare against the real-valued reference.
 5. Introduce delayed updates and explicit weight-version policies. Compare learning against the serial reference before claiming continuous online-training throughput.
-6. Only after choosing a learning rule, derive the backward datapath, storage, update phases, resource cost, and timing for RTL.
+6. Evaluate resource, timing and application-level learning tradeoffs before replacing the implemented serial full-sensitivity rule with a cheaper or more concurrent schedule.
 
-For this analysis, 1,240 parameter derivatives across 30 three-stage ReLU networks of widths 2, 3, and 5 were checked against central finite differences. They agreed with the section 3 formulas. The section 4 reversal example was also checked. These are algebra checks from in-session calculations, not learning curves, convergence evidence, a checked-in training implementation, or hardware results.
+For this analysis, 1,240 parameter derivatives across 30 three-stage ReLU networks of widths 2, 3, and 5 were checked against central finite differences. They agreed with the section 3 formulas. The section 4 reversal example was also checked. Those were derivation checks. The checked-in Python tests now also verify hidden update signs by finite differences, and the RTL/state comparisons verify all-layer weight/readout updates, serial context, reset and saturation. Neither constitutes learning curves or convergence evidence.
 
-The practical starting point is three forward Fountain stages with one final readout, an exact sign-gradient software reference for all trainable weights, and a measured comparison with the ternary backward candidate. The forward architecture can be specified now; the learning approximation and streaming consistency policy remain experimental choices.
+The implemented baseline is three forward Fountain stages with one final readout and serialized full-sensitivity sign learning. Next experiments should compare its learning behavior against the ternary backward candidate and measure the cost of adding concurrency. Continuous streaming-training consistency remains an architectural extension.
