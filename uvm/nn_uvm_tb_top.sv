@@ -10,6 +10,7 @@ module nn_uvm_tb_top;
     nnAccelerator #(
         .WIDTH(WIDTH),
         .N(N),
+        .LAYERS(1),
         .FRACTION_BITS(FRACTION_BITS),
         .TARGET_WIDTH(TARGET_WIDTH),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),

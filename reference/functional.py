@@ -1,315 +1,168 @@
-"""Sample-indexed W/R reference with queued learning packages, without cycle state.
-Arithmetic is shared; the independent claim is update visibility after
-``N + 2`` sample positions, so arithmetic agreement alone proves little."""
+"""Exact-widening Fountain inference and serial full-sensitivity sign learning.
 
+This model has no pipeline state. Each training step is an atomic reference
+transaction, matching the hardware admission barrier rather than delayed LMS.
+"""
 from __future__ import annotations
-
-from collections import defaultdict
-from collections.abc import Sequence
 from dataclasses import dataclass
-
-from .arithmetic import (
-    activate,
-    apply_matrix_update,
-    apply_reduction_update,
-    learning_direction,
-    matrix_multiply,
-    matrix_result_width,
-    matrix_update_directions,
-    prediction_width,
-    reduction_update_directions,
-    weighted_vector_reduction,
-    to_signed,
-)
+from collections.abc import Sequence
+from .arithmetic import clog2, to_signed, ternary_sign, saturating_lsb_update
 
 
 @dataclass(frozen=True)
 class ReferenceConfig:
-    """Architectural parameters; ``pass_through`` and ``reduce_output`` stay fixed
-    for each stream and are not fields of ``Sample``."""
-
-    n: int = 3
-    width: int = 16
-    fraction_bits: int = 4
+    n: int = 5
+    width: int = 8
+    layers: int = 3
+    fraction_bits: int = 0
     target_width: int | None = None
     reduction_weight_width: int = 8
     pass_through: bool = True
     reduce_output: bool = False
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.n, int) or isinstance(self.n, bool) or self.n < 1:
-            raise ValueError("n must be a positive integer")
-        if not isinstance(self.width, int) or isinstance(self.width, bool) or self.width < 1:
-            raise ValueError("width must be a positive integer")
-        if self.target_width is None:
-            object.__setattr__(self, "target_width", self.width)
-
-        for name in ("width", "target_width", "reduction_weight_width"):
+    def __post_init__(self):
+        for name in ('n', 'width', 'layers', 'reduction_weight_width'):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer")
-        if (
-            not isinstance(self.fraction_bits, int)
-            or isinstance(self.fraction_bits, bool)
-            or self.fraction_bits < 0
-        ):
-            raise ValueError("fraction_bits must be a non-negative integer")
+                raise ValueError(f'{name} must be a positive integer')
+        if self.n < 3 or self.n % 2 == 0:
+            raise ValueError('Fountain requires odd n>=3')
+        if self.target_width is None:
+            object.__setattr__(self, 'target_width', self.width)
+        if not isinstance(self.target_width, int) or isinstance(self.target_width, bool) or self.target_width < 1:
+            raise ValueError('target_width must be a positive integer')
+        if not isinstance(self.fraction_bits, int) or isinstance(self.fraction_bits, bool) or self.fraction_bits < 0:
+            raise ValueError('fraction_bits must be a nonnegative integer')
 
     @property
-    def matrix_result_width(self) -> int:
-        return matrix_result_width(self.width, self.n)
+    def matrix_result_width(self):
+        return self.width + self.layers * (self.width + clog2(self.n))
 
     @property
-    def prediction_width(self) -> int:
-        return prediction_width(self.width, self.n)
+    def prediction_width(self):
+        return self.matrix_result_width + clog2(self.n)
 
     @property
-    def update_visibility_delay(self) -> int:
-        """Number of samples between an update source and its visibility."""
-
-        return self.n + 2
+    def rescale_shift(self):
+        return self.layers * self.fraction_bits + self.reduction_weight_width - 1
 
 
 @dataclass(frozen=True)
 class Sample:
-    """One accepted architectural transaction."""
-
     x: tuple[int, ...]
-    target: int
-    training_enable: bool
+    target: int = 0
+    training_enable: bool = False
 
-    def __init__(
-        self,
-        x: Sequence[int],
-        target: int,
-        training_enable: bool = True,
-    ) -> None:
-        object.__setattr__(self, "x", tuple(int(value) for value in x))
-        object.__setattr__(self, "target", int(target))
-        object.__setattr__(self, "training_enable", bool(training_enable))
+    def __post_init__(self):
+        object.__setattr__(self, 'x', tuple(self.x))
+
 
 @dataclass(frozen=True)
 class SampleRecord:
-    """Architectural values for one simulated sample.  Direction fields are
-    zero for inference; ``update_visible_at`` carries the latency claim."""
-
     sample_index: int
     input_vector: tuple[int, ...]
     target: int
     training_enable: bool
-    W_used: tuple[tuple[int, ...], ...]
+    W_used: tuple
     R_used: tuple[int, ...]
+    activations: tuple[tuple[int, ...], ...]
+    gates: tuple[tuple[bool, ...], ...]
     raw_matrix_result: tuple[int, ...]
     activated_result: tuple[int, ...]
     prediction: int
     learning_direction: int
-    matrix_update_directions: tuple[tuple[int, ...], ...]
+    sensitivities: tuple[tuple[int, ...], ...]
+    matrix_update_directions: tuple
     reduction_update_directions: tuple[int, ...]
-    update_generated: bool
-    update_visible_at: int | None
+
+    @property
+    def update_generated(self):
+        return self.training_enable
 
 
-@dataclass(frozen=True)
-class _UpdatePackage:
-    source_sample: int
-    matrix_direction: tuple[tuple[int, ...], ...]
-    reduction_direction: tuple[int, ...]
+def normalize_weights(config, weights):
+    # A single layer also accepts the original two-dimensional matrix shape.
+    if config.layers == 1 and len(weights) == config.n and isinstance(weights[0][0], int):
+        weights = [weights]
+    if len(weights) != config.layers or any(len(matrix) != config.n or
+            any(len(row) != config.n for row in matrix) for matrix in weights):
+        raise ValueError('weights must have shape [layers][n][n]')
+    return [[[to_signed(value, config.width) for value in row] for row in matrix] for matrix in weights]
 
 
-def _copy_matrix(values: Sequence[Sequence[int]], n: int, width: int) -> list[list[int]]:
-    if len(values) != n or any(len(row) != n for row in values):
-        raise ValueError("W must be an N by N matrix")
-    return [
-        [to_signed(value, width) for value in row]
-        for row in values
-    ]
-
-
-def _copy_vector(values: Sequence[int], n: int, width: int) -> list[int]:
-    if len(values) != n:
-        raise ValueError("R must be a vector of length N")
-    return [to_signed(value, width) for value in values]
-
-
-def _zero_matrix(n: int) -> tuple[tuple[int, ...], ...]:
-    return tuple(tuple(0 for _ in range(n)) for _ in range(n))
+def analyze(config: ReferenceConfig, weights, readout, sample: Sample, index=0):
+    if not isinstance(sample, Sample):
+        raise TypeError('sample must be a Sample')
+    if len(sample.x) != config.n or len(readout) != config.n:
+        raise ValueError('input/readout length must equal n')
+    w = normalize_weights(config, weights)
+    r = tuple(to_signed(value, config.reduction_weight_width) for value in readout)
+    x = tuple(to_signed(value, config.width) for value in sample.x)
+    activations, gates = [x], []
+    raw = ()
+    for matrix in w:
+        raw = tuple(sum(activations[-1][i] * matrix[i][j] for i in range(config.n))
+                    for j in range(config.n))
+        gates.append(tuple(config.pass_through or value > 0 for value in raw))
+        activations.append(tuple(value if config.pass_through or value >= 0 else 0 for value in raw))
+    prediction = sum(a * coefficient for a, coefficient in zip(activations[-1], r)) >> config.rescale_shift
+    assert to_signed(prediction, config.prediction_width) == prediction
+    target = to_signed(sample.target, config.target_width)
+    error = ternary_sign(target - prediction)
+    sensitivity = [[0] * config.n for _ in range(config.layers)]
+    sensitivity[-1] = [r[j] if gates[-1][j] else 0 for j in range(config.n)]
+    for layer in range(config.layers - 2, -1, -1):
+        sensitivity[layer] = [sum(w[layer+1][i][j] * sensitivity[layer+1][j]
+                                 for j in range(config.n)) if gates[layer][i] else 0
+                              for i in range(config.n)]
+    direction = tuple(tuple(tuple(ternary_sign(activations[layer][i]) * error *
+                        ternary_sign(sensitivity[layer][j]) if sample.training_enable else 0
+                        for j in range(config.n)) for i in range(config.n))
+                        for layer in range(config.layers))
+    reduction = tuple(error * ternary_sign(a) if sample.training_enable else 0 for a in activations[-1])
+    return SampleRecord(index, x, target, sample.training_enable,
+        tuple(tuple(tuple(row) for row in matrix) for matrix in w), r,
+        tuple(activations), tuple(gates), raw, activations[-1], prediction, error,
+        tuple(tuple(row) for row in sensitivity), direction, reduction)
 
 
 class FunctionalReference:
-    """Architectural end-to-end model for continuous no-stall samples."""
-
-    def __init__(
-        self,
-        config: ReferenceConfig,
-        W: Sequence[Sequence[int]],
-        R: Sequence[int],
-    ) -> None:
+    def __init__(self, config: ReferenceConfig, W, R):
         if not isinstance(config, ReferenceConfig):
-            raise TypeError("config must be a ReferenceConfig")
+            raise TypeError('config must be a ReferenceConfig')
+        if len(R) != config.n:
+            raise ValueError('readout length must equal n')
         self.config = config
-        self._initial_W = _copy_matrix(W, self.config.n, self.config.width)
-        self._initial_R = _copy_vector(
-            R,
-            self.config.n,
-            self.config.reduction_weight_width,
-        )
-        self.records: list[SampleRecord] = []
+        self._initial_W = normalize_weights(config, W)
+        self._initial_R = [to_signed(v, config.reduction_weight_width) for v in R]
         self.reset()
 
-    def reset(self) -> None:
-        """Return the model to the constructor's initial state."""
-
-        self._W = [row[:] for row in self._initial_W]
+    def reset(self):
+        self._W = [[row[:] for row in matrix] for matrix in self._initial_W]
         self._R = self._initial_R[:]
-        self._next_sample_index = 0
-        self._pending_updates: dict[int, list[_UpdatePackage]] = defaultdict(list)
         self.records = []
 
     @property
-    def W(self) -> list[list[int]]:
-        return [row[:] for row in self._W]
+    def W(self):
+        return [[row[:] for row in matrix] for matrix in self._W]
 
     @property
-    def R(self) -> list[int]:
+    def R(self):
         return self._R[:]
 
-    @property
-    def final_W(self) -> list[list[int]]:
-        return self.W
+    final_W = W
+    final_R = R
 
-    @property
-    def final_R(self) -> list[int]:
-        return self.R
-
-    @property
-    def next_sample_index(self) -> int:
-        return self._next_sample_index
-
-    def _apply_updates_visible_at(self, sample_index: int) -> None:
-        packages = self._pending_updates.pop(sample_index, ())
-        for package in packages:
-            self._W = apply_matrix_update(
-                self._W,
-                package.matrix_direction,
-                self.config.width,
-            )
-            self._R = apply_reduction_update(
-                self._R,
-                package.reduction_direction,
-                self.config.reduction_weight_width,
-            )
-
-    def _step(self, sample: Sample) -> SampleRecord:
-        sample_index = self._next_sample_index
-        self._apply_updates_visible_at(sample_index)
-
-        input_vector = tuple(
-            to_signed(value, self.config.width) for value in sample.x
-        )
-        if len(input_vector) != self.config.n:
-            raise ValueError("sample input vector must have length N")
-        target = to_signed(sample.target, self.config.target_width)
-        W_used = tuple(tuple(row) for row in self._W)
-        R_used = tuple(self._R)
-
-        raw_result = tuple(
-            matrix_multiply(input_vector, W_used, self.config.width)
-        )
-        activated_result = tuple(
-            activate(raw_result, self.config.pass_through, self.config.matrix_result_width)
-        )
-        prediction = weighted_vector_reduction(
-            activated_result,
-            R_used,
-            self.config.width,
-            self.config.reduction_weight_width,
-            self.config.fraction_bits,
-        )
-        direction = learning_direction(
-            target,
-            prediction,
-            self.config.target_width,
-            self.config.prediction_width,
-        )
-
-        update_generated = bool(sample.training_enable)
-        if update_generated:
-            _, _, issued_matrix_direction = matrix_update_directions(
-                input_vector,
-                activated_result,
-                R_used,
-                direction,
-                self.config.width,
-                self.config.reduction_weight_width,
-                self.config.pass_through,
-            )
-            matrix_direction = tuple(
-                tuple(row) for row in issued_matrix_direction
-            )
-            reduction_direction = tuple(
-                reduction_update_directions(activated_result, direction)
-            )
-            update_visible_at = sample_index + self.config.update_visibility_delay
-            self._pending_updates[update_visible_at].append(
-                _UpdatePackage(
-                    source_sample=sample_index,
-                    matrix_direction=matrix_direction,
-                    reduction_direction=reduction_direction,
-                )
-            )
-        else:
-            matrix_direction = _zero_matrix(self.config.n)
-            reduction_direction = tuple(0 for _ in range(self.config.n))
-            update_visible_at = None
-
-        record = SampleRecord(
-            sample_index=sample_index,
-            input_vector=input_vector,
-            target=target,
-            training_enable=bool(sample.training_enable),
-            W_used=W_used,
-            R_used=R_used,
-            raw_matrix_result=raw_result,
-            activated_result=activated_result,
-            prediction=prediction,
-            learning_direction=direction,
-            matrix_update_directions=matrix_direction,
-            reduction_update_directions=reduction_direction,
-            update_generated=update_generated,
-            update_visible_at=update_visible_at,
-        )
+    def step(self, sample: Sample):
+        record = analyze(self.config, self._W, self._R, sample, len(self.records))
+        if sample.training_enable:
+            self._W = [[[saturating_lsb_update(value, record.matrix_update_directions[l][i][j], self.config.width)
+                         for j, value in enumerate(row)] for i, row in enumerate(matrix)]
+                       for l, matrix in enumerate(self._W)]
+            self._R = [saturating_lsb_update(value, direction, self.config.reduction_weight_width)
+                       for value, direction in zip(self._R, record.reduction_update_directions)]
         self.records.append(record)
-        self._next_sample_index += 1
         return record
 
-    def flush_pending_updates(self) -> None:
-        """Apply queued packages in visibility order at end-of-stream,
-        without creating synthetic sample records."""
-
-        while self._pending_updates:
-            next_visibility = min(self._pending_updates)
-            self._apply_updates_visible_at(next_visibility)
-
-    def step(
-        self,
-        sample: Sample,
-    ) -> SampleRecord:
-        """Simulate one sample from the current continuous stream position."""
-
-        if not isinstance(sample, Sample):
-            raise TypeError("sample must be a Sample")
-        return self._step(sample)
-
-    def run(
-        self,
-        samples: Sequence[Sample],
-        *,
-        drain_updates: bool = True,
-    ) -> list[SampleRecord]:
-        """Simulate samples; by default, final_W/final_R include every generated update.
-        With ``drain_updates=False``, retain state and pending updates at the last sample."""
-
-        records = [self.step(sample) for sample in samples]
-        if drain_updates:
-            self.flush_pending_updates()
-        return records
+    def run(self, samples: Sequence[Sample]):
+        return [self.step(sample) for sample in samples]

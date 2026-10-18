@@ -1,355 +1,122 @@
 `timescale 1ns/1ps
+// One input bundle per edge; Python owns the independent expected state.
+module nnAcceleratorStateTrace_tb #(
+    parameter int N=3, LAYERS=3, FRACTION_BITS=0, G=0, J=1
+);
+    localparam int WIDTH=8, TAG_WIDTH=5;
+    localparam int RAW_WIDTH=WIDTH+LAYERS*(WIDTH+$clog2(N));
+    localparam int RESULT_WIDTH=RAW_WIDTH+$clog2(N);
+    logic clk=0, rst_n=0, weightValid=0, inputValid=0, trainingEnable=0, resultReady=1;
+    logic loadReductionWeights=0, reloadWeights=0, passThrough=1, reduceOutput=0;
+    logic signed [7:0] weightData[N], inputData[N], targetData, reductionWeight[N];
+    wire weightReady, inputReady, resultValid, weightsLoaded, reloadReady;
+    wire signed [RESULT_WIDTH-1:0] resultData[N];
+    integer stimulus_fd, trace_fd, status, cycle_count, accepted, retired;
+    integer fields[11+3*N];
+    string stimulus_path,trace_path;
+    always #5 clk=~clk;
+    nnAccelerator #(.WIDTH(WIDTH),.N(N),.LAYERS(LAYERS),.FRACTION_BITS(FRACTION_BITS),
+        .TAG_WIDTH(TAG_WIDTH),.G(G),.J(J),.IN_FLIGHT_DEPTH(16),.OUTPUT_FIFO_DEPTH(2)) dut(.*);
 
-// Drive one external input bundle per clock and write semantic RTL state.
-// All expected mathematics and timing live in Python.
-module nnAcceleratorStateTrace_tb;
-    localparam int N = 3;
-    localparam int WIDTH = 8;
-    localparam int TARGET_WIDTH = 8;
-    localparam int REDUCTION_WEIGHT_WIDTH = 8;
-    localparam int FRACTION_BITS = 0;
-    localparam int IN_FLIGHT_DEPTH = 2*N+2;
-    localparam int OUTPUT_FIFO_DEPTH = 2*N;
-    localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
-    localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
-    localparam int SAMPLE_CONTEXT_WIDTH = TARGET_WIDTH + 2*N + 1;
-
-    logic clk = 0;
-    logic rst_n, weightValid, inputValid, trainingEnable, resultReady;
-    logic loadReductionWeights, reloadWeights, passThrough, reduceOutput;
-    logic signed [WIDTH-1:0] weightData[N], inputData[N];
-    logic signed [TARGET_WIDTH-1:0] targetData;
-    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N];
-    logic weightReady, inputReady, resultValid, weightsLoaded, reloadReady;
-    logic signed [PREDICTION_WIDTH-1:0] resultData[N];
-
-    integer stimulus_fd, trace_fd, status, cycle_count, input_cycle;
-    integer scanned_reset_n, scanned_weight_valid;
-    integer scanned_weight_lane0, scanned_weight_lane1, scanned_weight_lane2;
-    integer scanned_input_valid;
-    integer scanned_input_lane0, scanned_input_lane1, scanned_input_lane2;
-    integer scanned_target, scanned_training_enable, scanned_result_ready;
-    integer scanned_reduction_lane0, scanned_reduction_lane1, scanned_reduction_lane2;
-    integer scanned_load_reduction_weights, scanned_reload_weights;
-    integer scanned_pass_through, scanned_reduce_output;
-    integer entry, lane, index;
-    integer accepted, retired, retired_prediction, retired_direction, retired_target;
-    integer accepted_count, retired_count;
-    logic last_training_retired;
-    integer retired_activated[0:N-1], retired_result[0:N-1];
-    integer enqueued_raw[0:N-1];
-    string stimulus_path, trace_path;
-    // Stream quiescence covers accepted samples, buffered results, and learning
-    // updates; weight loading is outside this verification boundary.
-    logic streamQuiescent;
-    logic configurationActive;
-    logic configuredPassThrough, configuredReduceOutput;
-    logic trace_stalled, trace_reset_stalled, trace_matrix_update_pending;
-    logic trace_matrix_result_handshake;
-    logic trace_reduction_update_busy;
-    logic held_update_valid[N-1], held_reduction_valid[N];
-    logic signed [1:0] held_update_row[N-1][N], held_update_column[N-1][N];
-    logic signed [2*N-1:0] held_reduction_direction[N];
-    logic signed [WIDTH-1:0] held_skew_data[N][N];
-    logic held_skew_valid[N][N];
-    logic held_array_valid[N];
-
-    always #5ns clk = ~clk;
-
-    nnAccelerator #(.WIDTH(WIDTH), .N(N), .FRACTION_BITS(FRACTION_BITS),
-        .TARGET_WIDTH(TARGET_WIDTH), .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
-        .IN_FLIGHT_DEPTH(IN_FLIGHT_DEPTH), .OUTPUT_FIFO_DEPTH(OUTPUT_FIFO_DEPTH)) dut (
-        .clk(clk), .rst_n(rst_n), .weightData(weightData), .weightValid(weightValid),
-        .weightReady(weightReady), .inputData(inputData), .targetData(targetData),
-        .trainingEnable(trainingEnable), .inputValid(inputValid),
-        .inputReady(inputReady), .reductionWeight(reductionWeight),
-        .loadReductionWeights(loadReductionWeights), .reduceOutput(reduceOutput),
-        .resultData(resultData),
-        .resultValid(resultValid), .resultReady(resultReady),
-        .weightsLoaded(weightsLoaded), .reloadWeights(reloadWeights),
-        .reloadReady(reloadReady), .passThrough(passThrough)
-    );
-
-    // Check PE registers on the edge itself, including the data registers that
-    // are absent from the architectural trace. The output-stall event is logged
-    // separately so Python can check that the directed case reaches this path.
-    for (genvar row = 0; row < N; row++) begin : freeze_row
-        for (genvar col = 0; col < N; col++) begin : freeze_col
-            always @(posedge clk) begin : check_pe_freeze
-                logic signed [WIDTH-1:0] weight_before, activation_before;
-                logic signed [MATRIX_RESULT_WIDTH-1:0] psum_before;
-                if (rst_n && dut.matrixEngine.outputBlocked && !dut.matrixEngine.arrayAdvance) begin
-                    weight_before = dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.weightReg;
-                    activation_before = dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.activationOut;
-                    psum_before = dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.psumOut;
-                    #1ps;
-                    if (weight_before !== dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.weightReg ||
-                        activation_before !== dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.activationOut ||
-                        psum_before !== dut.matrixEngine.systolicArray.row_loop[row].col_loop[col].pe.psumOut)
-                        $fatal(1, "PE (%0d,%0d) advanced during output stall", row, col);
+    for (genvar l=0; l<LAYERS; l++) begin : freeze_layer
+        localparam int XW=WIDTH+l*(WIDTH+$clog2(N));
+        localparam int AW=XW+WIDTH+$clog2(N);
+        for (genvar i=0; i<N; i++) begin : freeze_row
+            for (genvar j=0; j<N; j++) begin : freeze_column
+                always @(posedge clk) begin
+                    logic signed [XW-1:0] activation;
+                    logic signed [AW-1:0] partial;
+                    logic av,pv;
+                    logic [TAG_WIDTH-1:0] at,pt;
+                    if (rst_n && weightsLoaded && !dut.arrayAdvance) begin
+                        activation=dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.activation_out;
+                        partial=dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.sum_out;
+                        av=dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.activation_out_valid;
+                        pv=dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.sum_out_valid;
+                        at=dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.activation_out_tag;
+                        pt=dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.sum_out_tag;
+                        #1;
+                        if (activation!==dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.activation_out ||
+                            partial!==dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.sum_out ||
+                            av!==dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.activation_out_valid ||
+                            pv!==dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.sum_out_valid ||
+                            at!==dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.activation_out_tag ||
+                            pt!==dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.sum_out_tag)
+                            $fatal(1,"PE changed during a global stall");
+                    end
                 end
             end
         end
     end
-
-    assign streamQuiescent =
-        !dut.matrixEngine.inputVectorValid &&
-        !dut.matrixEngine.skewBusy &&
-        !dut.matrixEngine.pipelineBusy &&
-        !dut.matrixEngine.resultValid &&
-        dut.sampleContextEmpty &&
-        dut.resultFifo.empty &&
-        !dut.reductionUpdateBusy;
-
-    always_ff @(posedge clk) begin
-        if (!rst_n) begin
-            configurationActive <= 1'b0;
-            configuredPassThrough <= passThrough;
-            configuredReduceOutput <= reduceOutput;
-        end else begin
-            if (configurationActive && !streamQuiescent) begin
-                if (passThrough !== configuredPassThrough)
-                    $fatal(1, "passThrough changed while accelerator work was outstanding");
-                if (reduceOutput !== configuredReduceOutput)
-                    $fatal(1, "reduceOutput changed while accelerator work was outstanding");
-            end
-
-            if (inputValid && inputReady) begin
-                if (!configurationActive || streamQuiescent) begin
-                    configuredPassThrough <= passThrough;
-                    configuredReduceOutput <= reduceOutput;
-                end
-                configurationActive <= 1'b1;
-            end else if (configurationActive && streamQuiescent) begin
-                configurationActive <= 1'b0;
-            end
+    always @(posedge clk) begin
+        logic signed [RESULT_WIDTH-1:0] held[N];
+        bit blocked;
+        blocked=rst_n && resultValid && !resultReady;
+        for (int j=0; j<N; j++) held[j]=resultData[j];
+        #1;
+        if (blocked) begin
+            if (!resultValid) $fatal(1,"Public valid dropped during backpressure");
+            for (int j=0; j<N; j++) if (resultData[j]!==held[j]) $fatal(1,"Public result changed while blocked");
         end
     end
-
-    task automatic dump_snapshot(input integer c);
-        begin
-            $fwrite(trace_fd, "C %0d\n", c);
-            $fwrite(trace_fd, "W %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
-                $signed(dut.matrixEngine.systolicArray.row_loop[0].col_loop[0].pe.weightReg),
-                $signed(dut.matrixEngine.systolicArray.row_loop[0].col_loop[1].pe.weightReg),
-                $signed(dut.matrixEngine.systolicArray.row_loop[0].col_loop[2].pe.weightReg),
-                $signed(dut.matrixEngine.systolicArray.row_loop[1].col_loop[0].pe.weightReg),
-                $signed(dut.matrixEngine.systolicArray.row_loop[1].col_loop[1].pe.weightReg),
-                $signed(dut.matrixEngine.systolicArray.row_loop[1].col_loop[2].pe.weightReg),
-                $signed(dut.matrixEngine.systolicArray.row_loop[2].col_loop[0].pe.weightReg),
-                $signed(dut.matrixEngine.systolicArray.row_loop[2].col_loop[1].pe.weightReg),
-                $signed(dut.matrixEngine.systolicArray.row_loop[2].col_loop[2].pe.weightReg));
-            $fwrite(trace_fd, "R");
-            for (lane = 0; lane < N; lane++) $fwrite(trace_fd, " %0d", $signed(dut.residentReductionWeight[lane]));
-            $fwrite(trace_fd, "\nWB");
-            for (int row = 0; row < N; row++)
-                for (int col = 0; col < N; col++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.weightBuffer[row][col]));
-            $fwrite(trace_fd, "\nWL %0d %0d %0d %0d %0d",
-                dut.matrixEngine.weightsLoaded, dut.matrixEngine.loadedWeightRows,
-                dut.matrixEngine.loadingWeights, dut.matrixEngine.loadStep,
-                dut.matrixEngine.captureWeights);
-            $fwrite(trace_fd, "\nIS %0d", dut.matrixEngine.inputVectorValid);
-            if (dut.matrixEngine.inputVectorValid) begin
-                for (lane = 0; lane < N; lane++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.matrixEngine.inputVectorData[lane*WIDTH +: WIDTH]));
-            end
-            $fwrite(trace_fd, "\nSF %0d", dut.sampleContextFifo.values);
-            for (entry = 0; entry < dut.sampleContextFifo.values; entry++) begin
-                index = dut.sampleContextFifo.readPtr + entry;
-                if (index >= IN_FLIGHT_DEPTH) index = index - IN_FLIGHT_DEPTH;
-                $fwrite(trace_fd, " %0d", $signed(dut.sampleContextFifo.data[index][SAMPLE_CONTEXT_WIDTH-1 -: TARGET_WIDTH]));
-                for (lane = 0; lane < N; lane++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.sampleContextFifo.data[index][2*lane+1 +: 2]));
-                $fwrite(trace_fd, " %0d", dut.sampleContextFifo.data[index][0]);
-            end
-            $fwrite(trace_fd, "\nRF %0d", dut.resultFifo.values);
-            for (entry = 0; entry < dut.resultFifo.values; entry++) begin
-                index = dut.resultFifo.readPtr + entry;
-                if (index >= OUTPUT_FIFO_DEPTH) index = index - OUTPUT_FIFO_DEPTH;
-                for (lane = 0; lane < N; lane++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.resultFifo.data[index][lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH]));
-                $fwrite(trace_fd, " %0d", $signed(dut.resultFifo.data[index][N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH]));
-                for (lane = 0; lane < N; lane++)
-                    $fwrite(trace_fd, " %0d", $signed(dut.resultFifo.data[index][N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH+2*lane +: 2]));
-            end
-            $fwrite(trace_fd, "\n");
+    task automatic dump();
+        $fwrite(trace_fd,"%0d %0d %0d",cycle_count,accepted,retired);
+        $fwrite(trace_fd," %0d %0d %0d %0d %0d %0d %0d %0d",weightReady,inputReady,resultValid,
+            weightsLoaded,reloadReady,dut.trainingBusy,dut.configurationError,dut.arrayAdvance);
+        $fwrite(trace_fd," %0d %0d %0d %0d %0d %0d %0d",dut.outstanding,
+            dut.matrixEngine.hostLayer,dut.matrixEngine.loadedWeightRows,dut.matrixEngine.loadingWeights,
+            dut.matrixEngine.captureWeights,dut.matrixEngine.loadLayer,dut.matrixEngine.loadStep);
+        $fwrite(trace_fd," %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d",
+            dut.matrixEngine.inputVectorValid,dut.matrixEngine.inputVectorTag,dut.nextTag,dut.trainingTag,
+            dut.trainingState,dut.backwardLayer,dut.backwardRow,dut.backwardColumn,
+            $signed(dut.backwardAccumulator),$signed(dut.learningDirection),dut.resultFifo.values,dut.resultTag);
+        for (int j=0; j<N; j++) $fwrite(trace_fd," %0d",$signed(resultData[j]));
+        for (int l=0; l<LAYERS; l++) for (int i=0; i<N; i++) for (int j=0; j<N; j++)
+            $fwrite(trace_fd," %0d",$signed(dut.residentWeights[l][i][j]));
+        for (int j=0; j<N; j++) $fwrite(trace_fd," %0d",$signed(dut.residentReductionWeight[j]));
+        for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++) $fwrite(trace_fd," %0d",$signed(dut.sensitivity[l][j]));
+        for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++) $fwrite(trace_fd," %0d",dut.activationGates[l][j]);
+        for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++) $fwrite(trace_fd," %0d",$signed(dut.inputSigns[l][j]));
+        for (int j=0; j<N; j++) $fwrite(trace_fd," %0d",$signed(dut.finalSigns[j]));
+        for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++) begin
+            if (dut.matrixEngine.chainValid[l+1][j])
+                $fwrite(trace_fd," 1 %0d %0d",dut.matrixEngine.chainTag[l+1][j],$signed(dut.matrixEngine.chainData[l+1][j]));
+            else $fwrite(trace_fd," 0 0 0");
         end
+        $fwrite(trace_fd,"\n");
     endtask
-
-    task automatic capture_stalled_pipelines;
-        for (int stage = 0; stage < N-1; stage++) begin
-            held_update_valid[stage] = dut.matrixEngine.systolicArray.updateValidPipe[stage];
-            for (int wire_lane = 0; wire_lane < N; wire_lane++) begin
-                held_update_row[stage][wire_lane] = dut.matrixEngine.systolicArray.updateRowPipe[stage][wire_lane];
-                held_update_column[stage][wire_lane] = dut.matrixEngine.systolicArray.updateColumnPipe[stage][wire_lane];
-            end
-        end
-        for (int stage = 0; stage < N; stage++) begin
-            held_reduction_valid[stage] = dut.reductionUpdateValidPipe[stage];
-            held_reduction_direction[stage] = dut.reductionUpdateDirectionPipe[stage];
-        end
-        for (int wire_lane = 0; wire_lane < N; wire_lane++) begin
-            for (int stage = 0; stage < N; stage++) begin
-                held_skew_data[wire_lane][stage] = dut.matrixEngine.skewData[wire_lane][stage];
-                held_skew_valid[wire_lane][stage] = dut.matrixEngine.skewValid[wire_lane][stage];
-            end
-        end
-        for (int stage = 0; stage < N; stage++)
-            held_array_valid[stage] = dut.matrixEngine.systolicArray.validPipe[stage];
-    endtask
-
-    task automatic check_stalled_pipelines(input integer c);
-        for (int stage = 0; stage < N-1; stage++) begin
-            if (held_update_valid[stage] !== dut.matrixEngine.systolicArray.updateValidPipe[stage])
-                $fatal(1, "matrix update valid advanced during stall at cycle %0d", c);
-            for (int wire_lane = 0; wire_lane < N; wire_lane++)
-                if (held_update_row[stage][wire_lane] !== dut.matrixEngine.systolicArray.updateRowPipe[stage][wire_lane] ||
-                    held_update_column[stage][wire_lane] !== dut.matrixEngine.systolicArray.updateColumnPipe[stage][wire_lane])
-                    $fatal(1, "matrix update payload advanced during stall at cycle %0d", c);
-        end
-        for (int stage = 0; stage < N; stage++)
-            if (held_reduction_valid[stage] !== dut.reductionUpdateValidPipe[stage] ||
-                held_reduction_direction[stage] !== dut.reductionUpdateDirectionPipe[stage])
-                $fatal(1, "reduction update pipe advanced during stall at cycle %0d", c);
-        for (int wire_lane = 0; wire_lane < N; wire_lane++) begin
-            for (int stage = 0; stage < N; stage++)
-                if (held_skew_data[wire_lane][stage] !== dut.matrixEngine.skewData[wire_lane][stage] ||
-                    held_skew_valid[wire_lane][stage] !== dut.matrixEngine.skewValid[wire_lane][stage])
-                    $fatal(1, "input skew advanced during stall at cycle %0d", c);
-        end
-        for (int stage = 0; stage < N; stage++)
-            if (held_array_valid[stage] !== dut.matrixEngine.systolicArray.validPipe[stage])
-                $fatal(1, "array valid advanced during stall at cycle %0d", c);
-    endtask
-
     initial begin
-        if (!$value$plusargs("STIMULUS=%s", stimulus_path)) $fatal(1, "missing +STIMULUS path");
-        if (!$value$plusargs("TRACE=%s", trace_path)) $fatal(1, "missing +TRACE path");
-        stimulus_fd = $fopen(stimulus_path, "r");
-        trace_fd = $fopen(trace_path, "w");
-        if (!stimulus_fd || !trace_fd) $fatal(1, "cannot open stimulus or trace file");
-        status = $fscanf(stimulus_fd, "%d\n", cycle_count);
-        if (status != 1) $fatal(1, "bad stimulus header");
-        rst_n = 0; weightValid = 0; inputValid = 0; trainingEnable = 0;
-        resultReady = 0; loadReductionWeights = 0; reloadWeights = 0;
-        passThrough = 1; reduceOutput = 0; targetData = 0;
-        for (lane = 0; lane < N; lane++) begin weightData[lane] = 0; inputData[lane] = 0; reductionWeight[lane] = 0; end
-        accepted_count = 0; retired_count = 0;
-
-        for (integer c = 0; c < cycle_count; c++) begin
+        for (int j=0; j<N; j++) begin weightData[j]=0; inputData[j]=0; reductionWeight[j]=0; end
+        targetData=0;
+        if (!$value$plusargs("STIMULUS=%s",stimulus_path) || !$value$plusargs("TRACE=%s",trace_path))
+            $fatal(1,"STIMULUS and TRACE paths are required");
+        stimulus_fd=$fopen(stimulus_path,"r");
+        trace_fd=$fopen(trace_path,"w");
+        if (!stimulus_fd || !trace_fd) $fatal(1,"Cannot open state-trace files");
+        while (!$feof(stimulus_fd)) begin
             @(negedge clk);
-            status = $fscanf(stimulus_fd,
-                "%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
-                input_cycle, scanned_reset_n, scanned_weight_valid,
-                scanned_weight_lane0, scanned_weight_lane1, scanned_weight_lane2,
-                scanned_input_valid, scanned_input_lane0,
-                scanned_input_lane1, scanned_input_lane2, scanned_target,
-                scanned_training_enable, scanned_result_ready,
-                scanned_reduction_lane0, scanned_reduction_lane1,
-                scanned_reduction_lane2, scanned_load_reduction_weights,
-                scanned_reload_weights, scanned_pass_through, scanned_reduce_output);
-            if (status != 20 || input_cycle != c) $fatal(1, "bad stimulus at cycle %0d", c);
-            rst_n = scanned_reset_n;
-            weightValid = scanned_weight_valid;
-            weightData[0] = scanned_weight_lane0;
-            weightData[1] = scanned_weight_lane1;
-            weightData[2] = scanned_weight_lane2;
-            inputValid = scanned_input_valid;
-            inputData[0] = scanned_input_lane0;
-            inputData[1] = scanned_input_lane1;
-            inputData[2] = scanned_input_lane2;
-            targetData = scanned_target;
-            trainingEnable = scanned_training_enable;
-            resultReady = scanned_result_ready;
-            reductionWeight[0] = scanned_reduction_lane0;
-            reductionWeight[1] = scanned_reduction_lane1;
-            reductionWeight[2] = scanned_reduction_lane2;
-            loadReductionWeights = scanned_load_reduction_weights;
-            reloadWeights = scanned_reload_weights;
-            passThrough = scanned_pass_through;
-            reduceOutput = scanned_reduce_output;
-            // Sample after stimulus but before the rising edge; the post-edge snapshot
-            // reflects FIFO changes and describes the next edge's contract.
-            #1ps;
-            accepted = inputValid && inputReady;
-            retired = resultValid && resultReady;
-            if (rst_n && retired && dut.sampleContextEmpty)
-                $fatal(1, "result retired without a context at cycle %0d", c);
-            last_training_retired = rst_n && retired &&
-                dut.sampleContextFifo.values == 1 && dut.trainingEnableHead;
-            retired_prediction = $signed(dut.prediction);
-            retired_direction = $signed(dut.learningDirection);
-            retired_target = $signed(dut.resultTargetData);
-            for (lane = 0; lane < N; lane++) begin
-                retired_activated[lane] = $signed(dut.activatedData[lane]);
-                retired_result[lane] = $signed(resultData[lane]);
-            end
-            trace_matrix_result_handshake = dut.matrixResultValid && dut.matrixResultReady;
-            for (lane = 0; lane < N; lane++)
-                enqueued_raw[lane] = $signed(dut.rawResultData[lane]);
-            trace_stalled = rst_n && dut.matrixEngine.outputBlocked && !dut.matrixEngine.arrayAdvance;
-            trace_reset_stalled = !rst_n && dut.matrixEngine.outputBlocked && !dut.matrixEngine.arrayAdvance;
-            trace_reduction_update_busy = dut.reductionUpdateBusy;
-            trace_matrix_update_pending = 0;
-            for (entry = 0; entry < N-1; entry++)
-                if (dut.matrixEngine.systolicArray.updateValidPipe[entry])
-                    trace_matrix_update_pending = 1;
-            if (trace_stalled)
-                capture_stalled_pipelines();
-            @(posedge clk);
-            #1ps;
-            if (!rst_n) begin
-                accepted_count = 0;
-                retired_count = 0;
-            end else begin
-                accepted_count += accepted;
-                retired_count += retired;
-            end
-            if (dut.sampleContextFifo.values !== accepted_count - retired_count)
-                $fatal(1, "context occupancy differs from accepted minus retired at cycle %0d", c);
-            if (dut.sampleContextEmpty) begin
-                if (dut.matrixEngine.inputVectorValid || dut.matrixEngine.skewBusy ||
-                    dut.matrixEngine.resultValid ||
-                    !dut.resultFifoEmpty)
-                    $fatal(1, "sample datapath live with empty context at cycle %0d", c);
-                for (int stage = 0; stage < N; stage++)
-                    if (dut.matrixEngine.systolicArray.validPipe[stage])
-                        $fatal(1, "array sample live with empty context at cycle %0d", c);
-            end
-            if (!rst_n) begin
-                for (int stage = 0; stage < N-1; stage++)
-                    if (dut.matrixEngine.systolicArray.updateValidPipe[stage])
-                        $fatal(1, "reset retained matrix update at cycle %0d", c);
-                for (int stage = 0; stage < N; stage++)
-                    if (dut.reductionUpdateValidPipe[stage])
-                        $fatal(1, "reset retained reduction update at cycle %0d", c);
-            end
-            if (last_training_retired && dut.sampleContextEmpty) begin
-                if (!dut.matrixEngine.systolicArray.updateValidPipe[0] ||
-                    !dut.reductionUpdateValidPipe[0] ||
-                    dut.matrixReloadReady || reloadReady)
-                    $fatal(1, "last training retirement lost update-tail interlock at cycle %0d", c);
-            end
-            if (trace_stalled)
-                check_stalled_pipelines(c);
-            dump_snapshot(c);
-            if (trace_stalled)
-                $fwrite(trace_fd, "STALL %0d %0d %0d\n", c,
-                    trace_matrix_update_pending, trace_reduction_update_busy);
-            if (trace_reset_stalled)
-                $fwrite(trace_fd, "RESET_STALL %0d\n", c);
-            if (trace_matrix_result_handshake) $fwrite(trace_fd,
-                "ENQ %0d %0d %0d %0d\n", c,
-                enqueued_raw[0], enqueued_raw[1], enqueued_raw[2]);
-            if (retired) $fwrite(trace_fd,
-                "RT %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\n",
-                c, retired_activated[0], retired_activated[1], retired_activated[2],
-                retired_prediction, retired_direction, retired_target,
-                retired_result[0], retired_result[1], retired_result[2]);
+            status=$fscanf(stimulus_fd,"%d",fields[0]);
+            if (status==1) begin
+                for (int field=1; field<11+3*N; field++) begin
+                    status=$fscanf(stimulus_fd," %d",fields[field]);
+                    if (status!=1) $fatal(1,"Malformed stimulus field %0d",field);
+                end
+                cycle_count=fields[0]; rst_n=fields[1]; weightValid=fields[2]; inputValid=fields[3+N];
+                for (int j=0; j<N; j++) begin
+                    weightData[j]=8'(fields[3+j]); inputData[j]=8'(fields[4+N+j]);
+                    reductionWeight[j]=8'(fields[7+2*N+j]);
+                end
+                targetData=8'(fields[4+2*N]); trainingEnable=fields[5+2*N]; resultReady=fields[6+2*N];
+                loadReductionWeights=fields[7+3*N]; reloadWeights=fields[8+3*N]; passThrough=fields[9+3*N]; reduceOutput=fields[10+3*N];
+                @(posedge clk);
+                accepted=rst_n && inputValid && inputReady;
+                retired=rst_n && resultValid && resultReady;
+                #1; dump();
+            end else if (status!=-1) $fatal(1,"Malformed stimulus row %0d fields",status);
         end
         $fclose(stimulus_fd); $fclose(trace_fd);
-        $display("PASS: wrote %0d post-edge snapshots", cycle_count);
+        $display("PASS: Fountain public stimulus/state trace written");
         $finish;
     end
+    initial begin #2000000; $fatal(1,"State trace timeout"); end
 endmodule

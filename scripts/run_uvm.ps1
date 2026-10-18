@@ -19,10 +19,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $uvmSource "uvm_macros.svh"))) {
     throw "Bundled UVM macro source was not found below $questaRoot."
 }
 
-if (Test-Path -LiteralPath $buildDir) {
-    Remove-Item -LiteralPath $buildDir -Recurse -Force
-}
-New-Item -ItemType Directory -Path $buildDir | Out-Null
+New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 
 $uvmSources = @(
     (Join-Path $projectRoot "uvm/nn_core_if.sv"),
@@ -32,8 +29,10 @@ $uvmSources = @(
 
 Push-Location $buildDir
 try {
-    & $vlib work
-    if ($LASTEXITCODE -ne 0) { throw "vlib failed." }
+    if (-not (Test-Path -LiteralPath work)) {
+        & $vlib work
+        if ($LASTEXITCODE -ne 0) { throw "vlib failed." }
+    }
 
     # Use Questa's compiled mtiUvm with seeded $urandom and local assertions;
     # constrained randomization and covergroups require svverification licenses.

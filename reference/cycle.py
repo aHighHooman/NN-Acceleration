@@ -1,811 +1,429 @@
-"""Cycle reference: ``step`` maps pre-edge inputs to post-edge W/R state.
-Tracks update waves, weight-load shifts, and per-PE observed weights;
-``arithmetic.py`` supplies numerics while this module owns timing."""
+"""Clocked Fountain PE network, enabled-step adapters, loader and learning barrier.
 
+Lane arithmetic advances from previous registered neighbors. Whole-vector
+functional calculations are used only as an independent result oracle.
+"""
 from __future__ import annotations
-
-from collections import deque
 from dataclasses import dataclass, replace
-from typing import Sequence
-
-from .arithmetic import (
-    activate,
-    apply_matrix_update,
-    apply_reduction_update,
-    learning_direction,
-    matrix_multiply,
-    matrix_result_width,
-    matrix_update_directions,
-    prediction_width,
-    reduction_update_directions,
-    ternary_sign,
-    to_signed,
-    weighted_vector_reduction,
-)
-from .functional import SampleRecord
-
-
-def _matrix_copy(values: Sequence[Sequence[int]], n: int, width: int) -> list[list[int]]:
-    if len(values) != n or any(len(row) != n for row in values):
-        raise ValueError("W must be an N by N matrix")
-    return [[to_signed(value, width) for value in row] for row in values]
-
-
-def _vector_copy(values: Sequence[int], n: int, width: int, name: str) -> list[int]:
-    if len(values) != n:
-        raise ValueError(f"{name} must have length n")
-    return [to_signed(value, width) for value in values]
-
-
-def _zero_matrix(n: int) -> list[list[int]]:
-    return [[0 for _ in range(n)] for _ in range(n)]
-
-
-def _matrix_tuple(values: Sequence[Sequence[int]]) -> tuple[tuple[int, ...], ...]:
-    return tuple(tuple(int(value) for value in row) for row in values)
-
-
-def _zero_matrix_tuple(n: int) -> tuple[tuple[int, ...], ...]:
-    return tuple(tuple(0 for _ in range(n)) for _ in range(n))
+from collections.abc import Sequence
+from .arithmetic import to_signed, ternary_sign, saturating_lsb_update
+from .functional import ReferenceConfig, Sample, analyze, normalize_weights
 
 
 @dataclass(frozen=True)
-class CycleConfig:
-    """Cycle parameters and stream-wide ``pass_through``/``reduce_output`` modes.
-    Change modes via ``CycleReference.reconfigure`` only after all work drains."""
-
-    n: int = 3
-    width: int = 16
-    fraction_bits: int = 4
-    target_width: int | None = None
-    reduction_weight_width: int = 8
+class CycleConfig(ReferenceConfig):
+    route_delay: int = 0
+    join_latency: int = 1
+    tag_width: int = 16
     in_flight_depth: int | None = None
     output_fifo_depth: int | None = None
-    pass_through: bool = True
-    reduce_output: bool = False
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.n, int) or isinstance(self.n, bool) or self.n < 1:
-            raise ValueError("n must be a positive integer")
-        if not isinstance(self.width, int) or isinstance(self.width, bool) or self.width < 1:
-            raise ValueError("width must be a positive integer")
-        if self.target_width is None:
-            object.__setattr__(self, "target_width", self.width)
-        for name in ("target_width", "reduction_weight_width"):
-            value = getattr(self, name)
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer")
-        if (
-            not isinstance(self.fraction_bits, int)
-            or isinstance(self.fraction_bits, bool)
-            or self.fraction_bits < 0
-        ):
-            raise ValueError("fraction_bits must be a non-negative integer")
-        for name in ("in_flight_depth", "output_fifo_depth"):
-            value = getattr(self, name)
-            if value is None:
-                default = 2 * self.n + 2 if name == "in_flight_depth" else 2 * self.n
-                object.__setattr__(self, name, default)
-            elif not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                raise ValueError(f"{name} must be a positive integer")
+    def __post_init__(self):
+        super().__post_init__()
+        for name, minimum in (('route_delay',0), ('join_latency',1), ('tag_width',1)):
+            value=getattr(self,name)
+            if not isinstance(value,int) or isinstance(value,bool) or value<minimum:
+                raise ValueError(f'invalid {name}')
+        if self.tag_width>30:
+            raise ValueError('tag_width must be <=30')
+        if self.output_fifo_depth is None:
+            object.__setattr__(self,'output_fifo_depth',2*self.n)
+        if self.in_flight_depth is None:
+            object.__setattr__(self,'in_flight_depth',self.layers*(self.n+self.route_delay+self.join_latency+2)+self.output_fifo_depth+2)
+        for name in ('in_flight_depth','output_fifo_depth'):
+            value=getattr(self,name)
+            if not isinstance(value,int) or isinstance(value,bool) or value<1:
+                raise ValueError(f'invalid {name}')
+        if self.in_flight_depth>1<<self.tag_width:
+            raise ValueError('live tags would alias')
 
     @property
-    def matrix_result_width(self) -> int:
-        return matrix_result_width(self.width, self.n)
+    def center_latency(self):
+        return self.n//2+1+self.route_delay+self.join_latency
 
     @property
-    def prediction_width(self) -> int:
-        return prediction_width(self.width, self.n)
-
-    @property
-    def sample_context_depth(self) -> int:
-        return self.in_flight_depth  # type: ignore[return-value]
+    def sample_context_depth(self):
+        return self.in_flight_depth
 
 
 @dataclass(frozen=True)
 class CycleInputs:
-    """Pre-edge transaction and flow-control values; stream-wide
-    ``passThrough`` and ``reduceOutput`` are not sample metadata."""
-
     input_valid: bool = False
-    input_data: tuple[int, ...] = ()
+    input_data: tuple[int,...] = ()
     target_data: int = 0
-    training_enable: bool = True
-    result_ready: bool = False
+    training_enable: bool = False
+    result_ready: bool = True
     weight_valid: bool = False
-    weight_data: tuple[int, ...] = ()
-    reduction_weight: tuple[int, ...] = ()
+    weight_data: tuple[int,...] = ()
+    reduction_weight: tuple[int,...] = ()
     load_reduction_weights: bool = False
     reload_weights: bool = False
     reset_n: bool = True
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "input_valid", bool(self.input_valid))
-        object.__setattr__(self, "input_data", tuple(int(v) for v in self.input_data))
-        object.__setattr__(self, "target_data", int(self.target_data))
-        object.__setattr__(self, "training_enable", bool(self.training_enable))
-        object.__setattr__(self, "result_ready", bool(self.result_ready))
-        object.__setattr__(self, "weight_valid", bool(self.weight_valid))
-        object.__setattr__(self, "weight_data", tuple(int(v) for v in self.weight_data))
-        object.__setattr__(
-            self,
-            "reduction_weight",
-            tuple(int(v) for v in self.reduction_weight),
-        )
-        object.__setattr__(self, "load_reduction_weights", bool(self.load_reduction_weights))
-        object.__setattr__(self, "reload_weights", bool(self.reload_weights))
-        object.__setattr__(self, "reset_n", bool(self.reset_n))
+    pass_through: bool = True
+    reduce_output: bool = False
 
 
 @dataclass(frozen=True)
-class SampleContext:
-    """RTL sample-context payload: target, ternary input signs, and training bit.
-    Sample indices remain private model bookkeeping."""
+class Lane:
+    value: int
+    tag: int
 
-    target: int
-    input_signs: tuple[int, ...]
-    training_enable: bool
+
+class _Delay:
+    def __init__(self, depth):
+        self.words=[None]*depth
+
+    def read(self, incoming):
+        return self.words[-1] if self.words else incoming
+
+    def tick(self, incoming):
+        if self.words:
+            self.words=[incoming]+self.words[:-1]
+
+    @property
+    def busy(self):
+        return any(word is not None for word in self.words)
+
+
+def _join(a,b):
+    if (a is None)!=(b is None):
+        raise AssertionError('Fountain valid mismatch')
+    if a is None:
+        return None
+    if a.tag!=b.tag:
+        raise AssertionError('Fountain tag mismatch')
+    return Lane(a.value+b.value,a.tag)
+
+
+class _Layer:
+    def __init__(self, config, index, weights):
+        self.config=config
+        self.weights=weights
+        self.aw=config.width+(index+1)*(config.width+(config.n-1).bit_length())
+        n=config.n
+        self.act=[[None]*n for _ in range(n)]
+        self.sums=[[None]*n for _ in range(n)]
+        self.joined=[None]*n
+        self.upper=[_Delay(config.route_delay) for _ in range(n)]
+        self.lower=[_Delay(config.route_delay) for _ in range(n)]
+        self.tail=[_Delay(config.join_latency-1) for _ in range(n)]
+
+    def outputs(self):
+        return [delay.read(value) for delay,value in zip(self.tail,self.joined)]
+
+    @property
+    def busy(self):
+        return any(value is not None for row in self.act+self.sums for value in row) or any(
+            value is not None for value in self.joined) or any(
+            delay.busy for delay in self.upper+self.lower+self.tail)
+
+    def tick(self, incoming):
+        n=self.config.n
+        c=n//2
+        next_act=[[None]*n for _ in range(n)]
+        next_sums=[[None]*n for _ in range(n)]
+        next_joined=[]
+        for j in range(n):
+            upper=self.sums[0][j]
+            lower=self.sums[-1][j]
+            next_joined.append(_join(self.upper[j].read(upper),self.lower[j].read(lower)))
+            self.upper[j].tick(upper)
+            self.lower[j].tick(lower)
+            self.tail[j].tick(self.joined[j])
+        for i in range(n):
+            for j in range(n):
+                activation=incoming[i] if j==c else self.act[i][j+1 if j<c else j-1]
+                seed=i in (c,c-1)
+                partial=None if seed else self.sums[i+1 if i<c else i-1][j]
+                if not seed:
+                    if (activation is None)!=(partial is None):
+                        raise AssertionError(f'MAC valid mismatch at {i},{j}')
+                    if activation is not None and activation.tag!=partial.tag:
+                        raise AssertionError(f'MAC tag mismatch at {i},{j}')
+                next_act[i][j]=activation
+                if activation is not None:
+                    value=activation.value*self.weights[i][j]+(partial.value if partial else 0)
+                    assert to_signed(value,self.aw)==value, 'MAC overflow'
+                    next_sums[i][j]=Lane(value,activation.tag)
+        self.act,self.sums,self.joined=next_act,next_sums,next_joined
 
 
 @dataclass(frozen=True)
 class ResultEntry:
-    """Complete transaction retained until one result retires."""
-
-    activated_result: tuple[int, ...]
+    activated_result: tuple[int,...]
     prediction: int
-    reduction_weight_signs: tuple[int, ...]
+    tag: int
 
 
 @dataclass(frozen=True)
-class CycleSnapshot:
-    """Persistent architectural state after one simulated rising edge."""
-
-    cycle: int
-    W: tuple[tuple[int, ...], ...]
-    R: tuple[int, ...]
-    weight_buffer: tuple[tuple[int, ...], ...]
-    weights_loaded: bool
-    loaded_weight_rows: int
-    loading_weights: bool
-    load_step: int
-    capture_weights: bool
-    input_stage: tuple[int, ...] | None
-    sample_context_fifo: tuple[SampleContext, ...]
-    result_fifo: tuple[ResultEntry, ...]
-
-
-@dataclass
-class _Sample:
-    index: int
-    input_vector: tuple[int, ...]
+class SampleContext:
     target: int
-    training_enable: bool
-
-    @property
-    def input_signs(self) -> tuple[int, ...]:
-        return tuple(ternary_sign(value) for value in self.input_vector)
-
-
-@dataclass
-class _DataToken:
-    sample: _Sample
-    age: int
-    observed_weights: list[list[int | None]]
-
-
-@dataclass(frozen=True)
-class _CompletedResult:
-    sample: _Sample
-    raw_matrix_result: tuple[int, ...]
-    observed_weights: tuple[tuple[int, ...], ...]
-
-
-@dataclass(frozen=True)
-class _ResultEntry:
-    sample_index: int
-    activated_result: tuple[int, ...]
-    prediction: int
-    reduction_weight_signs: tuple[int, ...]
-
-
-@dataclass(frozen=True)
-class _MatrixWave:
-    direction: tuple[tuple[int, ...], ...]
-    next_diagonal: int
-
-
-@dataclass(frozen=True)
-class _ReductionWave:
-    direction: tuple[int, ...]
+    input_signs: tuple
+    gates: tuple
 
 
 @dataclass
 class SampleTiming:
-    """Cycle stamps for one accepted sample, indexed alongside ``records``."""
-
     accepted_at: int
     enqueued_at: int | None = None
     retired_at: int | None = None
 
 
+@dataclass(frozen=True)
+class CycleSnapshot:
+    cycle: int
+    accepted: bool
+    retired: bool
+    state: tuple[int,...]
+
+
 class CycleReference:
-    """Cycle-indexed reference of resident W/R state and stream buffers."""
+    def __init__(self,config: CycleConfig,W=None,R=None):
+        self.config=config
+        self.cycle=0
+        self.snapshots=[]
+        self._hardware_reset()
+        if W is not None:
+            initial=normalize_weights(config,W)
+            for l in range(config.layers):
+                for i in range(config.n): self._W[l][i][:]=initial[l][i]
+            self.weights_loaded=True
+        if R is not None:
+            if len(R)!=config.n: raise ValueError('readout length must equal n')
+            self._R=[to_signed(value,config.reduction_weight_width) for value in R]
+        self.mode_pass=config.pass_through
+        self.mode_reduce=config.reduce_output
 
-    def __init__(
-        self,
-        config: CycleConfig | None = None,
-        W: Sequence[Sequence[int]] | None = None,
-        R: Sequence[int] | None = None,
-        *,
-        weights_loaded: bool | None = None,
-    ) -> None:
-        self.config = config or CycleConfig()
-        self._initial_W = (
-            _matrix_copy(W, self.config.n, self.config.width)
-            if W is not None
-            else _zero_matrix(self.config.n)
-        )
-        self._initial_R = (
-            _vector_copy(R, self.config.n, self.config.reduction_weight_width, "R")
-            if R is not None
-            else [0 for _ in range(self.config.n)]
-        )
-        self._initial_weights_loaded = bool(W is not None) if weights_loaded is None else bool(weights_loaded)
-        if self._initial_weights_loaded and W is None:
-            raise ValueError("weights_loaded=True requires an initial W")
-        self.snapshots: list[CycleSnapshot] = []
-        self.reset()
+    def _hardware_reset(self):
+        cfg=self.config
+        n,k=cfg.n,cfg.layers
+        self._W=[[[0]*n for _ in range(n)] for _ in range(k)]
+        self._R=[0]*n
+        self.layers=[_Layer(cfg,l,self._W[l]) for l in range(k)]
+        self.source=[_Delay(abs(i-n//2)) for i in range(n)]
+        self.collector=[_Delay(n//2-abs(i-n//2)) for i in range(n)]
+        self.weight_buffer=[[[0]*n for _ in range(n)] for _ in range(k)]
+        self.weights_loaded=False
+        self.host_layer=self.loaded_rows=self.load_layer=self.load_step=0
+        self.loading=self.capture=False
+        self.input_stage=None
+        self.input_tag=0
+        self.next_tag=0
+        self.outstanding=0
+        self.fifo=[]
+        self.training_pending=False
+        self.training_tag=0
+        self.saved_target=0
+        self.input_signs=[[0]*n for _ in range(k)]
+        self.gates=[[False]*n for _ in range(k)]
+        self.final_signs=[0]*n
+        self.sensitivity=[[0]*n for _ in range(k)]
+        self.training_state=0
+        self.back_layer=self.back_row=self.back_col=self.back_acc=0
+        self.direction=0
+        self.mode_pass=self.mode_reduce=False
+        self.configuration_error=False
+        self.expected={}
+        self.timings={}
+        self.records=[]
 
     @property
-    def W(self) -> list[list[int]]:
-        return [row[:] for row in self._W]
+    def W(self):
+        return [[row[:] for row in matrix] for matrix in self._W]
 
     @property
-    def R(self) -> list[int]:
+    def R(self):
         return self._R[:]
 
-    @property
-    def cycle(self) -> int:
-        return self._cycle
+    def lane_outputs(self):
+        return [[None if lane is None else Lane(lane.value if self.mode_pass or lane.value>=0 else 0,lane.tag)
+                 for lane in layer.outputs()] for layer in self.layers]
+
+    def collected(self):
+        lanes=[delay.read(value) for delay,value in zip(self.collector,self.lane_outputs()[-1])]
+        if any(value is not None for value in lanes):
+            assert all(value is not None for value in lanes), 'collector valid mismatch'
+            assert len({value.tag for value in lanes})==1, 'collector tag mismatch'
+            return lanes
+        return None
 
     @property
-    def weights_loaded(self) -> bool:
-        return self._weights_loaded
+    def pipeline_busy(self):
+        return self.input_stage is not None or any(delay.busy for delay in self.source+self.collector) or any(layer.busy for layer in self.layers) or self.collected() is not None
 
-    @property
-    def in_flight(self) -> bool:
-        return bool(
-            (not self._weights_loaded and self._loaded_weight_rows)
-            or self._loading_weights
-            or self._capture_weights
-            or self._input_stage is not None
-            or self._sample_context_fifo
-            or self._data_tokens
-            or self._alignment
-            or self._result_fifo
-            or self._matrix_waves
-            or any(wave is not None for wave in self._reduction_pipe)
-        )
+    def signals(self,inputs: CycleInputs | None=None):
+        inputs=inputs or CycleInputs(pass_through=self.mode_pass,reduce_output=self.mode_reduce)
+        collected=self.collected()
+        result_valid=bool(self.fifo)
+        retire=result_valid and inputs.result_ready
+        matrix_reload=self.weights_loaded and not self.pipeline_busy and self.training_state!=2
+        quiescent=self.outstanding==0 and not self.training_pending and (not self.weights_loaded or matrix_reload)
+        reload_ready=self.weights_loaded and matrix_reload and quiescent and not self.fifo
+        reload=inputs.reload_weights and reload_ready
+        can_accept=len(self.fifo)<self.config.output_fifo_depth or retire
+        advance=self.weights_loaded and not(collected is not None and not can_accept)
+        matrix_input=self.weights_loaded and not reload and self.training_state!=2 and (self.input_stage is None or advance)
+        capacity=(self.outstanding<self.config.in_flight_depth or retire) and not self.training_pending and self.training_state==0 and not inputs.load_reduction_weights and not reload
+        return dict(weight_ready=inputs.reset_n and not self.weights_loaded and not self.loading and not self.capture,
+            input_ready=matrix_input and capacity,result_valid=result_valid,
+            reload_ready=reload_ready,advance=advance,quiescent=quiescent,
+            retire=retire,reload=reload,push=collected is not None and can_accept,
+            collected=collected)
 
-    @property
-    def stream_quiescent(self) -> bool:
-        """Whether all accepted samples, results, and updates have drained.
-        This configuration boundary excludes weight-loading state."""
-
-        return not bool(
-            self._input_stage is not None
-            or self._data_tokens
-            or self._matrix_waves
-            or self._alignment
-            or self._sample_context_fifo
-            or self._result_fifo
-            or any(wave is not None for wave in self._reduction_pipe)
-        )
-
-    def _clear_stream_state(self) -> None:
-        """Clear all stream buffers and bookkeeping for both construction and hardware
-        reset, ensuring both paths clear the same fields."""
-
-        n = self.config.n
-        self._next_sample_index = 0
-        self._weight_buffer = _zero_matrix(n)
-        self._load_psums = _zero_matrix(n)
-        self._loaded_weight_rows = 0
-        self._loading_weights = False
-        self._capture_weights = False
-        self._load_step = 0
-        self._reduction_pipe: list[_ReductionWave | None] = [None] * n
-        self._input_stage: _Sample | None = None
-        self._sample_context_fifo: deque[_Sample] = deque()
-        self._result_fifo: deque[_ResultEntry] = deque()
-        self._alignment: deque[_CompletedResult] = deque()
-        self._data_tokens: list[_DataToken] = []
-        self._matrix_waves: list[_MatrixWave] = []
-        self.records: list[SampleRecord] = []
-        # Timing is separate from architectural records and CycleSnapshot.
-        self.timings: list[SampleTiming] = []
-
-    def _load_weight_state(self, loaded: bool) -> None:
-        """Set resident W and weight-load flags; leave R unchanged because
-        reduction weights load independently over their own port."""
-
-        self._W = [row[:] for row in self._initial_W] if loaded else _zero_matrix(self.config.n)
-        self._weights_loaded = loaded
-        self._loaded_weight_rows = 0
-
-    def reset(self) -> None:
-        """Return to the constructor's initial state."""
-
-        self.snapshots = []
-        self._cycle = 0
-        self._clear_stream_state()
-        self._load_weight_state(self._initial_weights_loaded)
-        self._R = self._initial_R[:]
-
-    def _hardware_reset(self) -> None:
-        self._clear_stream_state()
-        self._load_weight_state(False)
-        self._R = [0 for _ in range(self.config.n)]
-
-    def flush(self, max_cycles: int = 10000) -> list[CycleSnapshot]:
-        """Advance ready idle edges until all private and FIFO state drains."""
-
-        if not isinstance(max_cycles, int) or isinstance(max_cycles, bool) or max_cycles < 0:
-            raise ValueError("max_cycles must be a non-negative integer")
-        added: list[CycleSnapshot] = []
-        for _ in range(max_cycles):
-            if not self.in_flight:
-                return added
-            added.append(self.step(CycleInputs(result_ready=True)))
-        if self.in_flight:
-            raise RuntimeError("cycle model did not drain within max_cycles")
-        return added
-
-    def reconfigure(
-        self,
-        *,
-        pass_through: bool | None = None,
-        reduce_output: bool | None = None,
-    ) -> None:
-        """Reject mode changes until accepted samples, results, and updates drain.
-        Modes belong to the stream and are never copied into samples or FIFOs."""
-
-        next_pass_through = (
-            self.config.pass_through if pass_through is None else bool(pass_through)
-        )
-        next_reduce_output = (
-            self.config.reduce_output if reduce_output is None else bool(reduce_output)
-        )
-        if (
-            next_pass_through != self.config.pass_through
-            or next_reduce_output != self.config.reduce_output
-        ) and not self.stream_quiescent:
-            raise RuntimeError(
-                "passThrough/reduceOutput may change only when the accelerator is quiescent"
-            )
-        self.config = replace(
-            self.config,
-            pass_through=next_pass_through,
-            reduce_output=next_reduce_output,
-        )
-
-    def run(self, cycles: Sequence[CycleInputs]) -> list[CycleSnapshot]:
-        return [self.step(cycle_inputs) for cycle_inputs in cycles]
-
-    def _normalize_input(self, values: Sequence[int]) -> tuple[int, ...]:
-        if len(values) != self.config.n:
-            raise ValueError("input_data must have length n")
-        return tuple(to_signed(value, self.config.width) for value in values)
-
-    def _normalize_weight(self, values: Sequence[int]) -> tuple[int, ...]:
-        if len(values) != self.config.n:
-            raise ValueError("weight_data must have length n")
-        return tuple(to_signed(value, self.config.width) for value in values)
-
-    def _normalize_reduction(self, values: Sequence[int]) -> tuple[int, ...]:
-        return tuple(_vector_copy(values, self.config.n, self.config.reduction_weight_width, "reduction_weight"))
-
-    def _result_head(self) -> tuple[_ResultEntry | None, _Sample | None]:
-        return (
-            self._result_fifo[0] if self._result_fifo else None,
-            self._sample_context_fifo[0] if self._sample_context_fifo else None,
-        )
-
-    def _matrix_reload_ready(self) -> bool:
-        """Whether the matrix engine's own computation state is drained."""
-
-        return bool(
-            self._weights_loaded
-            and self._input_stage is None
-            and not self._data_tokens
-            and not self._alignment
-            and not self._matrix_waves
-        )
-
-    def _apply_matrix_diagonal(self, wave: _MatrixWave, diagonal: int) -> None:
-        direction = _zero_matrix(self.config.n)
-        for row in range(self.config.n):
-            for column in range(self.config.n):
-                if min(row + column, 2 * self.config.n - 2 - row - column) == diagonal:
-                    direction[row][column] = wave.direction[row][column]
-        self._W = apply_matrix_update(self._W, direction, self.config.width)
-
-    def _advance_matrix_waves(self, injected: _MatrixWave | None) -> None:
-        last_diagonal = self.config.n - 1
-        next_waves: list[_MatrixWave] = []
-        for wave in self._matrix_waves:
-            self._apply_matrix_diagonal(wave, wave.next_diagonal)
-            if wave.next_diagonal < last_diagonal:
-                next_waves.append(_MatrixWave(wave.direction, wave.next_diagonal + 1))
-        if injected is not None:
-            self._apply_matrix_diagonal(injected, 0)
-            if last_diagonal > 0:
-                next_waves.append(_MatrixWave(injected.direction, 1))
-        self._matrix_waves = next_waves
-
-    def _advance_reduction_waves(
-        self,
-        injected: _ReductionWave | None,
-        load_reduction_weights: bool,
-    ) -> None:
-        if load_reduction_weights:
-            return
-        tail = self._reduction_pipe[-1]
-        if tail is not None:
-            self._R = apply_reduction_update(
-                self._R,
-                tail.direction,
-                self.config.reduction_weight_width,
-            )
-        self._reduction_pipe = self._reduction_pipe[:-1]
-        self._reduction_pipe.insert(0, injected)
-
-    def _shift_data_and_alignment(
-        self,
-        accepted: _Sample | None,
-        input_pop: bool,
-    ) -> None:
-        """Advance the inward array and its complete registered AD result one slot."""
-
-        W_before = [row[:] for row in self._W]
-        final_age = self.config.n
-        active: list[_DataToken] = []
-        for token in self._data_tokens:
-            token.age += 1
-            if token.age <= final_age:
-                diagonal = token.age - 1
-                for row in range(self.config.n):
-                    for column in range(self.config.n):
-                        if min(row + column, 2 * self.config.n - 2 - row - column) == diagonal:
-                            token.observed_weights[row][column] = W_before[row][column]
-            if token.age == final_age:
-                observed = token.observed_weights
-                if any(value is None for row in observed for value in row):
-                    raise AssertionError("sample reached result boundary without all PE weights")
-                observed_matrix = [
-                    [int(value) for value in row]  # type: ignore[arg-type]
-                    for row in observed
-                ]
-                raw = tuple(
-                    matrix_multiply(
-                        token.sample.input_vector,
-                        observed_matrix,
-                        self.config.width,
-                    )
-                )
-                self._alignment.append(
-                    _CompletedResult(
-                        sample=token.sample,
-                        raw_matrix_result=raw,
-                        observed_weights=_matrix_tuple(observed_matrix),
-                    )
-                )
-            else:
-                active.append(token)
-        self._data_tokens = active
-
-        if input_pop:
-            if accepted is None:
-                raise AssertionError("input pop without a sample")
-            self._data_tokens.append(
-                _DataToken(
-                    sample=accepted,
-                    age=0,
-                    observed_weights=[[None] * self.config.n for _ in range(self.config.n)],
-                )
-            )
-
-    def _make_result(
-        self,
-        completed: _CompletedResult,
-        pass_through: bool,
-        resident_R: Sequence[int],
-    ) -> SampleRecord:
-        observed = completed.observed_weights
-        if any(value is None for row in observed for value in row):
-            raise AssertionError("completed sample has an unobserved PE weight")
-        W_used = tuple(
-            tuple(int(value) for value in row)  # type: ignore[arg-type]
-            for row in observed
-        )
-        R_used = tuple(int(value) for value in resident_R)
-        activated = tuple(activate(completed.raw_matrix_result, pass_through, self.config.matrix_result_width))
-        prediction = weighted_vector_reduction(
-            activated,
-            R_used,
-            self.config.width,
-            self.config.reduction_weight_width,
-            self.config.fraction_bits,
-        )
-        direction = learning_direction(
-            completed.sample.target,
-            prediction,
-            self.config.target_width,  # type: ignore[arg-type]
-            self.config.prediction_width,
-        )
-        if completed.sample.training_enable:
-            _, _, matrix_directions = matrix_update_directions(
-                completed.sample.input_vector,
-                activated,
-                tuple(ternary_sign(value) for value in R_used),
-                direction,
-                self.config.width,
-                self.config.reduction_weight_width,
-                pass_through,
-            )
-            matrix_direction = _matrix_tuple(matrix_directions)
-            reduction_direction = tuple(reduction_update_directions(activated, direction))
-        else:
-            matrix_direction = _zero_matrix_tuple(self.config.n)
-            reduction_direction = (0,) * self.config.n
-        # The directions depend only on values frozen at enqueue, so the record
-        # is complete here and retirement issues it unchanged.  Visibility is
-        # not claimed: it emerges from the waves and shows up in W_used/R_used.
-        result = SampleRecord(
-            sample_index=completed.sample.index,
-            input_vector=completed.sample.input_vector,
-            target=completed.sample.target,
-            training_enable=completed.sample.training_enable,
-            W_used=W_used,
-            R_used=R_used,
-            raw_matrix_result=completed.raw_matrix_result,
-            activated_result=activated,
-            prediction=prediction,
-            learning_direction=direction,
-            matrix_update_directions=matrix_direction,
-            reduction_update_directions=reduction_direction,
-            update_generated=completed.sample.training_enable,
-            update_visible_at=None,
-        )
-        if result.sample_index != len(self.records):
-            raise AssertionError("sample result order diverged from enqueue order")
-        self.records.append(result)
-        return result
-
-    def _snapshot(self) -> CycleSnapshot:
-        if len(self._result_fifo) > self.config.output_fifo_depth:
-            raise AssertionError("result FIFO exceeded its configured depth")
-        return CycleSnapshot(
-            cycle=self._cycle,
-            W=_matrix_tuple(self._W),
-            R=tuple(self._R),
-            weight_buffer=_matrix_tuple(self._weight_buffer),
-            weights_loaded=self._weights_loaded,
-            loaded_weight_rows=self._loaded_weight_rows,
-            loading_weights=self._loading_weights,
-            load_step=self._load_step,
-            capture_weights=self._capture_weights,
-            input_stage=(
-                self._input_stage.input_vector if self._input_stage is not None else None
-            ),
-            sample_context_fifo=tuple(
-                SampleContext(sample.target, sample.input_signs, sample.training_enable)
-                for sample in self._sample_context_fifo
-            ),
-            result_fifo=tuple(
-                ResultEntry(
-                    entry.activated_result,
-                    entry.prediction,
-                    entry.reduction_weight_signs,
-                )
-                for entry in self._result_fifo
-            ),
-        )
-
-    def step(self, inputs: CycleInputs | None = None) -> CycleSnapshot:
-        """Apply one pre-edge input bundle and return the post-edge snapshot."""
-
-        cycle_inputs = inputs if inputs is not None else CycleInputs()
-        if not isinstance(cycle_inputs, CycleInputs):
-            raise TypeError("step expects CycleInputs")
-        cycle_number = self._cycle
-        pass_through = self.config.pass_through
-
-        if not cycle_inputs.reset_n:
+    def step(self,inputs: CycleInputs | None=None):
+        inputs=inputs or CycleInputs(pass_through=self.mode_pass,reduce_output=self.mode_reduce)
+        cfg=self.config
+        sig=self.signals(inputs)
+        accepted=bool(inputs.reset_n and inputs.input_valid and sig['input_ready'])
+        retired=bool(inputs.reset_n and sig['retire'])
+        if not inputs.reset_n:
             self._hardware_reset()
-            snapshot = self._snapshot()
-            self._cycle = cycle_number + 1
-            self.snapshots.append(snapshot)
-            return snapshot
-
-        result_head, context_head = self._result_head()
-        result_valid = result_head is not None and context_head is not None
-        result_retired = bool(result_valid and cycle_inputs.result_ready)
-
-        weight_ready = bool(
-            not self._weights_loaded
-            and not self._loading_weights
-            and not self._capture_weights
-            and self._loaded_weight_rows < self.config.n
-        )
-        weight_accepted = bool(cycle_inputs.weight_valid and weight_ready)
-
-        reduction_update_entering = bool(
-            result_retired and context_head is not None and context_head.training_enable
-        )
-        reduction_update_busy = bool(
-            reduction_update_entering or any(wave is not None for wave in self._reduction_pipe)
-        )
-        matrix_reload_ready = self._matrix_reload_ready()
-        reload_ready = bool(
-            matrix_reload_ready
-            and not self._result_fifo
-            and not self._sample_context_fifo
-            and not reduction_update_busy
-        )
-        reload_accepted = bool(cycle_inputs.reload_weights and reload_ready)
-
-        result_full = len(self._result_fifo) >= self.config.output_fifo_depth
-        aligned_head_ready = bool(self._alignment)
-        output_blocked = bool(result_full and not result_retired and aligned_head_ready)
-        datapath_advance = (
-            (self._loading_weights or self._capture_weights)
-            if not self._weights_loaded else not output_blocked
-        )
-
-        input_pop = bool(
-            self._weights_loaded and self._input_stage is not None and datapath_advance
-        )
-        context_full = len(self._sample_context_fifo) >= self.config.sample_context_depth
-        sample_can_accept = not context_full or result_retired
-        input_ready = (
-            self._weights_loaded
-            and not reload_accepted
-            and (self._input_stage is None or input_pop)
-            and sample_can_accept
-        )
-        input_accepted = bool(cycle_inputs.input_valid and input_ready)
-        accepted_sample: _Sample | None = None
-        if input_accepted:
-            accepted_sample = _Sample(
-                index=self._next_sample_index,
-                input_vector=self._normalize_input(cycle_inputs.input_data),
-                target=to_signed(cycle_inputs.target_data, self.config.target_width),  # type: ignore[arg-type]
-                training_enable=cycle_inputs.training_enable,
-            )
-            self._next_sample_index += 1
-            self.timings.append(SampleTiming(accepted_at=cycle_number))
-
-        input_for_array = self._input_stage if input_pop else None
-        result_enqueue = bool(datapath_advance and aligned_head_ready)
-        injected_matrix: _MatrixWave | None = None
-        injected_reduction: _ReductionWave | None = None
-        matrix_update_accepted = bool(
-            result_retired
-            and context_head is not None
-            and context_head.training_enable
-            and datapath_advance
-        )
-        if matrix_update_accepted:
-            assert context_head is not None
-            issued = self.records[context_head.index]
-            injected_matrix = _MatrixWave(issued.matrix_update_directions, 0)
-            injected_reduction = _ReductionWave(issued.reduction_update_directions)
-
-        resident_R_before = self._R[:]
-
-        if datapath_advance and self._weights_loaded:
-            self._shift_data_and_alignment(input_for_array, input_pop)
-        if datapath_advance:
-            self._advance_matrix_waves(injected_matrix)
-            self._advance_reduction_waves(injected_reduction, cycle_inputs.load_reduction_weights)
-
-        # Simulate the two independent load chains. Each edge consumes the
-        # previous psum registers; the AD lower input is gated during loading.
-        # Resident W remains unchanged until the explicit capture edge.
-        if self._loading_weights:
-            n, q = self.config.n, self._load_step
-            before = [row[:] for row in self._load_psums]
-            for row in range(n):
-                for column in range(n):
-                    if row + column <= n - 1:
-                        top = self._weight_buffer[n - 1 - q][column] if q >= column else 0
-                        self._load_psums[row][column] = top if row == 0 else before[row - 1][column]
-                    else:
-                        bottom = self._weight_buffer[q][column] if q >= n - column else 0
-                        self._load_psums[row][column] = bottom if row == n - 1 else before[row + 1][column]
-            if q == n - 1:
-                self._loading_weights = False
-                self._capture_weights = True
-                self._load_step = 0
-            else:
-                self._load_step += 1
-        elif self._capture_weights:
-            self._W = [row[:] for row in self._load_psums]
-            self._weights_loaded = True
-            self._capture_weights = False
-            self._loaded_weight_rows = 0
-
-        if cycle_inputs.load_reduction_weights:
-            self._R = list(self._normalize_reduction(cycle_inputs.reduction_weight))
-
-        if reload_accepted:
-            self._weights_loaded = False
-            self._loaded_weight_rows = 0
-            self._weight_buffer = _zero_matrix(self.config.n)
-            self._loading_weights = False
-            self._capture_weights = False
-            self._load_step = 0
-
-        if weight_accepted:
-            self._weight_buffer[self.config.n - 1 - self._loaded_weight_rows] = list(
-                self._normalize_weight(cycle_inputs.weight_data)
-            )
-            self._loaded_weight_rows += 1
-            if self._loaded_weight_rows == self.config.n:
-                self._loading_weights = True
-                self._load_step = 0
-
-        if input_pop:
-            self._input_stage = None
-        if accepted_sample is not None:
-            self._input_stage = accepted_sample
-            self._sample_context_fifo.append(accepted_sample)
-
-        if result_enqueue:
-            completed_to_enqueue = self._alignment.popleft()
-            result = self._make_result(
-                completed_to_enqueue,
-                pass_through,
-                resident_R_before,
-            )
-            self._result_fifo.append(
-                _ResultEntry(
-                    completed_to_enqueue.sample.index,
-                    result.activated_result,
-                    result.prediction,
-                    tuple(ternary_sign(value) for value in result.R_used),
-                )
-            )
-            timing = self.timings[completed_to_enqueue.sample.index]
-            if timing.enqueued_at is not None:
-                raise AssertionError("sample enqueued twice")
-            timing.enqueued_at = cycle_number
-
-        if result_retired:
-            if not self._result_fifo or not self._sample_context_fifo:
-                raise AssertionError("retired result transaction is missing its context")
-            retired_result = self._result_fifo.popleft()
-            retired_context = self._sample_context_fifo.popleft()
-            if retired_result.sample_index != retired_context.index:
-                raise AssertionError("result and sample-context order diverged")
-            timing = self.timings[retired_context.index]
-            if timing.retired_at is not None or timing.enqueued_at is None:
-                raise AssertionError("sample retirement order diverged")
-            timing.retired_at = cycle_number
-
-        snapshot = self._snapshot()
-        self._cycle = cycle_number + 1
+        else:
+            old_pending=self.training_pending
+            old_state=self.training_state
+            old_pass=self.mode_pass
+            old_r=self._R[:]
+            old_input=self.input_stage
+            old_weights_loaded=self.weights_loaded
+            raw_outputs=[layer.outputs() for layer in self.layers]
+            activated=self.lane_outputs()
+            head=self.fifo[0] if self.fifo else None
+            collected=sig['collected']
+            if sig['quiescent']:
+                self.mode_pass=inputs.pass_through
+                self.mode_reduce=inputs.reduce_output
+            elif inputs.pass_through!=self.mode_pass or inputs.reduce_output!=self.mode_reduce:
+                self.configuration_error=True
+            if inputs.load_reduction_weights:
+                if sig['quiescent']:
+                    if len(inputs.reduction_weight)!=cfg.n: raise ValueError('readout length')
+                    self._R=[to_signed(v,cfg.reduction_weight_width) for v in inputs.reduction_weight]
+                else: self.configuration_error=True
+            if old_pending and sig['advance']:
+                for l in range(cfg.layers):
+                    for j,lane in enumerate(raw_outputs[l]):
+                        if lane is not None and lane.tag==self.training_tag:
+                            self.gates[l][j]=old_pass or lane.value>0
+                            sign=ternary_sign(activated[l][j].value)
+                            if l<cfg.layers-1: self.input_signs[l+1][j]=sign
+                            else: self.final_signs[j]=sign
+            if sig['advance']:
+                for j,delay in enumerate(self.collector): delay.tick(activated[-1][j])
+                source_words=[None if old_input is None else Lane(old_input[0][i],old_input[1]) for i in range(cfg.n)]
+                layer_inputs=[[delay.read(word) for delay,word in zip(self.source,source_words)]]+activated[:-1]
+                for layer,lane_inputs in zip(self.layers,layer_inputs): layer.tick(lane_inputs)
+                for delay,word in zip(self.source,source_words): delay.tick(word)
+            if retired:
+                self.fifo.pop(0)
+                self.timings[head.tag].retired_at=self.cycle
+                self.records.append(self.expected[head.tag])
+            if sig['push']:
+                values=tuple(lane.value for lane in collected)
+                tag=collected[0].tag
+                prediction=sum(v*r for v,r in zip(values,old_r)) >> cfg.rescale_shift
+                record=self.expected[tag]
+                assert values==record.activated_result and prediction==record.prediction, 'clocked/functional mismatch'
+                self.fifo.append(ResultEntry(values,prediction,tag))
+                self.timings[tag].enqueued_at=self.cycle
+            if accepted:
+                values=tuple(to_signed(value,cfg.width) for value in inputs.input_data)
+                if len(values)!=cfg.n: raise ValueError('input length')
+                tag=self.next_tag
+                self.expected[tag]=analyze(replace(cfg,pass_through=self.mode_pass,reduce_output=self.mode_reduce),self._W,old_r,
+                    Sample(values,inputs.target_data,inputs.training_enable),tag)
+                self.timings[tag]=SampleTiming(self.cycle)
+                self.next_tag=(tag+1) % (1<<cfg.tag_width)
+                self.input_stage=(values,tag)
+                self.input_tag=tag
+                if inputs.training_enable:
+                    self.training_pending=True
+                    self.training_tag=tag
+                    self.saved_target=to_signed(inputs.target_data,cfg.target_width)
+                    self.input_signs[0]=[ternary_sign(v) for v in values]
+            elif old_input is not None and sig['advance']:
+                self.input_stage=None
+            self.outstanding+=int(accepted)-int(retired)
+            if old_state==0 and retired and old_pending and head.tag==self.training_tag:
+                self.direction=ternary_sign(self.saved_target-head.prediction)
+                self.sensitivity[-1]=[r if gate else 0 for r,gate in zip(old_r,self.gates[-1])]
+                self.back_layer=max(0,cfg.layers-2)
+                self.back_row=self.back_col=self.back_acc=0
+                self.training_state=2 if cfg.layers==1 or self.direction==0 else 1
+            elif old_state==1 and sig['advance']:
+                value=(self.back_acc if self.back_col else 0)+self._W[self.back_layer+1][self.back_row][self.back_col]*self.sensitivity[self.back_layer+1][self.back_col]
+                if self.back_col==cfg.n-1:
+                    self.sensitivity[self.back_layer][self.back_row]=value if self.gates[self.back_layer][self.back_row] else 0
+                    self.back_col=self.back_acc=0
+                    if self.back_row==cfg.n-1:
+                        self.back_row=0
+                        if self.back_layer==0: self.training_state=2
+                        else: self.back_layer-=1
+                    else: self.back_row+=1
+                else:
+                    self.back_acc=value
+                    self.back_col+=1
+            elif old_state==2 and sig['advance']:
+                record=self.expected[self.training_tag]
+                for l in range(cfg.layers):
+                    for i in range(cfg.n):
+                        for j in range(cfg.n):
+                            direction=self.input_signs[l][i]*self.direction*ternary_sign(self.sensitivity[l][j])
+                            assert direction==record.matrix_update_directions[l][i][j]
+                            self._W[l][i][j]=saturating_lsb_update(self._W[l][i][j],direction,cfg.width)
+                self._R=[saturating_lsb_update(r,self.direction*sign,cfg.reduction_weight_width) for r,sign in zip(old_r,self.final_signs)]
+                self.training_pending=False
+                self.training_state=0
+            # Loader writes after all pre-edge PE reads, exactly like a clocked bank.
+            if self.capture:
+                self.capture=False
+                self.weights_loaded=True
+                self.host_layer=0
+            elif self.loading:
+                self._W[self.load_layer][self.load_step][:]=self.weight_buffer[self.load_layer][self.load_step]
+                if self.load_step==cfg.n-1:
+                    self.load_step=0
+                    if self.load_layer==cfg.layers-1:
+                        self.loading=False
+                        self.capture=True
+                    else: self.load_layer+=1
+                else: self.load_step+=1
+            elif sig['weight_ready'] and inputs.weight_valid:
+                if len(inputs.weight_data)!=cfg.n: raise ValueError('weight row length')
+                self.weight_buffer[self.host_layer][cfg.n-1-self.loaded_rows]=[to_signed(v,cfg.width) for v in inputs.weight_data]
+                if self.loaded_rows==cfg.n-1:
+                    self.loaded_rows=0
+                    if self.host_layer==cfg.layers-1:
+                        self.loading=True
+                        self.load_layer=self.load_step=0
+                    else: self.host_layer+=1
+                else: self.loaded_rows+=1
+            if sig['reload']:
+                self.weights_loaded=False
+                self.host_layer=self.loaded_rows=0
+        snapshot=CycleSnapshot(self.cycle,accepted,retired,self.state_vector(inputs))
         self.snapshots.append(snapshot)
+        self.cycle+=1
         return snapshot
 
+    def state_vector(self,inputs=None):
+        sig=self.signals(inputs)
+        head=self.fifo[0] if self.fifo else ResultEntry((0,)*self.config.n,0,0)
+        result=(head.prediction,)+(0,)*(self.config.n-1) if self.mode_reduce else head.activated_result
+        state=[int(sig[name]) for name in ('weight_ready','input_ready','result_valid')]
+        state += [int(self.weights_loaded),int(sig['reload_ready']),int(self.training_pending),int(self.configuration_error),int(sig['advance']),
+            self.outstanding,self.host_layer,self.loaded_rows,int(self.loading),int(self.capture),self.load_layer,self.load_step,
+            int(self.input_stage is not None),self.input_tag,self.next_tag,self.training_tag,
+            self.training_state,self.back_layer,self.back_row,self.back_col,self.back_acc,self.direction,len(self.fifo),head.tag,*result]
+        state += [v for matrix in self._W for row in matrix for v in row]
+        state += self._R
+        state += [v for row in self.sensitivity for v in row]
+        state += [int(v) for row in self.gates for v in row]
+        state += [v for row in self.input_signs for v in row]
+        state += self.final_signs
+        for layer in self.lane_outputs():
+            for value in layer:
+                state.extend((0,0,0) if value is None else (1,value.tag,value.value))
+        return tuple(state)
 
-__all__ = [
-    "CycleConfig",
-    "CycleInputs",
-    "CycleReference",
-    "CycleSnapshot",
-    "ResultEntry",
-    "SampleContext",
-    "SampleTiming",
-]
+    def run(self,cycles: Sequence[CycleInputs]):
+        return [self.step(value) for value in cycles]
