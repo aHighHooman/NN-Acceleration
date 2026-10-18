@@ -40,6 +40,16 @@
 set_global_assignment -name FAMILY "Cyclone V"
 set_global_assignment -name DEVICE 5CSEMA5F31C6
 set_global_assignment -name TOP_LEVEL_ENTITY nnAccelerator
+
+# Fountain bringup: three exact-width 5x5 stages and one final scalar readout.
+# RTL defaults remain independently parameterized; this project is the 8-bit
+# integer prototype. G=0 is a route-stage count, not a zero-wire-delay claim.
+set_parameter -name N 5
+set_parameter -name WIDTH 8
+set_parameter -name LAYERS 3
+set_parameter -name FRACTION_BITS 0
+set_parameter -name G 0
+set_parameter -name J 1
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 19.1.0
 set_global_assignment -name PROJECT_CREATION_TIME_DATE "22:57:18  NOVEMBER 08, 2025"
 set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"
