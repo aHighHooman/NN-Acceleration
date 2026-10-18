@@ -1,341 +1,258 @@
+// Fountain replaces the former inward datapath in the existing hierarchy.
+// Inference is pipelined; training drains behind one accepted training sample,
+// computes full backward sensitivities, and commits one-LSB updates atomically.
 module nnAccelerator #(
-    parameter int WIDTH = 16,
-    parameter int N = 3,
-    parameter int FRACTION_BITS = 4,
-    parameter int TARGET_WIDTH = WIDTH,
-    parameter int REDUCTION_WEIGHT_WIDTH = 8,
-    parameter int IN_FLIGHT_DEPTH = 2*N + 2,
-    parameter int OUTPUT_FIFO_DEPTH = 2*N
+    parameter int WIDTH=16, N=3, LAYERS=3, FRACTION_BITS=4,
+    parameter int TARGET_WIDTH=WIDTH, REDUCTION_WEIGHT_WIDTH=8,
+    parameter int TAG_WIDTH=16, G=0, J=1,
+    parameter int OUTPUT_FIFO_DEPTH=2*N,
+    parameter int IN_FLIGHT_DEPTH=LAYERS*(N+G+J+2)+OUTPUT_FIFO_DEPTH+2
 )(
-    input  logic                              clk,
-    input  logic                              rst_n,
-    input  logic signed [WIDTH-1:0]           weightData [N],
-    input  logic                              weightValid,
-    output logic                              weightReady,
-    input  logic signed [WIDTH-1:0]           inputData [N],
-    input  logic signed [TARGET_WIDTH-1:0]    targetData,
-    input  logic                              trainingEnable,
-    input  logic                              inputValid,
-    output logic                              inputReady,
-    input  logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight [N],
-    input  logic                              loadReductionWeights,
-    input  logic                              reduceOutput,
-    output logic signed [2*WIDTH+2*$clog2(N)-1:0] resultData [N],
-    output logic                              resultValid,
-    input  logic                              resultReady,
-    output logic                              weightsLoaded,
-    input  logic                              reloadWeights,
-    output logic                              reloadReady,
-    input  logic                              passThrough
+    input logic clk, rst_n,
+    input logic signed [WIDTH-1:0] weightData[N],
+    input logic weightValid,
+    output logic weightReady,
+    input logic signed [WIDTH-1:0] inputData[N],
+    input logic signed [TARGET_WIDTH-1:0] targetData,
+    input logic trainingEnable, inputValid,
+    output logic inputReady,
+    input logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N],
+    input logic loadReductionWeights, passThrough, reduceOutput,
+    output logic signed [WIDTH+LAYERS*(WIDTH+$clog2(N))+$clog2(N)-1:0] resultData[N],
+    output logic resultValid,
+    input logic resultReady,
+    output logic weightsLoaded,
+    input logic reloadWeights,
+    output logic reloadReady
 );
-
-    localparam int MATRIX_RESULT_WIDTH = 2*WIDTH + $clog2(N);
-    localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
-    // Matrix updates reach the AD after N-1 advances; reduction observes the
-    // resulting registered vector one edge later at the result FIFO boundary.
-    localparam int REDUCTION_UPDATE_DELAY = N;
-    localparam int SAMPLE_CONTEXT_WIDTH = TARGET_WIDTH + 2*N + 1;
-    localparam int COMPARE_WIDTH = (PREDICTION_WIDTH > TARGET_WIDTH)
-                                   ? PREDICTION_WIDTH : TARGET_WIDTH;
-    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
-        REDUCTION_WEIGHT_MIN = {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}};
-    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
-        REDUCTION_WEIGHT_MAX = {1'b0, {(REDUCTION_WEIGHT_WIDTH-1){1'b1}}};
-    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0]
-        REDUCTION_WEIGHT_ONE = {{(REDUCTION_WEIGHT_WIDTH-1){1'b0}}, 1'b1};
+    localparam int LG=$clog2(N);
+    localparam int MATRIX_RESULT_WIDTH=WIDTH+LAYERS*(WIDTH+LG);
+    localparam int PREDICTION_WIDTH=MATRIX_RESULT_WIDTH+LG;
+    localparam int SENS_WIDTH=REDUCTION_WEIGHT_WIDTH+(LAYERS-1)*(WIDTH+LG);
+    localparam int BACK_PRODUCT_WIDTH=WIDTH+SENS_WIDTH;
+    localparam int BACK_SUM_WIDTH=BACK_PRODUCT_WIDTH+LG;
+    localparam int RESULT_ENTRY_WIDTH=N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH+TAG_WIDTH;
+    localparam int COUNT_WIDTH=$clog2(IN_FLIGHT_DEPTH+1);
+    localparam int COMPARE_WIDTH=(PREDICTION_WIDTH>TARGET_WIDTH)?PREDICTION_WIDTH:TARGET_WIDTH;
+    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0] R_MIN={1'b1,{(REDUCTION_WEIGHT_WIDTH-1){1'b0}}};
+    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0] R_MAX={1'b0,{(REDUCTION_WEIGHT_WIDTH-1){1'b1}}};
+    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0] R_ONE={{(REDUCTION_WEIGHT_WIDTH-1){1'b0}},1'b1};
+    typedef enum logic [1:0] {IDLE, BACKWARD, APPLY} training_state_t;
+    training_state_t trainingState;
+    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] residentReductionWeight[N];
+    wire signed [WIDTH-1:0] residentWeights[LAYERS][N][N];
+    wire signed [MATRIX_RESULT_WIDTH-1:0] activatedMatrixResultData[N];
+    wire matrixResultValid, matrixInputReady, matrixReloadReady, arrayAdvance;
+    wire [TAG_WIDTH-1:0] matrixResultTag;
+    logic matrixInputValid, matrixResultReady, matrixUpdateValid, samplePush;
+    logic resultFifoPush, resultFifoPop, resultFifoCanAccept;
+    wire resultFifoFull, resultFifoEmpty;
+    logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoPushData;
+    wire signed [RESULT_ENTRY_WIDTH-1:0] resultFifoHead;
+    wire signed [PREDICTION_WIDTH-1:0] enqueuePrediction, prediction;
+    wire [TAG_WIDTH-1:0] resultTag;
+    logic [TAG_WIDTH-1:0] nextTag, trainingTag;
+    logic [COUNT_WIDTH-1:0] outstanding;
+    logic trainingPending, trainingBusy, configurationError;
+    logic modePassThrough, modeReduceOutput, quiescent, reloadAccepted, sampleCanAccept;
+    logic signed [TARGET_WIDTH-1:0] savedTarget;
+    logic signed [1:0] inputSigns[LAYERS][N], finalSigns[N];
+    logic activationGates[LAYERS][N];
+    wire tapValid[LAYERS][N], tapGate[LAYERS][N];
+    wire [TAG_WIDTH-1:0] tapTag[LAYERS][N];
+    wire signed [1:0] tapSign[LAYERS][N];
+    logic signed [SENS_WIDTH-1:0] sensitivity[LAYERS][N];
+    logic signed [1:0] learningDirection, rowDirection[LAYERS][N], columnDirection[LAYERS][N];
+    logic signed [COMPARE_WIDTH-1:0] compareTarget, comparePrediction;
+    integer backwardLayer, backwardRow, backwardColumn;
+    // Reserve DSP capacity for the II=1 forward stages on the Cyclone V.
+    // The single time-shared backward multiplier is implemented in logic.
+    (* multstyle = "logic" *) logic signed [BACK_PRODUCT_WIDTH-1:0] backwardProduct;
+    logic signed [BACK_SUM_WIDTH-1:0] backwardAccumulator, backwardSum;
 
     initial begin
-        if (WIDTH < 1 || N < 2 || FRACTION_BITS < 0 ||
-            TARGET_WIDTH < 1 || REDUCTION_WEIGHT_WIDTH < 1 ||
-            IN_FLIGHT_DEPTH < 1 || OUTPUT_FIFO_DEPTH < 1)
-            $fatal(1, "WIDTH>=1, N>=2, FRACTION_BITS>=0, widths/depths>=1");
+        if (WIDTH<1 || N<3 || N%2==0 || LAYERS<1 || FRACTION_BITS<0 ||
+            TARGET_WIDTH<1 || REDUCTION_WEIGHT_WIDTH<1 || TAG_WIDTH<1 || TAG_WIDTH>30 ||
+            IN_FLIGHT_DEPTH<1 || IN_FLIGHT_DEPTH>(64'd1<<TAG_WIDTH) || OUTPUT_FIFO_DEPTH<1 || G<0 || J<1)
+            $fatal(1, "Fountain requires positive widths/depths, odd N>=3 and unique live tags");
     end
-
-    logic signed [MATRIX_RESULT_WIDTH-1:0] rawResultData[N];
-    logic signed [MATRIX_RESULT_WIDTH-1:0] activatedMatrixResultData[N];
-    logic signed [MATRIX_RESULT_WIDTH-1:0] activatedData[N];
-    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] residentReductionWeight[N];
-    logic signed [PREDICTION_WIDTH-1:0] prediction;
-    logic signed [PREDICTION_WIDTH-1:0] enqueuePrediction;
-    logic signed [2*N-1:0] reductionWeightSignPushData;
-    logic signed [2*N-1:0] reductionWeightSignHead;
-    localparam int RESULT_ENTRY_WIDTH = N*MATRIX_RESULT_WIDTH +
-                                        PREDICTION_WIDTH + 2*N;
-    logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoPushData;
-    logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoHead;
-    // The retired target and prediction comparison feed the internal update package.
-    logic signed [TARGET_WIDTH-1:0] resultTargetData;
-    logic signed [1:0] learningDirection;
-    logic signed [COMPARE_WIDTH-1:0] comparePrediction, compareTarget;
-    logic signed [2*N-1:0] inputSignPushData, inputSignHead;
-    logic trainingEnableHead;
-    // Internal update wiring connects the matrix package to matrixEngine
-    // and the reduction package to the resident-vector update pipe.
-    logic signed [1:0] rowDirection[N], columnDirection[N];
-    logic matrixUpdateValid;
-    logic signed [1:0] reductionDirection[N];
-    logic signed [2*N-1:0] reductionUpdateData;
-    logic reductionUpdateValidPipe[REDUCTION_UPDATE_DELAY];
-    logic signed [2*N-1:0]
-        reductionUpdateDirectionPipe[REDUCTION_UPDATE_DELAY];
-    logic arrayAdvance, matrixResultPush;
-    logic matrixReloadReady, reductionUpdateBusy, applyReductionUpdate;
-    logic resultFifoPush, resultFifoPop, resultFifoCanAccept;
-    logic resultFifoFull, resultFifoEmpty;
-    logic matrixInputValid, matrixInputReady;
-    logic matrixResultValid, matrixResultReady;
-    logic signed [SAMPLE_CONTEXT_WIDTH-1:0] sampleContextPushData;
-    logic signed [SAMPLE_CONTEXT_WIDTH-1:0] sampleContextHead;
-    logic sampleContextFull, sampleContextEmpty;
-    logic samplePush, samplePop, sampleCanAccept;
-
-    // The vector, target, signs, and training bit form one transaction. Gate matrix
-    // valid and external ready together when the sample-context FIFO backpressures.
-    assign sampleCanAccept       = !sampleContextFull || samplePop;
-    assign inputReady       = matrixInputReady && sampleCanAccept;
-    assign matrixInputValid = inputValid && sampleCanAccept;
-    assign samplePush       = inputValid && inputReady;
-
-    // The result FIFO holds the complete architectural result and controls capacity;
-    // a full FIFO can accept a matrix result on the same edge its head retires.
-    assign resultFifoPop      = resultValid && resultReady;
-    assign resultFifoCanAccept = !resultFifoFull || resultFifoPop;
-    assign matrixResultReady  = resultFifoCanAccept;
-    assign matrixResultPush   = matrixResultValid && matrixResultReady;
-    assign resultFifoPush     = matrixResultPush;
-    // Every result entry's sample context is still buffered until it retires.
-    assign resultValid        = !resultFifoEmpty;
-    assign samplePop          = resultFifoPop;
-    assign matrixUpdateValid = samplePop && trainingEnableHead;
-    assign applyReductionUpdate = arrayAdvance &&
-                                  reductionUpdateValidPipe[REDUCTION_UPDATE_DELAY-1];
-
+    assign trainingBusy=trainingPending;
+    assign quiescent=outstanding==0 && !trainingPending && (!weightsLoaded || matrixReloadReady);
+    assign reloadReady=weightsLoaded && matrixReloadReady && quiescent && resultFifoEmpty;
+    assign reloadAccepted=reloadWeights && reloadReady;
+    assign sampleCanAccept=(outstanding<IN_FLIGHT_DEPTH || resultFifoPop) &&
+        !trainingPending && trainingState==IDLE && !loadReductionWeights && !reloadAccepted;
+    assign inputReady=matrixInputReady && sampleCanAccept;
+    assign matrixInputValid=inputValid && sampleCanAccept;
+    assign samplePush=inputValid && inputReady;
+    assign resultValid=!resultFifoEmpty;
+    assign resultFifoPop=resultValid && resultReady;
+    assign resultFifoCanAccept=!resultFifoFull || resultFifoPop;
+    assign matrixResultReady=resultFifoCanAccept;
+    assign resultFifoPush=matrixResultValid && matrixResultReady;
+    assign matrixUpdateValid=trainingState==APPLY;
+    assign prediction=resultFifoHead[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH];
+    assign resultTag=resultFifoHead[N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH +: TAG_WIDTH];
+    assign compareTarget=savedTarget;
+    assign comparePrediction=prediction;
     always_comb begin
-        reductionUpdateBusy = matrixUpdateValid;
-        for (int stage = 0; stage < REDUCTION_UPDATE_DELAY; stage++)
-            reductionUpdateBusy |= reductionUpdateValidPipe[stage];
-    end
-    assign reloadReady = matrixReloadReady && sampleContextEmpty && !reductionUpdateBusy;
-
-    // Compare the rescaled architectural prediction with the aligned FIFO
-    // head. Assignment to the wider signed signals sign-extends either side.
-    assign comparePrediction = prediction;
-    assign compareTarget     = resultTargetData;
-
-    always_comb begin
-        learningDirection = 2'sd0;
-        if (resultValid) begin
-            if (compareTarget > comparePrediction)
-                learningDirection = 2'sd1;
-            else if (compareTarget < comparePrediction)
-                learningDirection = -2'sd1;
+        resultFifoPushData='0;
+        for (int j=0; j<N; j++) begin
+            resultFifoPushData[j*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH]=activatedMatrixResultData[j];
+            if (modeReduceOutput) resultData[j]=(j==0)?prediction:PREDICTION_WIDTH'('0);
+            else resultData[j]={{LG{resultFifoHead[j*MATRIX_RESULT_WIDTH+MATRIX_RESULT_WIDTH-1]}},
+                               resultFifoHead[j*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH]};
+        end
+        resultFifoPushData[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH]=enqueuePrediction;
+        resultFifoPushData[N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH +: TAG_WIDTH]=matrixResultTag;
+        for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++) begin
+            rowDirection[l][j]=inputSigns[l][j];
+            if (learningDirection==0 || sensitivity[l][j]==0) columnDirection[l][j]=0;
+            else columnDirection[l][j]=sensitivity[l][j][SENS_WIDTH-1]?-learningDirection:learningDirection;
         end
     end
-
-    // Capture the original input signs as a compact vector. Two-bit signed
-    // values encode the complete ternary set: 2'b01, 2'b00, and 2'b11.
-    always_comb begin
-        inputSignPushData = '0;
-        for (int lane = 0; lane < N; lane++) begin
-            if (inputData[lane] == '0)
-                inputSignPushData[2*lane +: 2] = 2'sd0;
-            else if (inputData[lane][WIDTH-1])
-                inputSignPushData[2*lane +: 2] = -2'sd1;
-            else
-                inputSignPushData[2*lane +: 2] = 2'sd1;
-        end
+    generate
+    if (LAYERS>1) begin : backward_multiplier
+        assign backwardProduct=residentWeights[backwardLayer+1][backwardRow][backwardColumn]*
+                               sensitivity[backwardLayer+1][backwardColumn];
+    end else begin : single_layer
+        assign backwardProduct='0;
     end
+    endgenerate
+    assign backwardSum=((backwardColumn==0)?BACK_SUM_WIDTH'('0):backwardAccumulator)+
+        {{LG{backwardProduct[BACK_PRODUCT_WIDTH-1]}},backwardProduct};
 
-    // Both updates use the same FIFO head's activated vector, prediction, and saved
-    // reduction signs; only a training-enabled result handshake emits a package.
-    always_comb begin
-        for (int lane = 0; lane < N; lane++) begin
-            rowDirection[lane] = $signed(inputSignHead[2*lane +: 2]);
-            columnDirection[lane] = 2'sd0;
-            reductionDirection[lane] = 2'sd0;
-
-            if (activatedData[lane] != '0) begin
-                if (activatedData[lane][MATRIX_RESULT_WIDTH-1])
-                    reductionDirection[lane] = -learningDirection;
-                else
-                    reductionDirection[lane] = learningDirection;
-            end
-
-            if ((passThrough || activatedData[lane] != '0) &&
-                ($signed(reductionWeightSignHead[2*lane +: 2]) != 0)) begin
-                if ($signed(reductionWeightSignHead[2*lane +: 2]) < 0)
-                    columnDirection[lane] = -learningDirection;
-                else
-                    columnDirection[lane] = learningDirection;
-            end
-        end
-    end
-
-    // Matrix and reduction packages are generated together; packed ternary
-    // directions keep the sideband compact as update waves overlap.
-    always_comb begin
-        reductionUpdateData = '0;
-        for (int lane = 0; lane < N; lane++)
-            reductionUpdateData[2*lane +: 2] = reductionDirection[lane];
-    end
-
-    // Capture resident reduction signs, activation, and prediction together on a
-    // matrix-result handshake, keeping updates paired with results through bubbles.
-    always_comb begin
-        reductionWeightSignPushData = '0;
-        for (int lane = 0; lane < N; lane++) begin
-            if (residentReductionWeight[lane][REDUCTION_WEIGHT_WIDTH-1])
-                reductionWeightSignPushData[2*lane +: 2] = -2'sd1;
-            else if (residentReductionWeight[lane] != '0)
-                reductionWeightSignPushData[2*lane +: 2] = 2'sd1;
-            else
-                reductionWeightSignPushData[2*lane +: 2] = 2'sd0;
-        end
-        resultFifoPushData = '0;
-        for (int lane = 0; lane < N; lane++)
-            resultFifoPushData[lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH] =
-                activatedMatrixResultData[lane];
-        resultFifoPushData[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH] =
-            enqueuePrediction;
-        resultFifoPushData[N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH +: 2*N] =
-            reductionWeightSignPushData;
-    end
-
-    assign sampleContextPushData = {
-        targetData, inputSignPushData, trainingEnable
-    };
-    assign resultTargetData = sampleContextHead[SAMPLE_CONTEXT_WIDTH-1 -: TARGET_WIDTH];
-    assign inputSignHead = sampleContextHead[2*N:1];
-    assign trainingEnableHead = sampleContextHead[0];
-
-    always_comb begin
-        for (int lane = 0; lane < N; lane++)
-            activatedData[lane] =
-                resultFifoHead[lane*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH];
-    end
-    assign prediction = resultFifoHead[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH];
-    assign reductionWeightSignHead =
-        resultFifoHead[N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH +: 2*N];
-
-    // FIFO order pairs each input's sample context with its result transaction.
-    signedFifo #(
-        .WIDTH(SAMPLE_CONTEXT_WIDTH),
-        .DEPTH(IN_FLIGHT_DEPTH)
-    ) sampleContextFifo (
-        .clk(clk), .rst_n(rst_n),
-        .push(samplePush), .pushData(sampleContextPushData),
-        .pop(samplePop), .popData(sampleContextHead),
-        .full(sampleContextFull), .empty(sampleContextEmpty)
+    weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS),
+        .TAG_WIDTH(TAG_WIDTH), .G(G), .J(J)) matrixEngine (
+        .clk, .rst_n, .weightData, .weightValid, .weightReady,
+        .inputData, .inputValid(matrixInputValid), .inputTag(nextTag), .inputReady(matrixInputReady),
+        .passThrough(modePassThrough), .rowDirection, .columnDirection, .matrixUpdateValid,
+        .resultData(activatedMatrixResultData), .resultValid(matrixResultValid), .resultTag(matrixResultTag),
+        .resultReady(matrixResultReady), .weightsLoaded, .reloadWeights(reloadAccepted),
+        .reloadReady(matrixReloadReady), .arrayAdvance, .weights(residentWeights),
+        .tapValid, .tapGate, .tapTag, .tapSign
     );
-
-    // One result entry carries every field needed at retirement.  The raw
-    // matrix vector is not persistent state after this FIFO accepts it.
-    signedFifo #(
-        .WIDTH(RESULT_ENTRY_WIDTH),
-        .DEPTH(OUTPUT_FIFO_DEPTH)
-    ) resultFifo (
-        .clk(clk), .rst_n(rst_n),
-        .push(resultFifoPush), .pushData(resultFifoPushData),
-        .pop(resultFifoPop), .popData(resultFifoHead),
-        .full(resultFifoFull), .empty(resultFifoEmpty)
-    );
-
-    // Stage zero uses the live reduction package; the pipe commits the resident
-    // vector on the matrix update wave's advancing slots, including bubbles.
-    always_ff @(posedge clk) begin
-        if (!rst_n) begin
-            for (int lane = 0; lane < N; lane++)
-                residentReductionWeight[lane] <= '0;
-            for (int stage = 0; stage < REDUCTION_UPDATE_DELAY; stage++) begin
-                reductionUpdateValidPipe[stage] <= 1'b0;
-                reductionUpdateDirectionPipe[stage] <= '0;
-            end
-        end else if (loadReductionWeights) begin
-            for (int lane = 0; lane < N; lane++)
-                residentReductionWeight[lane] <= reductionWeight[lane];
-        end else begin
-            if (arrayAdvance) begin
-                for (int stage = REDUCTION_UPDATE_DELAY-1; stage > 0; stage--) begin
-                    reductionUpdateValidPipe[stage] <=
-                        reductionUpdateValidPipe[stage-1];
-                    reductionUpdateDirectionPipe[stage] <=
-                        reductionUpdateDirectionPipe[stage-1];
-                end
-                reductionUpdateValidPipe[0] <=
-                    matrixUpdateValid;
-                reductionUpdateDirectionPipe[0] <=
-                    reductionUpdateData;
-            end
-
-            if (applyReductionUpdate) begin
-                for (int lane = 0; lane < N; lane++) begin
-                    case ($signed(reductionUpdateDirectionPipe[REDUCTION_UPDATE_DELAY-1][2*lane +: 2]))
-                        2'sd1: begin
-                            if (residentReductionWeight[lane] != REDUCTION_WEIGHT_MAX)
-                                residentReductionWeight[lane] <=
-                                    residentReductionWeight[lane] + REDUCTION_WEIGHT_ONE;
-                        end
-                        -2'sd1: begin
-                            if (residentReductionWeight[lane] != REDUCTION_WEIGHT_MIN)
-                                residentReductionWeight[lane] <=
-                                    residentReductionWeight[lane] - REDUCTION_WEIGHT_ONE;
-                        end
-                        default: residentReductionWeight[lane] <=
-                                     residentReductionWeight[lane];
-                    endcase
-                end
-            end
-        end
-    end
-
-    weightStationaryMatrixMultiplier #(
-        .WIDTH(WIDTH), .N(N)
-    ) matrixEngine (
-        .clk(clk), .rst_n(rst_n),
-        .weightData(weightData), .weightValid(weightValid), .weightReady(weightReady),
-        .inputData(inputData), .inputValid(matrixInputValid),
-        .inputReady(matrixInputReady), .resultData(rawResultData),
-        .rowDirection(rowDirection), .columnDirection(columnDirection),
-        .matrixUpdateValid(matrixUpdateValid),
-        .arrayAdvance(arrayAdvance),
-        .resultValid(matrixResultValid), .resultReady(matrixResultReady),
-        .weightsLoaded(weightsLoaded),
-        .reloadWeights(reloadWeights && reloadReady),
-        .reloadReady(matrixReloadReady)
-    );
-
-    // This is the sole activation operation.  It runs on the aligned raw
-    // matrix result immediately before the result FIFO captures the entry;
-    // ReLU is closed at zero, matching the column gate above.  Zero passes
-    // through as zero, so only the sign bit selects, not a full compare.
-    always_comb begin
-        for (int lane = 0; lane < N; lane++)
-            activatedMatrixResultData[lane] =
-                (passThrough || !rawResultData[lane][MATRIX_RESULT_WIDTH-1])
-                    ? rawResultData[lane] : '0;
-    end
-
-    weightedVectorReduction #(
-        .MATRIX_RESULT_WIDTH(MATRIX_RESULT_WIDTH),
-        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH),
-        .N(N),
-        .FRACTION_BITS(FRACTION_BITS)
-    ) weightedReadoutAtMatrixResult (
-        .inputData(activatedMatrixResultData),
-        .reductionWeight(residentReductionWeight),
+    // Only one scalar readout, after all matrix stages and the final collector.
+    weightedVectorReduction #(.MATRIX_RESULT_WIDTH(MATRIX_RESULT_WIDTH),
+        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH), .N(N), .FRACTION_BITS(FRACTION_BITS),
+        .RESCALE_SHIFT(LAYERS*FRACTION_BITS+REDUCTION_WEIGHT_WIDTH-1)) weightedReadoutAtMatrixResult (
+        .inputData(activatedMatrixResultData), .reductionWeight(residentReductionWeight),
         .prediction(enqueuePrediction)
     );
+    signedFifo #(.WIDTH(RESULT_ENTRY_WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)) resultFifo (
+        .clk, .rst_n, .push(resultFifoPush), .pushData(resultFifoPushData),
+        .pop(resultFifoPop), .popData(resultFifoHead), .full(resultFifoFull), .empty(resultFifoEmpty)
+    );
 
-    always_comb begin
-        for (int lane = 0; lane < N; lane++) begin
-            if (reduceOutput)
-                resultData[lane] = (lane == 0) ? prediction : '0;
-            else
-                resultData[lane] =
-                    {{(PREDICTION_WIDTH-MATRIX_RESULT_WIDTH)
-                       {activatedData[lane][MATRIX_RESULT_WIDTH-1]}},
-                     activatedData[lane]};
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            trainingState<=IDLE;
+            trainingPending<=0;
+            trainingTag<='0;
+            nextTag<='0;
+            outstanding<='0;
+            savedTarget<='0;
+            learningDirection<=0;
+            modePassThrough<=0;
+            modeReduceOutput<=0;
+            configurationError<=0;
+            backwardLayer<=0;
+            backwardRow<=0;
+            backwardColumn<=0;
+            backwardAccumulator<='0;
+            for (int j=0; j<N; j++) begin
+                residentReductionWeight[j]<='0;
+                finalSigns[j]<=0;
+                for (int l=0; l<LAYERS; l++) begin
+                    inputSigns[l][j]<=0;
+                    activationGates[l][j]<=0;
+                    sensitivity[l][j]<='0;
+                end
+            end
+        end else begin
+            if (quiescent) begin
+                modePassThrough<=passThrough;
+                modeReduceOutput<=reduceOutput;
+            end else if (passThrough!=modePassThrough || reduceOutput!=modeReduceOutput)
+                configurationError<=1;
+            if (loadReductionWeights) begin
+                if (quiescent) for (int j=0; j<N; j++) residentReductionWeight[j]<=reductionWeight[j];
+                else configurationError<=1;
+            end
+            case ({samplePush,resultFifoPop})
+                2'b10: outstanding<=outstanding+1'b1;
+                2'b01: outstanding<=outstanding-1'b1;
+                default: ;
+            endcase
+            if (samplePush) begin
+                nextTag<=nextTag+1'b1;
+                if (trainingEnable) begin
+                    trainingPending<=1;
+                    trainingTag<=nextTag;
+                    savedTarget<=targetData;
+                    for (int j=0; j<N; j++) inputSigns[0][j]<=(inputData[j]==0)?2'sd0:
+                        (inputData[j][WIDTH-1]?-2'sd1:2'sd1);
+                end
+            end
+            if (trainingPending && arrayAdvance)
+                for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++)
+                    if (tapValid[l][j] && tapTag[l][j]==trainingTag) begin
+                        activationGates[l][j]<=tapGate[l][j];
+                        if (l<LAYERS-1) inputSigns[l+1][j]<=tapSign[l][j];
+                        if (l==LAYERS-1) finalSigns[j]<=tapSign[l][j];
+                    end
+            case (trainingState)
+                IDLE: if (resultFifoPop && trainingPending && resultTag==trainingTag) begin
+                    if (compareTarget>comparePrediction) learningDirection<=2'sd1;
+                    else if (compareTarget<comparePrediction) learningDirection<=-2'sd1;
+                    else learningDirection<=0;
+                    for (int j=0; j<N; j++) sensitivity[LAYERS-1][j]<=activationGates[LAYERS-1][j] ?
+                        {{(SENS_WIDTH-REDUCTION_WEIGHT_WIDTH){residentReductionWeight[j][REDUCTION_WEIGHT_WIDTH-1]}},residentReductionWeight[j]} : SENS_WIDTH'('0);
+                    backwardLayer<=(LAYERS>1)?LAYERS-2:0;
+                    backwardRow<=0;
+                    backwardColumn<=0;
+                    backwardAccumulator<='0;
+                    if (LAYERS==1 || compareTarget==comparePrediction) trainingState<=APPLY;
+                    else trainingState<=BACKWARD;
+                end
+                BACKWARD: if (arrayAdvance) begin
+                    if (backwardColumn==N-1) begin
+                        sensitivity[backwardLayer][backwardRow]<=activationGates[backwardLayer][backwardRow] ?
+                            backwardSum[SENS_WIDTH-1:0] : SENS_WIDTH'('0);
+                        backwardColumn<=0;
+                        backwardAccumulator<='0;
+                        if (backwardRow==N-1) begin
+                            backwardRow<=0;
+                            if (backwardLayer==0) trainingState<=APPLY;
+                            else backwardLayer<=backwardLayer-1;
+                        end else backwardRow<=backwardRow+1;
+                    end else begin
+                        backwardAccumulator<=backwardSum;
+                        backwardColumn<=backwardColumn+1;
+                    end
+                end
+                APPLY: if (arrayAdvance) begin
+                    for (int j=0; j<N; j++) if (learningDirection!=0 && finalSigns[j]!=0) begin
+                        if (learningDirection==finalSigns[j] && residentReductionWeight[j]!=R_MAX)
+                            residentReductionWeight[j]<=residentReductionWeight[j]+R_ONE;
+                        else if (learningDirection!=finalSigns[j] && residentReductionWeight[j]!=R_MIN)
+                            residentReductionWeight[j]<=residentReductionWeight[j]-R_ONE;
+                    end
+                    trainingPending<=0;
+                    trainingState<=IDLE;
+                end
+                default: trainingState<=IDLE;
+            endcase
+            // synthesis translate_off
+            if (resultFifoPop) assert (outstanding!=0) else $fatal(1, "Unsolicited result");
+            if (trainingState!=IDLE) assert (outstanding==0 && resultFifoEmpty &&
+                !matrixEngine.inputVectorValid && !matrixEngine.skewBusy &&
+                !matrixEngine.pipelineBusy && !matrixEngine.collectorActive && !matrixResultValid)
+                else $fatal(1, "Learning barrier did not drain");
+            if (trainingState==BACKWARD && backwardColumn==N-1)
+                assert (backwardSum=={{(BACK_SUM_WIDTH-SENS_WIDTH){backwardSum[SENS_WIDTH-1]}},backwardSum[SENS_WIDTH-1:0]})
+                    else $fatal(1, "Backward sensitivity overflow");
+            // synthesis translate_on
         end
     end
-
 endmodule

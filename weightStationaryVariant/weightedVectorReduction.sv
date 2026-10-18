@@ -2,7 +2,8 @@ module weightedVectorReduction #(
     parameter int MATRIX_RESULT_WIDTH = 16,
     parameter int REDUCTION_WEIGHT_WIDTH = 8,
     parameter int N = 3,
-    parameter int FRACTION_BITS = 4
+    parameter int FRACTION_BITS = 4,
+    parameter int RESCALE_SHIFT = FRACTION_BITS + REDUCTION_WEIGHT_WIDTH - 1
 )(
     input  logic signed [MATRIX_RESULT_WIDTH-1:0]    inputData [N],
     input  logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight [N],
@@ -14,11 +15,10 @@ module weightedVectorReduction #(
                                    + REDUCTION_WEIGHT_WIDTH;
     localparam int ACCUMULATOR_WIDTH = PRODUCT_WIDTH + $clog2(N);
     localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH + $clog2(N);
-    localparam int RESCALE_SHIFT = FRACTION_BITS + REDUCTION_FRACTION_BITS;
 
     initial begin
         if (MATRIX_RESULT_WIDTH < 1 || REDUCTION_WEIGHT_WIDTH < 1 ||
-            N < 1 || FRACTION_BITS < 0)
+            N < 1 || FRACTION_BITS < 0 || RESCALE_SHIFT < 0)
             $fatal(1, "reduction widths/N>=1 and FRACTION_BITS>=0");
     end
 
