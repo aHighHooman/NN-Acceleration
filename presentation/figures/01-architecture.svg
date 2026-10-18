@@ -5,14 +5,14 @@
 svg{--paper:#F3F5F3; --panel:#FFFFFF; --ink:#15191C; --ink-2:#48525A; --ink-3:#7A848B;
   --rule:#D5DBD8; --grid:#E5E9E6;
   --data:#2350C8; --data-soft:#DDE5FB; --learn:#CF4F16; --learn-soft:#FCE4D7;
-  --store:#56665C; --store-soft:#E3EAE5; --ok:#2F7D4F; --warn:#B7791F;
+  --sum:#0B7F72; --store:#56665C; --store-soft:#E3EAE5; --ok:#2F7D4F; --warn:#B7791F;
   --display:"Arial Narrow","Roboto Condensed","Segoe UI",system-ui,sans-serif;
   --body:"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
   --mono:ui-monospace,"Cascadia Mono",Consolas,"SF Mono",Menlo,monospace;}
 @media (prefers-color-scheme:dark){svg{--paper:#101315; --panel:#171B1E; --ink:#E6E9EB; --ink-2:#AEB7BD; --ink-3:#7D878E;
     --rule:#2C3337; --grid:#20262A;
     --data:#86A6FF; --data-soft:#1B2847; --learn:#FF8F57; --learn-soft:#3A2116;
-    --store:#A3B8AA; --store-soft:#1F2824; --ok:#63C28A; --warn:#E3B04B;}}
+    --sum:#56D4C2; --store:#A3B8AA; --store-soft:#1F2824; --ok:#63C28A; --warn:#E3B04B;}}
 text{font-family:var(--body);fill:var(--ink);font-size:13px}
 .m{font-family:var(--mono);font-size:12px}
 .s{font-size:11.5px;fill:var(--ink-2)}
@@ -44,12 +44,14 @@ text{font-family:var(--body);fill:var(--ink);font-size:13px}
 .fp{fill:var(--panel)} .fpp{fill:var(--paper)}
 .ghost{fill:none;stroke:var(--ink-3);stroke-width:1;stroke-dasharray:2 2}
 text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{font-size:17px}.wire-label{paint-order:stroke;stroke:var(--panel);stroke-width:5px;stroke-linejoin:round}.ad{fill:var(--data-soft);stroke:var(--data);stroke-width:2}.corner{fill:none;stroke:var(--learn);stroke-width:2.5}.load{stroke-dasharray:6 4}
+.lp{fill:none;stroke:var(--sum);stroke-width:2}.fp2{fill:var(--sum)}.tsum{fill:var(--sum)}.bxp{fill:var(--panel);stroke:var(--sum);stroke-width:1.5}
 </style>
 <defs>
 <marker id="d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fd"/></marker>
 <marker id="l" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fl"/></marker>
 <marker id="s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fs"/></marker>
 <marker id="k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fk"/></marker>
+<marker id="p" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fp2"/></marker>
 </defs>
 <rect x="1" y="1" width="1698" height="1288" rx="10" class="bx2"/>
 <text x="24" y="32" class="m muted">One clock domain · ready/valid · N = 3 · LAYERS = 3 · WIDTH = 16 · F = 4</text>
@@ -111,7 +113,7 @@ text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{fo
 <path d="M415,596 L675,596 L675,622" class="halo"/>
 <path d="M415,596 L675,596 L675,622" class="ld" marker-end="url(#d)"/>
 <text x="424" y="589" class="ms tdata wire-label">x₂</text>
-<rect x="470" y="295" width="465" height="470" rx="6" class="frame"/>
+<rect x="470" y="295" width="465" height="475" rx="6" class="frame"/>
 <text x="488" y="320" class="h">Stage 1 · weightStationarySystolicArray</text>
 <rect x="512" y="382" width="96" height="64" rx="5" class="ad"/>
 <text x="560" y="410" class="m b mid">w00</text>
@@ -146,42 +148,62 @@ text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{fo
 <text x="840" y="670" class="ms muted mid">e3</text>
 <path d="M652,654 L608,654" class="ld" marker-end="url(#d)"/>
 <path d="M748,654 L792,654" class="ld" marker-end="url(#d)"/>
-<path d="M560,566 L560,622" class="ld" marker-end="url(#d)"/>
-<path d="M560,686 L560,712" class="ld" marker-end="url(#d)"/>
-<path d="M585,382 L585,370 L630,370 L630,732 L608,732" class="halo"/>
-<path d="M585,382 L585,370 L630,370 L630,732 L608,732" class="ld" marker-end="url(#d)"/>
-<rect x="512" y="712" width="96" height="40" rx="5" class="bxd"/>
-<text x="560" y="737" class="m mid">Σ U₀+L₀</text>
-<path d="M700,566 L700,622" class="ld" marker-end="url(#d)"/>
-<path d="M700,686 L700,712" class="ld" marker-end="url(#d)"/>
-<path d="M725,382 L725,370 L770,370 L770,732 L748,732" class="halo"/>
-<path d="M725,382 L725,370 L770,370 L770,732 L748,732" class="ld" marker-end="url(#d)"/>
-<rect x="652" y="712" width="96" height="40" rx="5" class="bxd"/>
-<text x="700" y="737" class="m mid">Σ U₁+L₁</text>
-<path d="M840,566 L840,622" class="ld" marker-end="url(#d)"/>
-<path d="M840,686 L840,712" class="ld" marker-end="url(#d)"/>
-<path d="M865,382 L865,370 L910,370 L910,732 L888,732" class="halo"/>
-<path d="M865,382 L865,370 L910,370 L910,732 L888,732" class="ld" marker-end="url(#d)"/>
-<rect x="792" y="712" width="96" height="40" rx="5" class="bxd"/>
-<text x="840" y="737" class="m mid">Σ U₂+L₂</text>
-<text x="590" y="366" class="ms wire-label">U₀</text>
-<path d="M560,752 L560,778" class="ld" marker-end="url(#d)"/>
-<rect x="518" y="778" width="84" height="26" rx="5" class="bxd"/>
-<text x="560" y="796" class="ms mid">ReLU/pass</text>
-<path d="M560,804 L560,840" class="ld" marker-end="url(#d)"/>
-<text x="566" y="826" class="ms wire-label">a₁[0]</text>
-<path d="M700,752 L700,778" class="ld" marker-end="url(#d)"/>
-<rect x="658" y="778" width="84" height="26" rx="5" class="bxd"/>
-<text x="700" y="796" class="ms mid">ReLU/pass</text>
-<path d="M700,804 L700,840" class="ld" marker-end="url(#d)"/>
-<text x="706" y="826" class="ms wire-label">a₁[1]</text>
-<path d="M840,752 L840,778" class="ld" marker-end="url(#d)"/>
-<rect x="798" y="778" width="84" height="26" rx="5" class="bxd"/>
-<text x="840" y="796" class="ms mid">ReLU/pass</text>
-<path d="M840,804 L840,840" class="ld" marker-end="url(#d)"/>
-<text x="846" y="826" class="ms wire-label">a₁[2]</text>
-<path d="M882,791 L975,791 L975,1170 L700,1170" class="halo"/>
-<path d="M882,791 L975,791 L975,1170 L700,1170" class="ls dash" marker-end="url(#s)"/>
+<path d="M560,566 L560,622" class="lp" marker-end="url(#p)"/>
+<path d="M560,686 L560,710" class="lp" marker-end="url(#p)"/>
+<text x="566" y="703" class="ms tsum wire-label">L₀</text>
+<path d="M585,382 L585,364" class="lp" marker-end="url(#p)"/>
+<path d="M585,364 L630,364 L630,724 L574,724" class="halo"/>
+<path d="M585,364 L630,364 L630,724 L574,724" class="lp" marker-end="url(#p)"/>
+<text x="634" y="470" class="ms tsum wire-label">U₀</text>
+<circle cx="560" cy="724" r="14" class="bxp"/>
+<text x="560" y="730" class="b mid">+</text>
+<path d="M560,738 L560,744" class="lp"/>
+<rect x="548" y="744" width="24" height="18" rx="2" class="bxp"/>
+<text x="560" y="757" class="ms mid">D</text>
+<path d="M700,566 L700,622" class="lp" marker-end="url(#p)"/>
+<path d="M700,686 L700,710" class="lp" marker-end="url(#p)"/>
+<text x="706" y="703" class="ms tsum wire-label">L₁</text>
+<path d="M725,382 L725,364" class="lp" marker-end="url(#p)"/>
+<path d="M725,364 L770,364 L770,724 L714,724" class="halo"/>
+<path d="M725,364 L770,364 L770,724 L714,724" class="lp" marker-end="url(#p)"/>
+<text x="774" y="470" class="ms tsum wire-label">U₁</text>
+<circle cx="700" cy="724" r="14" class="bxp"/>
+<text x="700" y="730" class="b mid">+</text>
+<path d="M700,738 L700,744" class="lp"/>
+<rect x="688" y="744" width="24" height="18" rx="2" class="bxp"/>
+<text x="700" y="757" class="ms mid">D</text>
+<path d="M840,566 L840,622" class="lp" marker-end="url(#p)"/>
+<path d="M840,686 L840,710" class="lp" marker-end="url(#p)"/>
+<text x="846" y="703" class="ms tsum wire-label">L₂</text>
+<path d="M865,382 L865,364" class="lp" marker-end="url(#p)"/>
+<path d="M865,364 L910,364 L910,724 L854,724" class="halo"/>
+<path d="M865,364 L910,364 L910,724 L854,724" class="lp" marker-end="url(#p)"/>
+<text x="914" y="470" class="ms tsum wire-label">U₂</text>
+<circle cx="840" cy="724" r="14" class="bxp"/>
+<text x="840" y="730" class="b mid">+</text>
+<path d="M840,738 L840,744" class="lp"/>
+<rect x="828" y="744" width="24" height="18" rx="2" class="bxp"/>
+<text x="840" y="757" class="ms mid">D</text>
+<path d="M560,762 L560,782" class="lp" marker-end="url(#p)"/>
+<rect x="518" y="782" width="84" height="24" rx="5" class="bxd"/>
+<text x="560" y="799" class="ms mid">ReLU/pass</text>
+<path d="M560,806 L560,840" class="ld" marker-end="url(#d)"/>
+<text x="566" y="834" class="ms wire-label">a₁[0]</text>
+<circle cx="560" cy="818" r="3.5" class="fs"/>
+<path d="M700,762 L700,782" class="lp" marker-end="url(#p)"/>
+<rect x="658" y="782" width="84" height="24" rx="5" class="bxd"/>
+<text x="700" y="799" class="ms mid">ReLU/pass</text>
+<path d="M700,806 L700,840" class="ld" marker-end="url(#d)"/>
+<text x="706" y="834" class="ms wire-label">a₁[1]</text>
+<circle cx="700" cy="818" r="3.5" class="fs"/>
+<path d="M840,762 L840,782" class="lp" marker-end="url(#p)"/>
+<rect x="798" y="782" width="84" height="24" rx="5" class="bxd"/>
+<text x="840" y="799" class="ms mid">ReLU/pass</text>
+<path d="M840,806 L840,840" class="ld" marker-end="url(#d)"/>
+<text x="846" y="834" class="ms wire-label">a₁[2]</text>
+<circle cx="840" cy="818" r="3.5" class="fs"/>
+<path d="M560,818 L975,818 L975,1170 L700,1170" class="halo"/>
+<path d="M560,818 L975,818 L975,1170 L700,1170" class="ls dash" marker-end="url(#s)"/>
 <rect x="512" y="840" width="376" height="55" rx="5" class="bxd"/>
 <text x="700" y="863" class="b mid">Stage 2 · Fountain array + ReLU · W₂</text>
 <text x="700" y="883" class="ms mid">34 → 52 b · ready e7 · 6 · 7</text>
@@ -198,13 +220,19 @@ text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{fo
 <circle cx="958" cy="940" r="3.5" class="fl"/>
 <path d="M888,967 L975,967" class="ls dash"/>
 <circle cx="975" cy="967" r="3.5" class="fs"/>
+<path d="M888,953 L1005,953 L1005,520 L1020,520" class="halo"/>
+<path d="M888,953 L1005,953 L1005,520 L1020,520" class="ls" marker-end="url(#s)"/>
+<path d="M888,868 L1005,868" class="halo"/>
+<path d="M888,868 L1005,868" class="ls"/>
+<circle cx="1005" cy="868" r="3.5" class="fs"/>
+<text x="1010" y="700" class="ms wire-label">W₂ W₃</text>
 <path d="M560,895 L560,925" class="ld" marker-end="url(#d)"/>
 <path d="M560,980 L560,1000" class="ld" marker-end="url(#d)"/>
 <path d="M700,895 L700,925" class="ld" marker-end="url(#d)"/>
 <path d="M700,980 L700,1000" class="ld" marker-end="url(#d)"/>
 <path d="M840,895 L840,925" class="ld" marker-end="url(#d)"/>
 <path d="M840,980 L840,1000" class="ld" marker-end="url(#d)"/>
-<rect x="280" y="690" width="160" height="112" rx="5" class="bx2"/>
+<rect x="280" y="690" width="160" height="133" rx="5" class="bx2"/>
 <text x="292" y="712" class="b">PE key</text>
 <text x="292" y="738" class="ms tdata">wij</text>
 <text x="352" y="738" class="ms">W[i][j]</text>
@@ -212,6 +240,8 @@ text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{fo
 <text x="352" y="759" class="ms">capture edge</text>
 <text x="292" y="780" class="ms tdata">shaded</text>
 <text x="352" y="780" class="ms">seed row</text>
+<text x="292" y="801" class="ms tdata">+ D</text>
+<text x="352" y="801" class="ms">U + L join</text>
 <rect x="512" y="1000" width="376" height="50" rx="5" class="bx2"/>
 <text x="524" y="1030" class="b">Final collector</text>
 <text x="876" y="1030" class="ms" text-anchor="end">delays 0·1·0 → e10</text>
@@ -221,10 +251,11 @@ text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{fo
 <path d="M888,1025 L1250,1025" class="halo"/>
 <path d="M888,1025 L1250,1025" class="ld" marker-end="url(#d)"/>
 <text x="900" y="1018" class="ms tdata wire-label">a₃[N]</text>
-<rect x="1020" y="95" width="420" height="85" rx="5" class="bx"/>
-<text x="1230" y="120" class="b mid">Admission &amp; advance control</text>
-<text x="1230" y="145" class="ms mid">accept ⇐ loaded ∧ slot free ∧ &lt; 26 live ∧ ¬training</text>
-<text x="1230" y="166" class="ms mid">arrayAdvance = loaded ∧ ¬(valid ∧ FIFO full ∧ ¬pop)</text>
+<rect x="1020" y="92" width="420" height="106" rx="5" class="bx"/>
+<text x="1230" y="116" class="b mid">Admission, advance &amp; modes</text>
+<text x="1230" y="184" class="ms mid">modes latched while quiescent</text>
+<text x="1230" y="142" class="ms mid">accept ⇐ loaded ∧ slot free ∧ &lt; 26 live ∧ ¬training</text>
+<text x="1230" y="163" class="ms mid">arrayAdvance = loaded ∧ ¬(valid ∧ FIFO full ∧ ¬pop)</text>
 <rect x="1480" y="102" width="200" height="72" rx="5" class="bx2"/>
 <text x="1580.0" y="132" class="m mid">passThrough</text>
 <text x="1580.0" y="154" class="m mid">reduceOutput</text>
@@ -232,12 +263,12 @@ text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{fo
 <path d="M1020,160 L905,160 L905,255" class="halo"/>
 <path d="M1020,160 L905,160 L905,255" class="lk" marker-end="url(#k)"/>
 <text x="913" y="224" class="ms">arrayAdvance</text>
-<rect x="1020" y="210" width="420" height="140" rx="5" class="bx2"/>
-<text x="1036" y="236" class="b">Latency · edges after input accept</text>
-<text x="1036" y="266" class="ms">stage 1 [4,3,4] → 2 [7,6,7] → 3 [10,9,10]</text>
-<text x="1036" y="288" class="ms">aligned 10 · FIFO push 11 · retire ≥ 12</text>
+<rect x="1020" y="215" width="420" height="135" rx="5" class="bx2"/>
+<text x="1036" y="240" class="b">Latency · edges after input accept</text>
+<text x="1036" y="268" class="ms">stage 1 [4,3,4] → 2 [7,6,7] → 3 [10,9,10]</text>
+<text x="1036" y="289" class="ms">aligned 10 · FIFO push 11 · retire ≥ 12</text>
 <text x="1036" y="310" class="ms">1 vector / clock · no re-skew between stages</text>
-<text x="1036" y="332" class="ms">stage k: 16 + 18k bits, 4(k+1) fraction bits</text>
+<text x="1036" y="331" class="ms">stage k: 16 + 18k bits, 4(k+1) fraction bits</text>
 <rect x="1020" y="385" width="420" height="265" rx="5" class="bxl"/>
 <text x="1230" y="410" class="b mid">Training engine</text>
 <text x="1036" y="440" class="ms">IDLE · on training-tag pop</text>
@@ -305,8 +336,9 @@ text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{fo
 <text x="1580.0" y="1164" class="b mid">resultData[N]</text>
 <text x="1580.0" y="1186" class="ms mid">resultValid / resultReady</text>
 <path d="M1440,1172 L1480,1172" class="ld" marker-end="url(#d)"/>
-<text x="25" y="1270" class="s tdata">Blue: forward data</text>
-<text x="210" y="1270" class="s tlearn">Orange: learning</text>
-<text x="380" y="1270" class="s">Grey-green: storage / control · dashed: weight load, training taps</text>
+<text x="25" y="1270" class="s tdata">Blue: activations</text>
+<text x="170" y="1270" class="s tsum">Teal: partial sums</text>
+<text x="330" y="1270" class="s tlearn">Orange: learning</text>
+<text x="480" y="1270" class="s">Grey-green: storage / control · dashed: weight load, training taps</text>
 <text x="1674" y="1270" class="ms" text-anchor="end">Dots mark connections.</text>
 </svg>
