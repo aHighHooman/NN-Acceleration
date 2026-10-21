@@ -1,4 +1,5 @@
-"""Generate public stimuli and compare every semantic RTL edge with Fountain."""
+"""Generate public stimuli and compare the RTL's architectural state with the
+clocked reference on every edge."""
 from __future__ import annotations
 import argparse
 from dataclasses import replace
@@ -9,14 +10,13 @@ from .functional import Sample,analyze
 
 N=3
 WIDTH=8
-TAG_WIDTH=5
 IN_FLIGHT_DEPTH=16
 OUTPUT_FIFO_DEPTH=2
 
 
 def configuration(layers=3,fraction_bits=0,g=0,j=1,n=N):
     return CycleConfig(n=n,width=WIDTH,layers=layers,fraction_bits=fraction_bits,
-        target_width=8,reduction_weight_width=8,tag_width=TAG_WIDTH,
+        target_width=8,reduction_weight_width=8,
         in_flight_depth=IN_FLIGHT_DEPTH,output_fifo_depth=OUTPUT_FIFO_DEPTH,
         route_delay=g,join_latency=j)
 
@@ -100,7 +100,7 @@ def build(config):
         return [[[rng.randint(-12,12) for _ in range(n)] for _ in range(n)] for _ in range(config.layers)]
     driver.mark('reverse row loading with gaps')
     driver.load(weights(),[64,-48,32])
-    driver.mark('continuous inference and tag wrap')
+    driver.mark('continuous inference')
     for _ in range(85): driver.offer([rng.randint(-128,127) for _ in range(n)])
     driver.drain()
     driver.mark('bubbles')
@@ -154,6 +154,15 @@ def build(config):
         # Hold the next valid input through the complete learning barrier.
         driver.offer((2,1,3))
         driver.drain()
+    driver.mark('training queued behind in-flight inference')
+    # Earlier samples are still in flight when training is admitted and have a
+    # different sign pattern, so only the training sample's own taps and its
+    # own retirement produce the reference update.
+    for target in (1,-1):
+        for _ in range(3): driver.offer((-1,2,-3))
+        driver.offer((1,1,1),target=target,training=True)
+        driver.offer((2,1,3))
+        driver.drain()
     driver.mark('zero error, zero activation and gated learning')
     driver.offer((0,0,0),target=0,training=True)
     driver.drain()
@@ -182,18 +191,11 @@ def build(config):
 
 def labels(config):
     n=config.n
-    result=['weightReady','inputReady','resultValid','weightsLoaded','reloadReady','trainingBusy',
-        'configurationError','arrayAdvance','outstanding','hostLayer','loadedWeightRows','loadingWeights',
-        'captureWeights','loadLayer','loadStep','inputVectorValid','inputVectorTag','nextTag','trainingTag',
-        'trainingState','backwardLayer','backwardRow','backwardColumn','backwardAccumulator','learningDirection',
-        'resultFifo.values','resultTag']
+    result=['weightReady','inputReady','resultValid','weightsLoaded','reloadReady','trainingPending']
     result += [f'resultData[{i}]' for i in range(n)]
     result += [f'W[{l}][{i}][{j}]' for l in range(config.layers) for i in range(n) for j in range(n)]
     result += [f'r[{i}]' for i in range(n)]
-    for name in ('sensitivity','activationGates','inputSigns'):
-        result += [f'{name}[{l}][{i}]' for l in range(config.layers) for i in range(n)]
-    result += [f'finalSigns[{i}]' for i in range(n)]
-    result += [f'lane[{l}][{i}].{field}' for l in range(config.layers) for i in range(n) for field in ('valid','tag','value')]
+    result += [f'lane[{l}][{i}].{field}' for l in range(config.layers) for i in range(n) for field in ('valid','value')]
     return ['cycle','accepted','retired']+result
 
 

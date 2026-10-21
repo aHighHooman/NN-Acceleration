@@ -32,7 +32,7 @@ The implemented bringup target is an odd square tile, starting with N = 5, signe
 
 ### 1.1 Implemented decisions
 
-The five existing RTL files are updated in place. There is no parallel Fountain source tree. `weightStationaryProcessingElement` holds each tagged MAC and weight; `weightStationarySystolicArray` contains the center-out grid, balanced routes and column joins; `weightStationaryMatrixMultiplier` contains the source adapter, direct layer chain, row loader, activation and final collector; `nnAccelerator` retains the public control/FIFO and final readout and adds the serial backward engine. `weightedVectorReduction` accepts the explicit final shift. A shared lane-delay helper is defined in the existing array source.
+The five existing RTL files are updated in place. There is no parallel Fountain source tree. `weightStationaryProcessingElement` holds each MAC and weight; `weightStationarySystolicArray` contains the center-out grid, balanced routes and column joins; `weightStationaryMatrixMultiplier` contains the source adapter, direct layer chain, row loader, activation and final collector; `nnAccelerator` retains the public control/FIFO and final readout and adds the serial backward engine. `weightedVectorReduction` accepts the explicit final shift. A shared lane-delay helper is defined in the existing array source.
 
 The following decisions resolve the prototype choices discussed in later design-analysis sections:
 
@@ -138,7 +138,7 @@ An output is ready when the complete sum is available at the specified registere
 
 Use synchronous active-low `rst_n`, consistent with the repository. Reset takes priority over `advance` and clears every valid pipeline and the configuration-loaded state, including when `advance` is low. Weight bits need not be reset if unloaded weights cannot be used.
 
-The contract has one shared `advance` for the complete connected compute domain. It freezes source skew, PE data, valids, tags, join routes, arithmetic pipeline stages, inter-layer processing, and output alignment together. The backward engine and weight-update commit also obey that enable.
+The contract has one shared `advance` for the complete connected compute domain. It freezes source skew, PE data, valids, join routes, arithmetic pipeline stages, inter-layer processing, and output alignment together. The backward engine and weight-update commit also obey that enable.
 
 All formulas count enabled steps. Wall-clock cycles also include disabled cycles. Input admission and output FIFO retirement need their own explicit handshake rules; a wrapper must not count an unaccepted input as a center injection or consume a held internal output repeatedly during a stall.
 
@@ -155,7 +155,7 @@ input_time[i,m] = b[m] + a[i]
 product_start[i,j,m] = b[m] + a[i] + q[j]
 ```
 
-For N = 5, input offsets in index order are [2,1,0,1,2]. Each PE in the center column computes its product once and forwards its activation toward both horizontal neighbors. PEs left of the center forward left; PEs right of the center forward right. Each link advances data, valid, and tag by one enabled step. Activations do not move vertically for this matrix-vector operation.
+For N = 5, input offsets in index order are [2,1,0,1,2]. Each PE in the center column computes its product once and forwards its activation toward both horizontal neighbors. PEs left of the center forward left; PEs right of the center forward right. Each link advances data and valid by one enabled step. Activations do not move vertically for this matrix-vector operation.
 
 A flat-vector source adapter delays lane i by a[i]. A zero-depth lane bypasses delay storage. An optional common source register is allowed, but contributes to C_in. The existing matrix wrapper's mandatory skew-entry register must not be inherited accidentally while retaining a latency formula that assumes a bypass.
 
@@ -208,7 +208,7 @@ Full output readiness is [6,5,4,5,6]. First-result time is 4; full-vector time i
 
 ## 6 Joining network and physical implementation
 
-A separate joining unit for every output column receives the upper and lower boundary sums, checks validity and tags, adds at full accumulator width, and registers data, valid, and tag together.
+A separate joining unit for every output column receives the upper and lower boundary sums, checks in simulation that both are valid, adds at full accumulator width, and registers data and valid together.
 
 ```text
 output_time[j,m] = b[m] + h + 1 + G + J + q[j]
@@ -308,23 +308,21 @@ Apply any elementwise processing with equal latency to all lanes. Global operati
 
 ### 8.1 Internal streaming interface
 
-The names below describe the lane contract. The existing array ports use `in_data`, `in_valid`, `in_tag`, `result`, `resultValid`, and `resultTag` for these roles.
+The names below describe the lane contract. The existing array ports use `in_data`, `in_valid`, `result`, and `resultValid` for these roles.
 
 | Signal | Shape | Meaning |
 | --- | --- | --- |
 | `clk`, `rst_n`, `advance` | Scalar | Shared clock, synchronous active-low reset, common pipeline step |
 | `in_data` | N signed XW lanes | Activations already arranged in the Fountain front |
 | `in_valid` | N bits | Per-lane validity under the legal fixed front |
-| `in_tag` | N tags | Vector identity accompanying each input element |
 | `out_data` | N signed AW lanes | Complete column sums |
 | `out_valid` | N bits | Per-column readiness |
-| `out_tag` | N tags | Vector identity for each output element |
 
 There is no independent lane-ready signal in the initial contract. Per-lane valid does not permit arbitrary lane timing: each admitted vector must supply every lane at b[m]+a[i]. A missing vector start creates a translated bubble pattern. An absent or late individual element of an otherwise admitted vector is a protocol violation.
 
-A non-seed MAC requires its activation and partial-sum valid bits to match on every enabled step. When valid, their tags must also match. The joining unit applies the same checks to its two sums. Assert on violations; do not silently drop data or pair unrelated values. A bubble clears the next valid bit. Reset flushes all in-flight tags and valid state.
+A non-seed MAC consumes its activation and incoming partial sum on the same enabled step. The fixed front guarantees that pairing, so one valid bit per hop marks both registered outputs. The joining unit asserts in simulation that its two sums arrive valid together. A bubble clears the next valid bit. Reset flushes all in-flight valid state.
 
-Use tags wide enough that no two live vectors in the connected domain have an ambiguous identity. Do not reuse a tag until its prior vector has left all associated buffers and stages. A configuration epoch can help diagnostics, but cannot make overlapping unsafe weight writes correct.
+Vector identity is not carried. With one shared `advance` and a fixed front, the vector on lane j at enabled step t is determined by t and j alone, and vectors leave in admission order. Hardware therefore needs no tag storage or comparison, and testbenches recover each element's sample index by counting arrivals per lane. Configuration epochs are separated by draining before reload, not by identity.
 
 ### 8.2 Why current whole-vector validity cannot be reused directly
 
@@ -335,11 +333,11 @@ lane index:      0  1  2  3  4
 vector index:    0  1  2  1  0
 ```
 
-The historical matrix wrapper's AND of lane valids would accept a mixture of vectors at such a boundary. A scalar readout would then combine unrelated elements. The updated wrapper forms whole-vector validity only after alignment, with all valid tags checked for equality.
+The historical matrix wrapper's AND of lane valids would accept a mixture of vectors at such a boundary. A scalar readout would then combine unrelated elements. The updated wrapper forms whole-vector validity only after alignment, where every lane of one vector is valid on the same step by construction.
 
 ### 8.3 Source and collector adapters
 
-A flat source adapter delays lane i by a[i], carrying data, valid, and tag. Use it before the first core only, or when an external source genuinely supplies flat vectors.
+A flat source adapter delays lane i by a[i], carrying data and valid. Use it before the first core only, or when an external source genuinely supplies flat vectors.
 
 A final collector delays output lane j by h-q[j]. Every element of vector m is then available together at:
 
@@ -361,7 +359,7 @@ Do not place a collector followed by a new source-skew adapter between Fountain 
 
 ### 8.4 Integration with the existing public interface
 
-Preserving the current inference API requires the existing parallel input/result ready-valid transactions, vector/scalar output modes, weight-loading format, and quiescent reconfiguration rules. Internal tags need not become public ports.
+Preserving the current inference API requires the existing parallel input/result ready-valid transactions, vector/scalar output modes, weight-loading format, and quiescent reconfiguration rules.
 
 The implemented chain is:
 
@@ -371,7 +369,7 @@ public vector admission -> source adapter -> matrix and joins -> activation
     -> result FIFO -> public retirement
 ```
 
-For a dedicated chain, insert additional cores and uniform boundary processing before the final collector. A streaming scalar readout that consumes staggered lanes is a separate optimization. It must maintain independent full-precision accumulation contexts for overlapping vector tags and define coefficient-version consistency; one accumulator for all currently valid lanes is insufficient.
+For a dedicated chain, insert additional cores and uniform boundary processing before the final collector. A streaming scalar readout that consumes staggered lanes is a separate optimization. It must maintain independent full-precision accumulation contexts for overlapping vectors and define coefficient-version consistency; one accumulator for all currently valid lanes is insufficient.
 
 The wrapper must reserve enough buffering or freeze the entire connected compute domain before a blocked sink can overwrite valid data. Include every in-flight vector and its associated context in admission/capacity accounting. Recalculate FIFO depths from acceptance-to-retirement timing and allowed stalls. The existing defaults `IN_FLIGHT_DEPTH = 2*N+2` and `OUTPUT_FIFO_DEPTH = 2*N` are not automatically sufficient or optimal for a new chain.
 
@@ -498,7 +496,7 @@ For a deeper nonlinear model, define activations between stages. A completely li
 | Retained public weight staging bank | Another N squared weight words |
 | K fully dedicated layers | K*N squared product paths and resident weights, before width growth |
 
-Data-slot counts are not bit counts: multiply by each stage's width and add valid/tag storage. Tags, route balancing, control distribution, context, and FIFOs are additional costs. Exact-width chains increase arithmetic widths as well as layer count.
+Data-slot counts are not bit counts: multiply by each stage's width and add valid storage. Route balancing, control distribution, context, and FIFOs are additional costs. Exact-width chains increase arithmetic widths as well as layer count.
 
 The output front can remove repeated internal collectors and source adapters. It does not eliminate storage generally. Nor does it establish improved power, achieved frequency, or asymptotic area scaling. Global `advance` distribution and configuration fanout also require implementation checks as the domain grows.
 
@@ -574,7 +572,7 @@ For the proposed three-stage network, a sign-gradient extension is mathematicall
 
 | Existing source | Implemented responsibility |
 | --- | --- |
-| `weightStationaryVariant/weightStationaryProcessingElement.sv` | Stationary weight, tagged MAC, activation forwarding, explicit configuration and saturated ternary update |
+| `weightStationaryVariant/weightStationaryProcessingElement.sv` | Stationary weight, MAC, activation forwarding, explicit configuration and saturated ternary update |
 | `weightStationaryVariant/weightStationarySystolicArray.sv` | Center-out grid, per-column route balancing and registered joins, validity checks, loaded-row tracking, shared enabled-step lane-delay helper |
 | `weightStationaryVariant/weightStationaryMatrixMultiplier.sv` | Center-first source, configurable direct chain, per-layer activation and learning taps, multi-layer staged row writes, final collector and common advance |
 | `weightStationaryVariant/nnAccelerator.sv` | Original public signal names, admission credits, one final readout, result FIFO, training context, serial full-sensitivity backward computation and atomic updates |
@@ -582,7 +580,7 @@ For the proposed three-stage network, a sign-gradient extension is mathematicall
 | `memory/signedFifo.sv` | Reused result buffer |
 | `reference/functional.py` | Independent whole-network exact inference and atomic sign-learning reference |
 | `reference/cycle.py` | Registered neighboring PE dependencies, source/join/collector state, loading, backpressure and training schedule |
-| Existing directed/UVM/trace files and regression scripts | Updated validation within the original repository structure |
+| Directed and trace benches and regression scripts | Updated validation within the original repository structure |
 
 The previous sample-context FIFO and delayed update waves are superseded by one retained training context and the serialized barrier. The readout remains a different operation from the matrix-column joins. The former inward implementation is available through Git; there is no second checked-in RTL family.
 
@@ -592,12 +590,11 @@ The previous sample-context FIFO and delayed update waves are superseded by one 
 
 The existing regression entry point, `pwsh -File scripts/run_modelsim.ps1`, passes:
 
-- 68 Python tests, including the hand-worked dot product, exact-width chains, single-layer fixed-point compatibility, finite-difference hidden update signs, lane timing, host loading, bubbles, stalls, reset, capacity, tag wrap and all-layer training.
-- Seven directed matrix profiles at N=3/5/9, WIDTH=8/16, one/three layers, G=0/1 and J=1/2. The default N=3/WIDTH=16/LAYERS=3 case includes extreme dense results beyond 64 bits, checked with a bound-sized signed scoreboard. The worked timing fronts, dense arithmetic, full-vector collector, continuous inference, host gaps, downstream stalls and reset/reload pass.
-- Seed/non-seed PE tests for signed arithmetic, one-LSB saturation, same-edge old-weight reads, configuration priority, global enable and reset priority.
-- Expected-failure tests for invalid dimensions, missing/mistagged MAC operands, mismatched join tags, busy writes and unconfigured input.
-- Four integrated per-edge comparisons totaling 3,167 RTL edges. Profiles are N=3/LAYERS=3/F=0/G=0/J=1 (749 edges, 120 state fields), N=5/LAYERS=3/F=0/G=0/J=1 (1,086 edges, 210 fields), N=3/LAYERS=3/F=2/G=1/J=2 (869 edges, 120 fields), and N=3/LAYERS=1/F=4/G=0/J=1 (463 edges, 66 fields). State covers handshakes, tags, raw lane fronts, all resident weights, readout coefficients, gates, saved signs, sensitivities, loader, FIFO and training controller.
-- The existing public-port UVM regression at LAYERS=1, with zero UVM errors/fatals. Exact multi-layer learned state is covered by the trace comparison.
+- 25 Python tests, including the hand-worked dot product, exact-width chains, single-layer fixed-point compatibility, finite-difference hidden update signs, lane timing, host loading, bubbles, stalls, reset, capacity, training queued behind in-flight inference and all-layer training.
+- Seven directed matrix profiles at N=3/5/9, WIDTH=8/16, one/three layers, G=0/1 and J=1/2. The default N=3/WIDTH=16/LAYERS=3 case includes extreme dense results beyond 64 bits, checked with a bound-sized signed scoreboard. The worked timing fronts, dense arithmetic, full-vector collector, continuous inference, host gaps, downstream stalls and reset/reload pass. The bench derives each element's sample index from per-lane arrival order rather than from the design.
+- Seed/non-seed PE tests for signed arithmetic, configuration, one-LSB saturation, global enable and reset priority.
+- Parameter checks that reject invalid dimensions.
+- Four integrated per-edge comparisons totaling 3,545 RTL edges. Profiles are N=3/LAYERS=3/F=0/G=0/J=1 (845 edges, 60 state fields), N=5/LAYERS=3/F=0/G=0/J=1 (1,212 edges, 124 fields), N=3/LAYERS=3/F=2/G=1/J=2 (989 edges, 60 fields), and N=3/LAYERS=1/F=4/G=0/J=1 (499 edges, 30 fields). Each edge compares architectural state only: public handshakes, the training barrier, result data, all resident weights and readout coefficients, and every raw lane front. Controller, loader and FIFO internals can change without editing the comparison.
 
 The original text's `Fountain_Reference_Model.py` was not supplied. Its role is now fulfilled by the updated existing `reference/functional.py` and `reference/cycle.py`; there is no additional standalone reference file. Simulation and algebra checks establish the defined implementation behavior, not learning convergence or a speedup over the historical inward design.
 
@@ -605,28 +602,27 @@ The original text's `Fountain_Reference_Model.py` was not supplied. Its role is 
 
 | Check | Required result |
 | --- | --- |
-| Dense arithmetic and orientation | Each tagged output equals an independent xW dot product with asymmetric weights |
+| Dense arithmetic and orientation | Each output equals an independent xW dot product with asymmetric weights |
 | Center count | A center-only input contributes exactly once to every output |
 | Coverage | Every input basis vector reaches every output column |
 | Initial timing | N = 5, b = 0, G = 0, J = 1 gives [6,5,4,5,6] |
-| Added route stages | G = 1 gives [7,6,5,6,7], with matched tags |
+| Added route stages | G = 1 gives [7,6,5,6,7] |
 | Continuous traffic | II = 1 outputs remain correct when one physical cycle contains lanes from different vectors |
 | Bubbles | Missing vector starts preserve every dependent lane's bubble schedule |
-| Illegal fronts | Missing/mistagged individual operands are detected at the affected MAC or join |
+| Fronts by construction | The source adapter derives every lane from one vector valid; each join asserts that its two sums arrive together |
 | Three layers | Baseline output times are [14,13,12,13,14], with no intermediate full-vector barrier |
 | Chain route accounting | Three N = 5 layers each using G = 1 finish at [17,16,15,16,17] before other stages |
 | Arithmetic boundary | Compare exact widened chains or the explicitly selected requantization rule; test negative and extreme values |
-| Collector | Equal tags and all elements of each vector emerge at b+D+h; no mix under II = 1 |
+| Collector | All elements of each vector emerge together at b+D+h; no mix under II = 1 |
 | Global stalls | Every dependent stage freezes; public outputs remain stable; held outputs are not duplicated |
 | Reset | Reset flushes in-flight state even with advance low and blocks computation until weights are reloaded |
 | Public loading | Reverse row order and host gaps map every weight correctly; partial loads cannot compute |
 | Reconfiguration | Busy writes/reloads are rejected or flagged; accepted reload takes priority over input admission |
 | Capacity | Admission never exceeds reserved context/output capacity; simultaneous pop/push and long stalls remain correct |
-| Tag reuse | Wraparound cannot alias two live vectors or leave an old epoch visible |
 | Public inference | Vector/scalar modes and current fixed-point behavior agree with the existing arithmetic reference |
 | Learning | Coherent W/r generations, ternary saturation, retirement semantics, and serialized visibility pass independent checks |
 
-Use comparisons keyed by tag and element index rather than scalar output arrival order. Distinguish arithmetic correctness, enabled-step timing, wall-clock stalls, public transactions, and physical timing in test reports.
+Use comparisons keyed by per-lane sample order and element index rather than scalar output arrival order. Distinguish arithmetic correctness, enabled-step timing, wall-clock stalls, public transactions, and physical timing in test reports.
 
 ### 14.3 Physical build and comparison requirements
 
@@ -643,11 +639,11 @@ The N=5/WIDTH=8/LAYERS=3/F=0/G=0/J=1 prototype completed synthesis, fit and asse
 | Worst setup slack at the 100 MHz target | -4.138 ns |
 | Minimum hold slack across reported corners | +0.108 ns |
 
-Full compilation succeeded, but the 100 MHz timing requirement did not close. The clock pin remains unassigned and uses non-dedicated routing. Data/control pins are virtual, with 137 input and 225 output ports unconstrained for external timing. These figures characterize the core under the existing project constraints; they are not board sign-off or a demonstrated operating frequency. The design also has no remaining DSP headroom on this device.
+These figures were measured before the internal vector tags were removed; a fresh fit is needed to update them. Full compilation succeeded, but the 100 MHz timing requirement did not close. The clock pin remains unassigned and uses non-dedicated routing. Data/control pins are virtual, with 137 input and 225 output ports unconstrained for external timing. These figures characterize the core under the existing project constraints; they are not board sign-off or a demonstrated operating frequency. The design also has no remaining DSP headroom on this device.
 
 A post-fit path report at the slow 85 C corner identifies the five worst paths from `backwardColumn[1]` to `sensitivity[1][4][18]`, with worst data delay 13.503 ns. The shared backward selection/multiply/accumulation path limits the complete core clock in this build, even during inference. Pipelining that engine is a concrete follow-up; it would change the documented backward schedule and require new cycle/state checks and another fit.
 
-Reports are generated under the existing ignored `Quartus Stuff/output_files/` directory (`NN_Acceleration.fit.summary`, `.sta.summary` and `.sta.rpt`); the captured compile log and path report are `build/fountain-inplace/quartus-prototype.log` and `critical-paths.rpt`. No matched historical-versus-Fountain physical comparison has been run. Such a comparison must use the same precision, device, constraints, workload, public endpoints, and output mode. Report cycle count and achieved clock frequency together, including multiplier/DSP mapping, logic, registers, memory, route stages, tag/control overhead, loading time, and sustained throughput under available I/O bandwidth.
+Reports are generated under the existing ignored `Quartus Stuff/output_files/` directory (`NN_Acceleration.fit.summary`, `.sta.summary` and `.sta.rpt`); the captured compile log and path report are `build/fountain-inplace/quartus-prototype.log` and `critical-paths.rpt`. No matched historical-versus-Fountain physical comparison has been run. Such a comparison must use the same precision, device, constraints, workload, public endpoints, and output mode. Report cycle count and achieved clock frequency together, including multiplier/DSP mapping, logic, registers, memory, route stages, control overhead, loading time, and sustained throughput under available I/O bandwidth.
 
 Inspect source feeding, PE paths, column joins, inter-layer wiring, and final activation/readout separately. The existing scalar-readout timing bottleneck can remain even if the matrix path improves. Repeat at multiple tile dimensions; a fit at N = 5 does not establish how G or transport grows with size.
 
@@ -655,7 +651,7 @@ Inspect source feeding, PE paths, column joins, inter-layer wiring, and final ac
 
 | Item | Implemented scope | Remaining work |
 | --- | --- | --- |
-| Dataflow and joins | Center-out MACs, center counted once, explicit G/J, tagged outputs | Physical tradeoffs across larger tile dimensions |
+| Dataflow and joins | Center-out MACs, center counted once, explicit G/J, valid-only lanes | Physical tradeoffs across larger tile dimensions |
 | Direct chain | One/three-stage RTL verified; wider depth exercised by the clocked model | Deep hardware resource/frequency characterization |
 | Numerics | Exact signed widening, per-stage ReLU/pass-through, one final scalar rescale | Explicit fixed-width requantization option |
 | Configuration | Layer-major reverse-row host format, row-parallel transfer and common commit | Overlapped loading/double buffering |

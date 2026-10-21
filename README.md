@@ -30,9 +30,10 @@ for each output column. These per-column joins are distinct from the final
 scalar readout.
 
 The complete output lanes retain the center-first front. They connect directly
-to the next array without collecting and re-skewing the vector. Lane valids and
-vector tags travel with the data. The final collector aligns lanes before the
-whole-vector result/FIFO boundary.
+to the next array without collecting and re-skewing the vector. One valid bit
+travels with each lane; no vector identity is carried, because the fixed front
+already determines which vector occupies each lane on each enabled step. The
+final collector aligns lanes before the whole-vector result/FIFO boundary.
 
 ## Timing
 
@@ -135,8 +136,10 @@ ReLU gates close at zero; pass-through gates stay open.
 
 A training sample is an admission barrier. Earlier inference samples may finish,
 but no later sample enters until training finishes. Its target, layer-input
-signs, derivative gates, and tag are retained. Resident weights stay unchanged
-from its forward pass through backward sensitivity calculation.
+signs and derivative gates are retained. Because it is the last sample admitted,
+the last valid value at each activation tap is its own, and its retirement is
+the pop that leaves nothing in flight. Resident weights stay unchanged from its
+forward pass through backward sensitivity calculation.
 
 The backward engine shares one multiplier/accumulator across the weighted
 sensitivity sums. For nonzero error it takes `(LAYERS-1)*N*N` advancing clocks
@@ -155,9 +158,9 @@ updates.
 
 The result FIFO absorbs downstream stalls. When it cannot accept an aligned
 matrix result, one common `arrayAdvance` freezes the source delays, all arrays,
-join routes, lane tags, and collector. FIFO pop/push on the same edge permits
+join routes, lane valids, and collector. FIFO pop/push on the same edge permits
 continued advancement. Admission reserves outstanding capacity before accepting
-a vector; the tag space must cover the maximum live sample count.
+a vector.
 
 Training context is held for the single pending training sample. The former
 sample-context FIFO and delayed matrix/readout update waves are no longer used.
@@ -177,10 +180,9 @@ remain `WIDTH` bits. `passThrough` applies to every matrix stage.
 | `FRACTION_BITS` | 4 | Input/matrix-weight fractional bits |
 | `TARGET_WIDTH` | `WIDTH` | Target width; prediction and target are sign-extended before comparison |
 | `REDUCTION_WEIGHT_WIDTH` | 8 | Scalar-readout coefficient width |
-| `TAG_WIDTH` | 16 | Internal vector tag width, 1 through 30 |
 | `G`, `J` | 0, 1 | Balanced route stages and registered column-join latency |
 | `OUTPUT_FIFO_DEPTH` | `2*N` | Result storage |
-| `IN_FLIGHT_DEPTH` | `LAYERS*(N+G+J+2)+OUTPUT_FIFO_DEPTH+2` | Admission limit; must not exceed the tag space |
+| `IN_FLIGHT_DEPTH` | `LAYERS*(N+G+J+2)+OUTPUT_FIFO_DEPTH+2` | Admission limit |
 
 Even dimensions, rectangular layers, explicit requantization, independent lane
 backpressure, and fixed-resource tiling remain extensions.
@@ -199,27 +201,28 @@ Questa from starting, run this command in a normal local terminal.
 
 The passing suite includes:
 
-- 68 Python tests: fixed-point arithmetic, exact-width inference, finite-difference
-  checks of hidden update signs, clocked PE dependencies, loading, timing,
-  bubbles, stalls, tag wrap, reset, and all-layer training.
+- 25 Python tests: the shared fixed-point primitives and the single-layer
+  compatibility oracle, exact-width inference, finite-difference checks of
+  hidden update signs, clocked PE dependencies, loading, timing, bubbles, stalls,
+  reset, training queued behind in-flight inference, and all-layer training.
 - Seven directed matrix profiles at N=3/5/9, one/three layers, WIDTH=8/16,
-  G=0/1, and J=1/2, including three-layer results wider than 64 bits.
-- Seed/non-seed PE checks for configuration priority, signed extremes, saturated
-  updates, same-edge old-weight reads, common enable, and reset priority.
-- Expected-failure tests for unsupported dimensions, missing/mistagged MAC
-  operands, bad join tags, busy configuration, and premature input.
-- Four integrated RTL/reference profiles totaling 3,167 checked edges: N=3
+  G=0/1, and J=1/2, including three-layer results wider than 64 bits. The bench
+  derives each output's sample from arrival order on its lane, independently of
+  the design, and checks every lane's enabled-step age.
+- Seed/non-seed PE checks for signed arithmetic, configuration, saturated
+  updates, common enable, and reset priority.
+- Parameter checks that reject unsupported dimensions.
+- Four integrated RTL/reference profiles totaling 3,545 checked edges: N=3
   three-layer integer; N=5 three-layer integer; N=3 three-layer fixed-point with
-  G=1/J=2; and N=3 single-layer fixed-point compatibility.
-- The existing public-port UVM regression at `LAYERS=1`, with zero errors/fatals.
-  Exact learned weights for all layers are checked by the integrated trace.
+  G=1/J=2; and N=3 single-layer fixed-point compatibility. Every edge compares
+  architectural state: public handshakes, the training barrier, result data,
+  every resident weight and readout coefficient, and every raw lane front.
 
 Individual commands:
 
 ```powershell
 pwsh -File scripts/run_rtl_reference_compare.ps1 -N 5 -Layers 3
 pwsh -File scripts/run_rtl_reference_compare.ps1 -FractionBits 2 -RouteStages 1 -JoinLatency 2
-pwsh -File scripts/run_uvm.ps1 -Seed 12345
 ```
 
 This change was validated with Questa.
@@ -241,7 +244,9 @@ The three-stage prototype completes synthesis, fit and assembly: 6,532 ALMs,
 multiplier maps to logic to make the design fit. Worst reported core Fmax is
 70.73 MHz; setup slack is -4.138 ns against the 100 MHz target, so timing at that
 target does not close. The worst reported paths pass through the shared backward
-engine. Data/control pins are virtual and lack external I/O constraints; the
+engine. These figures were measured before the internal vector tags were
+removed and need a fresh fit to update. Data/control pins are virtual and lack
+external I/O constraints; the
 unassigned clock uses non-dedicated routing. This is a core characterization,
 not board sign-off. See specification section 14 for reports and limits. The
 earlier 81.16 MHz figure belongs to the historical single-layer inward design
@@ -251,7 +256,7 @@ and is not a matched comparison.
 
 The implementation uses the existing file structure:
 
-- `weightStationaryVariant/weightStationaryProcessingElement.sv`: tagged MAC,
+- `weightStationaryVariant/weightStationaryProcessingElement.sv`: MAC,
   stationary weight, row loading and saturated update.
 - `weightStationaryVariant/weightStationarySystolicArray.sv`: center-out grid,
   explicit column joins/routes, and the shared lane-delay helper.
@@ -261,7 +266,7 @@ The implementation uses the existing file structure:
   training admission barrier and serial backward engine.
 - `weightStationaryVariant/weightedVectorReduction.sv`: full-width readout and
   an explicit configurable final shift.
-- `reference/`, `uvm/`, and `scripts/`: updated existing models and regressions.
+- `reference/` and `scripts/`: reference models and regressions.
 - `presentation/figures/01-architecture.svg`: current Fountain architecture,
   with the existing visual style and light/dark themes. Other figures describe
   the historical inward implementation.

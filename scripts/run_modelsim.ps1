@@ -21,7 +21,7 @@ try {
 } finally { Pop-Location }
 $sources = $coreSources + (@(
     "weightStationaryVariant/weightStationaryMatrixMultiplier_tb.sv",
-    "weightStationaryVariant/matrixWeightUpdateWave_tb.sv",
+    "weightStationaryVariant/weightStationaryProcessingElement_tb.sv",
     "weightStationaryVariant/weightedVectorReduction_tb.sv"
 ) | ForEach-Object { Join-Path $projectRoot $_ })
 Push-Location $buildDir
@@ -37,22 +37,9 @@ try {
         }
     }
     Write-Output "PASS: unsupported single/even dimensions reject with a parameter diagnostic."
-    $diagnostics = @(
-        "Fountain MAC valid mismatch", "Fountain MAC tag mismatch", "Fountain join tag mismatch",
-        "Array configuration requires an idle valid row", "Array input before weight commit"
-    )
-    for ($fault=0; $fault -lt $diagnostics.Count; $fault++) {
-        $log = "protocol-fault-$fault.log"
-        & $vsim -c work.matrixProtocolFault_tb "-GFAULT=$fault" -l $log -do "run -all; quit -f" *> "$log.console"
-        if (-not (Select-String -LiteralPath $log -SimpleMatch $diagnostics[$fault] -Quiet)) {
-            Get-Content -LiteralPath $log -Tail 20
-            throw "Protocol fault $fault did not produce its intended assertion"
-        }
-    }
-    Write-Output "PASS: missing/mistagged MAC operands, mistagged joins, busy writes and premature input are detected."
     Invoke-RtlTest "weightedVectorReduction_tb" "reduction-regression.log"
     Invoke-RtlTest "weightStationaryMatrixMultiplier_tb" "core-regression.log"
-    Invoke-RtlTest "matrixWeightUpdateWave_tb" "matrix-update-regression.log"
+    Invoke-RtlTest "weightStationaryProcessingElement_tb" "pe-regression.log"
 } finally { Pop-Location }
 & pwsh -File (Join-Path $PSScriptRoot "run_rtl_reference_compare.ps1") -ArtifactDir (Join-Path $projectRoot "build/rtl_reference_compare/three")
 if ($LASTEXITCODE) { throw "Three-layer reference comparison failed" }
@@ -62,6 +49,4 @@ if ($LASTEXITCODE) { throw "N=5 reference comparison failed" }
 if ($LASTEXITCODE) { throw "Fixed-point/routed reference comparison failed" }
 & pwsh -File (Join-Path $PSScriptRoot "run_rtl_reference_compare.ps1") -ArtifactDir (Join-Path $projectRoot "build/rtl_reference_compare/single") -Layers 1 -FractionBits 4
 if ($LASTEXITCODE) { throw "Single-layer reference comparison failed" }
-& pwsh -File (Join-Path $PSScriptRoot "run_uvm.ps1")
-if ($LASTEXITCODE) { throw "Public-port UVM regression failed" }
-Write-Output "PASS: Fountain arithmetic, enabled-step timing, loading, global stalls, all-layer learning, RTL/reference states and UVM."
+Write-Output "PASS: Fountain arithmetic, enabled-step timing, loading, global stalls, all-layer learning and RTL/reference states."

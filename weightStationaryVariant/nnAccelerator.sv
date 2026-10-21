@@ -4,7 +4,7 @@
 module nnAccelerator #(
     parameter int WIDTH=16, N=3, LAYERS=3, FRACTION_BITS=4,
     parameter int TARGET_WIDTH=WIDTH, REDUCTION_WEIGHT_WIDTH=8,
-    parameter int TAG_WIDTH=16, G=0, J=1,
+    parameter int G=0, J=1,
     parameter int OUTPUT_FIFO_DEPTH=2*N,
     parameter int IN_FLIGHT_DEPTH=LAYERS*(N+G+J+2)+OUTPUT_FIFO_DEPTH+2
 )(
@@ -31,7 +31,7 @@ module nnAccelerator #(
     localparam int SENS_WIDTH=REDUCTION_WEIGHT_WIDTH+(LAYERS-1)*(WIDTH+LG);
     localparam int BACK_PRODUCT_WIDTH=WIDTH+SENS_WIDTH;
     localparam int BACK_SUM_WIDTH=BACK_PRODUCT_WIDTH+LG;
-    localparam int RESULT_ENTRY_WIDTH=N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH+TAG_WIDTH;
+    localparam int RESULT_ENTRY_WIDTH=N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH;
     localparam int COUNT_WIDTH=$clog2(IN_FLIGHT_DEPTH+1);
     localparam int COMPARE_WIDTH=(PREDICTION_WIDTH>TARGET_WIDTH)?PREDICTION_WIDTH:TARGET_WIDTH;
     localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0] R_MIN={1'b1,{(REDUCTION_WEIGHT_WIDTH-1){1'b0}}};
@@ -43,23 +43,19 @@ module nnAccelerator #(
     wire signed [WIDTH-1:0] residentWeights[LAYERS][N][N];
     wire signed [MATRIX_RESULT_WIDTH-1:0] activatedMatrixResultData[N];
     wire matrixResultValid, matrixInputReady, matrixReloadReady, arrayAdvance;
-    wire [TAG_WIDTH-1:0] matrixResultTag;
     logic matrixInputValid, matrixResultReady, matrixUpdateValid, samplePush;
     logic resultFifoPush, resultFifoPop, resultFifoCanAccept;
     wire resultFifoFull, resultFifoEmpty;
     logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoPushData;
     wire signed [RESULT_ENTRY_WIDTH-1:0] resultFifoHead;
     wire signed [PREDICTION_WIDTH-1:0] enqueuePrediction, prediction;
-    wire [TAG_WIDTH-1:0] resultTag;
-    logic [TAG_WIDTH-1:0] nextTag, trainingTag;
     logic [COUNT_WIDTH-1:0] outstanding;
-    logic trainingPending, trainingBusy, configurationError;
+    logic trainingPending, configurationError;
     logic modePassThrough, modeReduceOutput, quiescent, reloadAccepted, sampleCanAccept;
     logic signed [TARGET_WIDTH-1:0] savedTarget;
     logic signed [1:0] inputSigns[LAYERS][N], finalSigns[N];
     logic activationGates[LAYERS][N];
     wire tapValid[LAYERS][N], tapGate[LAYERS][N];
-    wire [TAG_WIDTH-1:0] tapTag[LAYERS][N];
     wire signed [1:0] tapSign[LAYERS][N];
     logic signed [SENS_WIDTH-1:0] sensitivity[LAYERS][N];
     logic signed [1:0] learningDirection, rowDirection[LAYERS][N], columnDirection[LAYERS][N];
@@ -72,11 +68,10 @@ module nnAccelerator #(
 
     initial begin
         if (WIDTH<1 || N<3 || N%2==0 || LAYERS<1 || FRACTION_BITS<0 ||
-            TARGET_WIDTH<1 || REDUCTION_WEIGHT_WIDTH<1 || TAG_WIDTH<1 || TAG_WIDTH>30 ||
-            IN_FLIGHT_DEPTH<1 || IN_FLIGHT_DEPTH>(64'd1<<TAG_WIDTH) || OUTPUT_FIFO_DEPTH<1 || G<0 || J<1)
-            $fatal(1, "Fountain requires positive widths/depths, odd N>=3 and unique live tags");
+            TARGET_WIDTH<1 || REDUCTION_WEIGHT_WIDTH<1 ||
+            IN_FLIGHT_DEPTH<1 || OUTPUT_FIFO_DEPTH<1 || G<0 || J<1)
+            $fatal(1, "Fountain requires positive widths/depths and odd N>=3");
     end
-    assign trainingBusy=trainingPending;
     assign quiescent=outstanding==0 && !trainingPending && (!weightsLoaded || matrixReloadReady);
     assign reloadReady=weightsLoaded && matrixReloadReady && quiescent && resultFifoEmpty;
     assign reloadAccepted=reloadWeights && reloadReady;
@@ -92,7 +87,6 @@ module nnAccelerator #(
     assign resultFifoPush=matrixResultValid && matrixResultReady;
     assign matrixUpdateValid=trainingState==APPLY;
     assign prediction=resultFifoHead[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH];
-    assign resultTag=resultFifoHead[N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH +: TAG_WIDTH];
     assign compareTarget=savedTarget;
     assign comparePrediction=prediction;
     always_comb begin
@@ -104,7 +98,6 @@ module nnAccelerator #(
                                resultFifoHead[j*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH]};
         end
         resultFifoPushData[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH]=enqueuePrediction;
-        resultFifoPushData[N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH +: TAG_WIDTH]=matrixResultTag;
         for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++) begin
             rowDirection[l][j]=inputSigns[l][j];
             if (learningDirection==0 || sensitivity[l][j]==0) columnDirection[l][j]=0;
@@ -123,14 +116,14 @@ module nnAccelerator #(
         {{LG{backwardProduct[BACK_PRODUCT_WIDTH-1]}},backwardProduct};
 
     weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS),
-        .TAG_WIDTH(TAG_WIDTH), .G(G), .J(J)) matrixEngine (
+        .G(G), .J(J)) matrixEngine (
         .clk, .rst_n, .weightData, .weightValid, .weightReady,
-        .inputData, .inputValid(matrixInputValid), .inputTag(nextTag), .inputReady(matrixInputReady),
+        .inputData, .inputValid(matrixInputValid), .inputReady(matrixInputReady),
         .passThrough(modePassThrough), .rowDirection, .columnDirection, .matrixUpdateValid,
-        .resultData(activatedMatrixResultData), .resultValid(matrixResultValid), .resultTag(matrixResultTag),
+        .resultData(activatedMatrixResultData), .resultValid(matrixResultValid),
         .resultReady(matrixResultReady), .weightsLoaded, .reloadWeights(reloadAccepted),
         .reloadReady(matrixReloadReady), .arrayAdvance, .weights(residentWeights),
-        .tapValid, .tapGate, .tapTag, .tapSign
+        .tapValid, .tapGate, .tapSign
     );
     // Only one scalar readout, after all matrix stages and the final collector.
     weightedVectorReduction #(.MATRIX_RESULT_WIDTH(MATRIX_RESULT_WIDTH),
@@ -148,8 +141,6 @@ module nnAccelerator #(
         if (!rst_n) begin
             trainingState<=IDLE;
             trainingPending<=0;
-            trainingTag<='0;
-            nextTag<='0;
             outstanding<='0;
             savedTarget<='0;
             learningDirection<=0;
@@ -184,25 +175,23 @@ module nnAccelerator #(
                 2'b01: outstanding<=outstanding-1'b1;
                 default: ;
             endcase
-            if (samplePush) begin
-                nextTag<=nextTag+1'b1;
-                if (trainingEnable) begin
-                    trainingPending<=1;
-                    trainingTag<=nextTag;
-                    savedTarget<=targetData;
-                    for (int j=0; j<N; j++) inputSigns[0][j]<=(inputData[j]==0)?2'sd0:
-                        (inputData[j][WIDTH-1]?-2'sd1:2'sd1);
-                end
+            if (samplePush && trainingEnable) begin
+                trainingPending<=1;
+                savedTarget<=targetData;
+                for (int j=0; j<N; j++) inputSigns[0][j]<=(inputData[j]==0)?2'sd0:
+                    (inputData[j][WIDTH-1]?-2'sd1:2'sd1);
             end
+            // A pending training sample is the last one admitted, so the last
+            // valid value at each tap is its own; earlier samples pass first.
             if (trainingPending && arrayAdvance)
                 for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++)
-                    if (tapValid[l][j] && tapTag[l][j]==trainingTag) begin
+                    if (tapValid[l][j]) begin
                         activationGates[l][j]<=tapGate[l][j];
                         if (l<LAYERS-1) inputSigns[l+1][j]<=tapSign[l][j];
                         if (l==LAYERS-1) finalSigns[j]<=tapSign[l][j];
                     end
             case (trainingState)
-                IDLE: if (resultFifoPop && trainingPending && resultTag==trainingTag) begin
+                IDLE: if (resultFifoPop && trainingPending && outstanding==1) begin
                     if (compareTarget>comparePrediction) learningDirection<=2'sd1;
                     else if (compareTarget<comparePrediction) learningDirection<=-2'sd1;
                     else learningDirection<=0;

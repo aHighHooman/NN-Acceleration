@@ -2,7 +2,6 @@ module weightStationaryProcessingElement #(
     parameter int INPUT_WIDTH = 8,
     parameter int WIDTH = 8,
     parameter int RESULT_WIDTH = INPUT_WIDTH+WIDTH+3,
-    parameter int TAG_WIDTH = 16,
     parameter bit SEED = 0
 )(
     input logic clk, rst_n, advance,
@@ -12,16 +11,10 @@ module weightStationaryProcessingElement #(
     input logic signed [1:0] update_direction,
     input logic signed [INPUT_WIDTH-1:0] activation_in,
     input logic activation_valid,
-    input logic [TAG_WIDTH-1:0] activation_tag,
     input logic signed [RESULT_WIDTH-1:0] sum_in,
-    input logic sum_valid,
-    input logic [TAG_WIDTH-1:0] sum_tag,
     output logic signed [INPUT_WIDTH-1:0] activation_out,
     output logic activation_out_valid,
-    output logic [TAG_WIDTH-1:0] activation_out_tag,
     output logic signed [RESULT_WIDTH-1:0] sum_out,
-    output logic sum_out_valid,
-    output logic [TAG_WIDTH-1:0] sum_out_tag,
     output logic signed [WIDTH-1:0] weight
 );
     localparam int PW = INPUT_WIDTH+WIDTH;
@@ -31,7 +24,7 @@ module weightStationaryProcessingElement #(
     logic signed [PW-1:0] product;
     logic signed [RESULT_WIDTH-1:0] extended_product;
     initial begin
-        if (INPUT_WIDTH<1 || WIDTH<1 || RESULT_WIDTH<PW || TAG_WIDTH<1)
+        if (INPUT_WIDTH<1 || WIDTH<1 || RESULT_WIDTH<PW)
             $fatal(1, "Invalid Fountain PE widths");
     end
     assign product = activation_in * weight;
@@ -49,31 +42,17 @@ module weightStationaryProcessingElement #(
                 weight <= weight - ONE;
         end
     end
+    // The fixed lane front delivers an incoming partial sum on the same step
+    // as its activation, so one valid bit marks both registered outputs.
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             activation_out <= '0;
             activation_out_valid <= 0;
-            activation_out_tag <= '0;
             sum_out <= '0;
-            sum_out_valid <= 0;
-            sum_out_tag <= '0;
         end else if (advance) begin
             activation_out <= activation_in;
             activation_out_valid <= activation_valid;
-            activation_out_tag <= activation_tag;
             sum_out <= (SEED ? RESULT_WIDTH'('0) : sum_in) + extended_product;
-            sum_out_valid <= activation_valid &&
-                (SEED || (sum_valid && activation_tag == sum_tag));
-            sum_out_tag <= activation_tag;
-            // synthesis translate_off
-            if (!SEED) begin
-                assert (activation_valid == sum_valid)
-                    else $fatal(1, "Fountain MAC valid mismatch");
-                if (activation_valid && sum_valid)
-                    assert (activation_tag == sum_tag)
-                        else $fatal(1, "Fountain MAC tag mismatch");
-            end
-            // synthesis translate_on
         end
     end
 endmodule

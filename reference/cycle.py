@@ -1,7 +1,9 @@
 """Clocked Fountain PE network, enabled-step adapters, loader and learning barrier.
 
 Lane arithmetic advances from previous registered neighbors. Whole-vector
-functional calculations are used only as an independent result oracle.
+functional calculations are used only as an independent result oracle. Each
+lane carries a model-side sample index for bookkeeping and self-checks; the
+hardware carries no identity beyond its fixed lane front.
 """
 from __future__ import annotations
 from dataclasses import dataclass, replace
@@ -14,18 +16,15 @@ from .functional import ReferenceConfig, Sample, analyze, normalize_weights
 class CycleConfig(ReferenceConfig):
     route_delay: int = 0
     join_latency: int = 1
-    tag_width: int = 16
     in_flight_depth: int | None = None
     output_fifo_depth: int | None = None
 
     def __post_init__(self):
         super().__post_init__()
-        for name, minimum in (('route_delay',0), ('join_latency',1), ('tag_width',1)):
+        for name, minimum in (('route_delay',0), ('join_latency',1)):
             value=getattr(self,name)
             if not isinstance(value,int) or isinstance(value,bool) or value<minimum:
                 raise ValueError(f'invalid {name}')
-        if self.tag_width>30:
-            raise ValueError('tag_width must be <=30')
         if self.output_fifo_depth is None:
             object.__setattr__(self,'output_fifo_depth',2*self.n)
         if self.in_flight_depth is None:
@@ -34,16 +33,10 @@ class CycleConfig(ReferenceConfig):
             value=getattr(self,name)
             if not isinstance(value,int) or isinstance(value,bool) or value<1:
                 raise ValueError(f'invalid {name}')
-        if self.in_flight_depth>1<<self.tag_width:
-            raise ValueError('live tags would alias')
 
     @property
     def center_latency(self):
         return self.n//2+1+self.route_delay+self.join_latency
-
-    @property
-    def sample_context_depth(self):
-        return self.in_flight_depth
 
 
 @dataclass(frozen=True)
@@ -66,7 +59,7 @@ class CycleInputs:
 @dataclass(frozen=True)
 class Lane:
     value: int
-    tag: int
+    sample: int
 
 
 class _Delay:
@@ -90,9 +83,9 @@ def _join(a,b):
         raise AssertionError('Fountain valid mismatch')
     if a is None:
         return None
-    if a.tag!=b.tag:
-        raise AssertionError('Fountain tag mismatch')
-    return Lane(a.value+b.value,a.tag)
+    if a.sample!=b.sample:
+        raise AssertionError('Fountain sample mismatch')
+    return Lane(a.value+b.value,a.sample)
 
 
 class _Layer:
@@ -138,13 +131,13 @@ class _Layer:
                 if not seed:
                     if (activation is None)!=(partial is None):
                         raise AssertionError(f'MAC valid mismatch at {i},{j}')
-                    if activation is not None and activation.tag!=partial.tag:
-                        raise AssertionError(f'MAC tag mismatch at {i},{j}')
+                    if activation is not None and activation.sample!=partial.sample:
+                        raise AssertionError(f'MAC sample mismatch at {i},{j}')
                 next_act[i][j]=activation
                 if activation is not None:
                     value=activation.value*self.weights[i][j]+(partial.value if partial else 0)
                     assert to_signed(value,self.aw)==value, 'MAC overflow'
-                    next_sums[i][j]=Lane(value,activation.tag)
+                    next_sums[i][j]=Lane(value,activation.sample)
         self.act,self.sums,self.joined=next_act,next_sums,next_joined
 
 
@@ -152,14 +145,7 @@ class _Layer:
 class ResultEntry:
     activated_result: tuple[int,...]
     prediction: int
-    tag: int
-
-
-@dataclass(frozen=True)
-class SampleContext:
-    target: int
-    input_signs: tuple
-    gates: tuple
+    sample: int
 
 
 @dataclass
@@ -207,12 +193,11 @@ class CycleReference:
         self.host_layer=self.loaded_rows=self.load_layer=self.load_step=0
         self.loading=self.capture=False
         self.input_stage=None
-        self.input_tag=0
-        self.next_tag=0
+        self.next_sample=0
         self.outstanding=0
         self.fifo=[]
         self.training_pending=False
-        self.training_tag=0
+        self.training_sample=0
         self.saved_target=0
         self.input_signs=[[0]*n for _ in range(k)]
         self.gates=[[False]*n for _ in range(k)]
@@ -236,14 +221,14 @@ class CycleReference:
         return self._R[:]
 
     def lane_outputs(self):
-        return [[None if lane is None else Lane(lane.value if self.mode_pass or lane.value>=0 else 0,lane.tag)
+        return [[None if lane is None else Lane(lane.value if self.mode_pass or lane.value>=0 else 0,lane.sample)
                  for lane in layer.outputs()] for layer in self.layers]
 
     def collected(self):
         lanes=[delay.read(value) for delay,value in zip(self.collector,self.lane_outputs()[-1])]
         if any(value is not None for value in lanes):
             assert all(value is not None for value in lanes), 'collector valid mismatch'
-            assert len({value.tag for value in lanes})==1, 'collector tag mismatch'
+            assert len({value.sample for value in lanes})==1, 'collector sample mismatch'
             return lanes
         return None
 
@@ -284,7 +269,7 @@ class CycleReference:
             old_pass=self.mode_pass
             old_r=self._R[:]
             old_input=self.input_stage
-            old_weights_loaded=self.weights_loaded
+            old_outstanding=self.outstanding
             raw_outputs=[layer.outputs() for layer in self.layers]
             activated=self.lane_outputs()
             head=self.fifo[0] if self.fifo else None
@@ -299,10 +284,12 @@ class CycleReference:
                     if len(inputs.reduction_weight)!=cfg.n: raise ValueError('readout length')
                     self._R=[to_signed(v,cfg.reduction_weight_width) for v in inputs.reduction_weight]
                 else: self.configuration_error=True
+            # The pending training sample is the last one admitted, so the last
+            # valid value seen at each tap is its own.
             if old_pending and sig['advance']:
                 for l in range(cfg.layers):
                     for j,lane in enumerate(raw_outputs[l]):
-                        if lane is not None and lane.tag==self.training_tag:
+                        if lane is not None:
                             self.gates[l][j]=old_pass or lane.value>0
                             sign=ternary_sign(activated[l][j].value)
                             if l<cfg.layers-1: self.input_signs[l+1][j]=sign
@@ -315,35 +302,35 @@ class CycleReference:
                 for delay,word in zip(self.source,source_words): delay.tick(word)
             if retired:
                 self.fifo.pop(0)
-                self.timings[head.tag].retired_at=self.cycle
-                self.records.append(self.expected[head.tag])
+                self.timings[head.sample].retired_at=self.cycle
+                self.records.append(self.expected[head.sample])
             if sig['push']:
                 values=tuple(lane.value for lane in collected)
-                tag=collected[0].tag
+                sample=collected[0].sample
                 prediction=sum(v*r for v,r in zip(values,old_r)) >> cfg.rescale_shift
-                record=self.expected[tag]
+                record=self.expected[sample]
                 assert values==record.activated_result and prediction==record.prediction, 'clocked/functional mismatch'
-                self.fifo.append(ResultEntry(values,prediction,tag))
-                self.timings[tag].enqueued_at=self.cycle
+                self.fifo.append(ResultEntry(values,prediction,sample))
+                self.timings[sample].enqueued_at=self.cycle
             if accepted:
                 values=tuple(to_signed(value,cfg.width) for value in inputs.input_data)
                 if len(values)!=cfg.n: raise ValueError('input length')
-                tag=self.next_tag
-                self.expected[tag]=analyze(replace(cfg,pass_through=self.mode_pass,reduce_output=self.mode_reduce),self._W,old_r,
-                    Sample(values,inputs.target_data,inputs.training_enable),tag)
-                self.timings[tag]=SampleTiming(self.cycle)
-                self.next_tag=(tag+1) % (1<<cfg.tag_width)
-                self.input_stage=(values,tag)
-                self.input_tag=tag
+                sample=self.next_sample
+                self.expected[sample]=analyze(replace(cfg,pass_through=self.mode_pass,reduce_output=self.mode_reduce),self._W,old_r,
+                    Sample(values,inputs.target_data,inputs.training_enable),sample)
+                self.timings[sample]=SampleTiming(self.cycle)
+                self.next_sample=sample+1
+                self.input_stage=(values,sample)
                 if inputs.training_enable:
                     self.training_pending=True
-                    self.training_tag=tag
+                    self.training_sample=sample
                     self.saved_target=to_signed(inputs.target_data,cfg.target_width)
                     self.input_signs[0]=[ternary_sign(v) for v in values]
             elif old_input is not None and sig['advance']:
                 self.input_stage=None
             self.outstanding+=int(accepted)-int(retired)
-            if old_state==0 and retired and old_pending and head.tag==self.training_tag:
+            if old_state==0 and retired and old_pending and old_outstanding==1:
+                assert head.sample==self.training_sample, 'training sample did not retire last'
                 self.direction=ternary_sign(self.saved_target-head.prediction)
                 self.sensitivity[-1]=[r if gate else 0 for r,gate in zip(old_r,self.gates[-1])]
                 self.back_layer=max(0,cfg.layers-2)
@@ -363,7 +350,7 @@ class CycleReference:
                     self.back_acc=value
                     self.back_col+=1
             elif old_state==2 and sig['advance']:
-                record=self.expected[self.training_tag]
+                record=self.expected[self.training_sample]
                 for l in range(cfg.layers):
                     for i in range(cfg.n):
                         for j in range(cfg.n):
@@ -406,23 +393,19 @@ class CycleReference:
         return snapshot
 
     def state_vector(self,inputs=None):
+        """Architectural state compared with the RTL on every edge: public
+        handshakes, the training barrier, result data, resident parameters and
+        the per-lane raw fronts. Controller and loader internals stay private."""
         sig=self.signals(inputs)
         head=self.fifo[0] if self.fifo else ResultEntry((0,)*self.config.n,0,0)
         result=(head.prediction,)+(0,)*(self.config.n-1) if self.mode_reduce else head.activated_result
         state=[int(sig[name]) for name in ('weight_ready','input_ready','result_valid')]
-        state += [int(self.weights_loaded),int(sig['reload_ready']),int(self.training_pending),int(self.configuration_error),int(sig['advance']),
-            self.outstanding,self.host_layer,self.loaded_rows,int(self.loading),int(self.capture),self.load_layer,self.load_step,
-            int(self.input_stage is not None),self.input_tag,self.next_tag,self.training_tag,
-            self.training_state,self.back_layer,self.back_row,self.back_col,self.back_acc,self.direction,len(self.fifo),head.tag,*result]
+        state += [int(self.weights_loaded),int(sig['reload_ready']),int(self.training_pending),*result]
         state += [v for matrix in self._W for row in matrix for v in row]
         state += self._R
-        state += [v for row in self.sensitivity for v in row]
-        state += [int(v) for row in self.gates for v in row]
-        state += [v for row in self.input_signs for v in row]
-        state += self.final_signs
         for layer in self.lane_outputs():
             for value in layer:
-                state.extend((0,0,0) if value is None else (1,value.tag,value.value))
+                state.extend((0,0) if value is None else (1,value.value))
         return tuple(state)
 
     def run(self,cycles: Sequence[CycleInputs]):

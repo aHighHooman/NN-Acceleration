@@ -115,6 +115,23 @@ class CycleTests(unittest.TestCase):
         self.drain(model)
         self.assertEqual(len(model.records),2)
 
+    def test_training_behind_inflight_inference_uses_its_own_context(self):
+        cfg=CycleConfig(n=3,layers=3,pass_through=False)
+        w=[identity(3),identity(3),[[2,-1,0],[0,2,0],[0,0,1]]]
+        model=CycleReference(cfg,w,[1,3,0])
+        oracle=FunctionalReference(cfg,w,[1,3,0])
+        samples=[Sample((-1,2,-3))]*3+[Sample((1,1,1),1,True)]
+        for sample in samples:
+            oracle.step(sample)
+            inputs=CycleInputs(input_valid=True,input_data=sample.x,target_data=sample.target,
+                training_enable=sample.training_enable,pass_through=False)
+            while not model.step(inputs).accepted: pass
+        self.assertEqual(model.outstanding,4)
+        self.drain(model)
+        self.assertEqual(model.W,oracle.W)
+        self.assertEqual(model.R,oracle.R)
+        self.assertNotEqual(model.W,w)
+
     def test_reset_discards_every_pipeline_and_pending_training(self):
         for age in (1,5,13,20):
             model=self.model()
@@ -142,25 +159,16 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(model.R,[1]*5)
         self.assertFalse(model.mode_pass)
 
-    def test_invalid_lane_dependencies_and_tag_alias_parameters(self):
+    def test_model_rejects_broken_fronts_and_parameters(self):
         cfg=CycleConfig(n=3,layers=1)
         layer=_Layer(cfg,0,identity(3))
         layer.tick([None,Lane(1,1),None])
         with self.assertRaisesRegex(AssertionError,'valid mismatch'): layer.tick([None,None,None])
         layer=_Layer(cfg,0,identity(3))
         layer.tick([None,Lane(1,1),None])
-        with self.assertRaisesRegex(AssertionError,'tag mismatch'): layer.tick([Lane(1,1),None,Lane(1,2)])
-        with self.assertRaises(ValueError): CycleConfig(tag_width=1,in_flight_depth=3)
+        with self.assertRaisesRegex(AssertionError,'sample mismatch'): layer.tick([Lane(1,1),None,Lane(1,2)])
         with self.assertRaises(ValueError): CycleConfig(route_delay=-1)
         with self.assertRaises(ValueError): CycleConfig(join_latency=0)
-
-    def test_tag_wrap_with_bounded_outstanding(self):
-        cfg=CycleConfig(n=3,layers=1,tag_width=3,in_flight_depth=8)
-        model=CycleReference(cfg,[identity(3)],[64]*3)
-        for _ in range(70): model.step(CycleInputs(input_valid=True,input_data=(1,2,3)))
-        self.drain(model)
-        self.assertGreater(len(model.records),30)
-        self.assertLess(model.next_tag,8)
 
 
 if __name__=='__main__': unittest.main()
