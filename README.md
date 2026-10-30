@@ -239,15 +239,15 @@ cd 'Quartus Stuff'
 quartus_sh --flow compile NN_Acceleration
 ```
 
-The three-stage prototype completes synthesis, fit and assembly: 6,532 ALMs,
-6,591 registers, 87/87 DSP blocks, and 2,650 memory bits. The shared backward
-multiplier maps to logic to make the design fit. Worst reported core Fmax is
-70.73 MHz; setup slack is -4.138 ns against the 100 MHz target, so timing at that
-target does not close. The worst reported paths pass through the shared backward
-engine. These figures were measured before the internal vector tags were
-removed and need a fresh fit to update. Data/control pins are virtual and lack
-external I/O constraints; the
-unassigned clock uses non-dedicated routing. This is a core characterization,
+The current three-stage prototype completed a fresh full compilation on
+29 October 2026: 6,296 ALMs, 4,882 registers, 87/87 DSP blocks, and 2,490 memory
+bits in seven RAM blocks. The shared backward multiplier maps to logic. Worst
+reported core Fmax is 71.00 MHz; setup slack is -4.084 ns against the 100 MHz
+target, so timing at that target does not close. The slow-85-C detailed report
+identifies the final layer's column join through activation/readout into the
+result FIFO as the worst path at that corner.
+Data/control pins are virtual and lack external I/O constraints; the unassigned
+clock uses non-dedicated routing. This is a core characterization,
 not board sign-off. See specification section 14 for reports and limits. The
 earlier 81.16 MHz figure belongs to the historical single-layer inward design
 and is not a matched comparison.

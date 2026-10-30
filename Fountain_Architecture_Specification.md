@@ -626,24 +626,24 @@ Use comparisons keyed by per-lane sample order and element index rather than sca
 
 ### 14.3 Physical build and comparison requirements
 
-The N=5/WIDTH=8/LAYERS=3/F=0/G=0/J=1 prototype completed synthesis, fit and assembly using the existing Cyclone V `5CSEMA5F31C6` project and Quartus Lite 25.1. The initial all-DSP mapping exceeded the device budget (89 required versus 87 available); assigning the shared backward multiplier to general logic allowed the final fit.
+The current N=5/WIDTH=8/LAYERS=3/F=0/G=0/J=1 prototype completed a fresh full compilation on 29 October 2026 using the Cyclone V `5CSEMA5F31C6` project and Quartus Lite 25.1std.0. This isolated build used the RTL and constraints from `fountain` commit `b35f894`, after vector-tag removal. The shared backward multiplier maps to general logic.
 
 | Final post-fit metric | Result |
 | --- | ---: |
-| Logic utilization | 6,532 / 32,070 ALMs (20%) |
-| Registers | 6,591 |
+| Logic utilization | 6,296 / 32,070 ALMs (20%) |
+| Registers | 4,882 |
 | DSP blocks | 87 / 87 (100%) |
-| Block memory | 2,650 bits in 7 RAM blocks |
-| Slow 85 C core Fmax | 71.25 MHz |
-| Slow 0 C core Fmax | 70.73 MHz |
-| Worst setup slack at the 100 MHz target | -4.138 ns |
-| Minimum hold slack across reported corners | +0.108 ns |
+| Block memory | 2,490 bits in 7 RAM blocks |
+| Slow 85 C core Fmax | 71.26 MHz |
+| Slow 0 C core Fmax | 71.00 MHz |
+| Worst setup slack at the 100 MHz target | -4.084 ns |
+| Minimum hold slack across reported corners | +0.126 ns |
 
-These figures were measured before the internal vector tags were removed; a fresh fit is needed to update them. Full compilation succeeded, but the 100 MHz timing requirement did not close. The clock pin remains unassigned and uses non-dedicated routing. Data/control pins are virtual, with 137 input and 225 output ports unconstrained for external timing. These figures characterize the core under the existing project constraints; they are not board sign-off or a demonstrated operating frequency. The design also has no remaining DSP headroom on this device.
+Full compilation succeeded with zero errors, but the 100 MHz timing requirement did not close. The clock pin remains unassigned and uses non-dedicated routing. Data/control pins are virtual, with 137 input and 225 output ports unconstrained for external timing. These figures characterize the core under the existing project constraints; they are not board sign-off or a demonstrated operating frequency. The design has no remaining DSP headroom on this device.
 
-A post-fit path report at the slow 85 C corner identifies the five worst paths from `backwardColumn[1]` to `sensitivity[1][4][18]`, with worst data delay 13.503 ns. The shared backward selection/multiply/accumulation path limits the complete core clock in this build, even during inference. Pipelining that engine is a concrete follow-up; it would change the documented backward schedule and require new cycle/state checks and another fit.
+A post-fit path report at the slow 85 C corner identifies the worst path from the final layer's `columns[4].joined[40]` register through activation/readout into the result-FIFO RAM input register. Data delay is 13.489 ns and setup slack is -4.033 ns at that corner. The final vector-to-scalar reduction is therefore a timing optimization candidate. Adding pipeline stages would require revised enabled-step timing, state checks and another fit.
 
-Reports are generated under the existing ignored `Quartus Stuff/output_files/` directory (`NN_Acceleration.fit.summary`, `.sta.summary` and `.sta.rpt`); the captured compile log and path report are `build/fountain-inplace/quartus-prototype.log` and `critical-paths.rpt`. No matched historical-versus-Fountain physical comparison has been run. Such a comparison must use the same precision, device, constraints, workload, public endpoints, and output mode. Report cycle count and achieved clock frequency together, including multiplier/DSP mapping, logic, registers, memory, route stages, control overhead, loading time, and sustained throughput under available I/O bandwidth.
+The isolated snapshot and reports are retained under the ignored `build/fountain-merge-review/` directory. Its `quartus/Quartus Stuff/output_files/` contains `NN_Acceleration.fit.summary`, `.sta.summary` and `.sta.rpt`; `quartus.log`, `critical-paths.rpt` and `source-sha256.json` record the full compile, detailed paths and source hashes. The unchanged RTL also passes 25 Python tests and 3,545 integrated RTL/reference edges in `regression.log`. No matched historical-versus-Fountain physical comparison has been run. Such a comparison must use the same precision, device, constraints, workload, public endpoints, and output mode. Report cycle count and achieved clock frequency together, including multiplier/DSP mapping, logic, registers, memory, route stages, control overhead, loading time, and sustained throughput under available I/O bandwidth.
 
 Inspect source feeding, PE paths, column joins, inter-layer wiring, and final activation/readout separately. The existing scalar-readout timing bottleneck can remain even if the matrix path improves. Repeat at multiple tile dimensions; a fit at N = 5 does not establish how G or transport grows with size.
 
