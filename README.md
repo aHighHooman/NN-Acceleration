@@ -1,274 +1,242 @@
-# Weight-Stationary Neural-Network Accelerator — Fountain
+# Fountain: A Weight-Stationary Neural-Network Accelerator
 
-The existing SystemVerilog accelerator now uses the Fountain center-out dataflow.
-It supports a configurable chain of matrix stages, with a scalar weighted readout
-only after the last stage. The implementation stays in the existing PE, array,
-matrix-wrapper, accelerator, and readout files.
+A parameterized SystemVerilog accelerator for small fully connected neural
+networks. It runs inference and on-chip training, and targets an Intel Cyclone V
+FPGA.
 
-Inference can accept one vector per advancing clock when capacity and the
-consumer permit. Training uses full backward sensitivities with saturating
-sign-based weight steps, one training sample at a time. A training sample blocks
-later admission until its prediction retires and its update completes.
-
-See [the architecture specification](Fountain_Architecture_Specification.md)
-and [the learning derivation](Fountain_Three_Layer_Learning_Analysis.md).
-
-## Architecture
+The core idea is the **Fountain dataflow**. In a regular systolic array, data
+enters at one corner and moves across the grid. Fountain instead feeds each
+input vector in at the **center column** and sends it **outward**, with partial
+sums also moving outward from the middle rows. Each layer's outputs then leave
+in the same center-first pattern its inputs arrived in. The next layer can
+start on those outputs right away, without waiting for the whole vector or
+re-skewing it. Each extra layer therefore adds only a small, fixed delay.
 
 ![Three-layer Fountain architecture](presentation/figures/01-architecture.svg)
 
-`LAYERS` controls the number of matrix stages; three is the default. The diagram
-shows that case at N=3, WIDTH=16 and F=4. Each stage stores weights
-`W[layer][input][output]` and computes
-`a[layer+1] = activation(a[layer] * W[layer])`. The scalar readout is
-`prediction = sum(a[last][j] * r[j])`, followed by one final fixed-point rescale.
+## Features
 
-Inside each array, activations enter the center column and move horizontally
-outward. Partial sums move vertically outward from two seeds. The center product
-belongs to the lower sum only. A registered adder joins the two boundary sums
-for each output column. These per-column joins are distinct from the final
-scalar readout.
+- **Multi-layer network in hardware.** A configurable chain of `LAYERS` N×N
+  matrix stages (three by default), each followed by ReLU or pass-through. An
+  optional weighted scalar readout follows the last stage.
+- **Pipelined inference.** Accepts up to one input vector per clock. A result
+  FIFO and a single global stall signal handle downstream backpressure.
+- **On-chip training.** Backpropagates full error sensitivities through every
+  layer and applies saturating one-LSB sign updates to all weights.
+- **Exact arithmetic.** Signed fixed-point with no rounding or saturation
+  between layers. Each stage widens just enough to stay exact.
+- **Verified against a reference model.** Python functional and cycle-accurate
+  models are compared edge-by-edge with the RTL in Questa.
 
-The complete output lanes retain the center-first front. They connect directly
-to the next array without collecting and re-skewing the vector. One valid bit
-travels with each lane; no vector identity is carried, because the fixed front
-already determines which vector occupies each lane on each enabled step. The
-final collector aligns lanes before the whole-vector result/FIFO boundary.
+## How it works
 
-## Timing
-
-Let `h = (N-1)/2`, `G` be additional balanced route stages, and `J` the column
-joining latency. One matrix stage shifts the center-first front by:
+Each matrix stage holds its weights `W[layer][input][output]` stationary in a
+grid of processing elements (PEs) and computes:
 
 ```text
-D = h + 1 + G + J
-raw lane j after K stages = K*D + abs(j-h)
-final aligned vector     = K*D + h
-result FIFO formation    = K*D + h + 1
-first retirement         = K*D + h + 2
+a[layer+1] = activation(a[layer] * W[layer])
+prediction = sum(a[last][j] * r[j])          (optional scalar readout)
 ```
 
-These are edge intervals from input acceptance, assuming no stalls and an
-always-ready consumer. The input register supplies the center lane through a
-zero-depth source-skew bypass; there is no additional common skew-entry register.
-All pipeline dependencies count enabled steps when backpressured.
+Inside a stage:
 
-For `N=5`, `LAYERS=3`, `G=0`, `J=1`, the final raw lanes are ready at
-`[14,13,12,13,14]`, the result FIFO forms at edge 15, and first retirement is edge
-16. A single stage gives `[6,5,4,5,6]`, formation at 7, and retirement at 8.
-These cycle counts do not establish an achieved frequency or wall-clock speedup.
+1. Activations enter the center column and travel horizontally outward to
+   both sides.
+2. Partial sums start from two seed rows at the center and travel vertically
+   outward, upward and downward.
+3. A registered adder at the edge of each output column joins the upper and
+   lower sums into a complete output.
+4. The output lanes keep the center-first timing and feed the next stage
+   directly. A collector at the end aligns the lanes into a full vector.
 
-## Loading and reconfiguration
+### Latency
 
-The public signal names remain the same. Loading multiple layers uses the
-existing reverse-row handshake repeatedly:
+With `h = (N-1)/2`, extra route stages `G`, and column-join latency `J`, each
+stage adds `D = h + 1 + G + J` cycles. For K stages, assuming no stalls:
 
-1. Send layer 0 rows `N-1` through `0` on `weightData[N]`.
-2. Send layer 1 in the same order, then each remaining layer.
-3. After `LAYERS*N` accepted row handshakes, the staging bank transfers one
-   complete row per clock to resident PEs for `LAYERS*N` clocks.
-4. One commit edge asserts `weightsLoaded`. Computation remains blocked until
-   the entire chain is loaded.
+| Event | Cycles after input is accepted |
+| --- | --- |
+| Output lane `j` ready | `K*D + abs(j-h)` |
+| Full vector in result FIFO | `K*D + h + 1` |
+| First result available | `K*D + h + 2` |
 
-Host gaps are supported. Loading uses explicit row writes, replacing the old
-inward topology's two-ended partial-sum shifts. `LAYERS=1` retains the original
-N-row host format and N-transfer-plus-one-commit timing.
+Example: N=5, three layers, G=0, J=1. The output lanes are ready at cycles
+`[14,13,12,13,14]` and the first result comes out at cycle 16.
 
-`reloadWeights` is accepted only with `reloadReady`. Both the forward pipeline
-and result FIFO must be empty, and no training sample/update may remain. An
-accepted reload excludes input admission on that edge. Load all layers again.
+### Training
 
-`passThrough`, `reduceOutput`, and `loadReductionWeights` are stream-wide
-configuration. Change/pulse them only when quiescent. The implementation rejects
-busy readout loads and holds existing modes, recording an internal sticky
-`configurationError` until reset. A readout-load edge excludes input admission.
+When a sample is submitted with `trainingEnable`, the accelerator:
 
-`rst_n` is synchronous and takes priority over pipeline enable. It discards all
-in-flight samples, loader state, and pending learning, clears resident readout
-weights, and drops `weightsLoaded`. Reload matrix and readout weights afterward.
+1. Lets earlier inference samples finish and stops admitting new ones.
+2. Runs the training sample forward and computes `e = target - prediction`.
+3. Computes the backward sensitivities on one shared multiply-accumulate unit
+   in `(LAYERS-1)*N*N` cycles:
+   ```text
+   s[last] = g[last] .* r
+   s[l]    = g[l] .* (W[l+1] * s[l+1])
+   ```
+4. Updates every weight by one LSB in a single cycle, saturating at its range
+   limit:
+   ```text
+   W[l][i,j] += sign(a[l][i]) * sign(e) * sign(s[l][j])
+   r[j]      += sign(e) * sign(a[last+1][j])
+   ```
+5. Resumes admitting samples.
 
-## Exact-width arithmetic
+Inference stays fully pipelined. Training handles one sample at a time.
+[Fountain_Three_Layer_Learning_Analysis.md](Fountain_Three_Layer_Learning_Analysis.md)
+derives the update rule.
 
-All arithmetic uses signed stored integers. There is no inter-layer narrowing,
-rounding, or saturation in the forward matrix path. Each stage retains a full
-sum, then applies ReLU or pass-through exactly once.
+## Getting started
 
-For input/weight width `WIDTH` and `C = ceil(log2(N))`:
+### Requirements
 
-```text
-stage k output width, k starting at 1 = WIDTH + k*(WIDTH+C)
-RAW_WIDTH                            = WIDTH + LAYERS*(WIDTH+C)
-public RESULT_WIDTH                  = RAW_WIDTH + C
-```
+- Questa / ModelSim (Intel FPGA Starter Edition works)
+- Python 3
+- PowerShell 7
+- Quartus Prime (only for FPGA builds)
 
-At `WIDTH=8`, `N=5`, three output widths are 19, 30, and 41 bits. Public lanes are
-44 bits. The wider port is necessary for exact chaining; it is not an 8-bit
-inter-layer quantization design.
-
-Inputs and matrix weights have `FRACTION_BITS=F` fractional bits. Stage k's raw
-output has `(k+1)*F`. The scalar readout coefficients have
-`REDUCTION_WEIGHT_WIDTH-1` fractional bits. Accumulate all full products, then
-shift once by `LAYERS*F + REDUCTION_WEIGHT_WIDTH - 1`; the scalar prediction
-returns to F fractional bits.
-
-- `reduceOutput=0`: sign-extended final activated vector, with `(LAYERS+1)*F`
-  fractional bits.
-- `reduceOutput=1`: rescaled scalar prediction in lane 0; other lanes are zero.
-
-At `LAYERS=1`, port width and single-layer inference arithmetic match the former
-accelerator. Training timing deliberately changes to the serialized policy.
-
-## Learning
-
-For squared error, define `e = target - prediction` and activation gates `g`.
-The backward sensitivities are:
-
-```text
-s[last] = g[last] .* r
-s[l]    = g[l] .* (W[l+1] * s[l+1])
-W[l][i,j] += sign(a[l][i]) * sign(e) * sign(s[l][j])
-r[j]       += sign(e) * sign(a[last+1][j])
-```
-
-Each stored weight update is one LSB, saturated to its signed range. Matrix
-weights use the matrix-weight binary point; readout weights use their own.
-ReLU gates close at zero; pass-through gates stay open.
-
-A training sample is an admission barrier. Earlier inference samples may finish,
-but no later sample enters until training finishes. Its target, layer-input
-signs and derivative gates are retained. Because it is the last sample admitted,
-the last valid value at each activation tap is its own, and its retirement is
-the pop that leaves nothing in flight. Resident weights stay unchanged from its
-forward pass through backward sensitivity calculation.
-
-The backward engine shares one multiplier/accumulator across the weighted
-sensitivity sums. For nonzero error it takes `(LAYERS-1)*N*N` advancing clocks
-after retirement, followed by one atomic update edge. Zero error or a single
-layer skips the backward sums. Admission resumes after the commit. All matrices
-and readout weights change together with no forward data in flight.
-
-This implements full-sensitivity sign updates, not the cheaper approximation
-that quantizes each intermediate error to its sign. It does not claim continuous
-II=1 training or identical trajectories to the former delayed SSLMS wave.
-Convergence on an application workload remains an empirical question. Avoid an
-all-zero, bias-free ReLU initialization: its closed gates cannot bootstrap these
-updates.
-
-## Backpressure and capacity
-
-The result FIFO absorbs downstream stalls. When it cannot accept an aligned
-matrix result, one common `arrayAdvance` freezes the source delays, all arrays,
-join routes, lane valids, and collector. FIFO pop/push on the same edge permits
-continued advancement. Admission reserves outstanding capacity before accepting
-a vector.
-
-Training context is held for the single pending training sample. The former
-sample-context FIFO and delayed matrix/readout update waves are no longer used.
-The existing `signedFifo` still implements the public result buffer.
-
-## Parameters and public interface
-
-The public ports retain their names and roles from the previous accelerator.
-`resultData[N]` now uses the layer-dependent width above. All weight/input lanes
-remain `WIDTH` bits. `passThrough` applies to every matrix stage.
-
-| Parameter | RTL default | Meaning |
-| --- | ---: | --- |
-| `N` | 3 | Odd square dimension, at least 3 |
-| `WIDTH` | 16 | Input and stationary matrix-weight width |
-| `LAYERS` | 3 | Number of dedicated matrix stages |
-| `FRACTION_BITS` | 4 | Input/matrix-weight fractional bits |
-| `TARGET_WIDTH` | `WIDTH` | Target width; prediction and target are sign-extended before comparison |
-| `REDUCTION_WEIGHT_WIDTH` | 8 | Scalar-readout coefficient width |
-| `G`, `J` | 0, 1 | Balanced route stages and registered column-join latency |
-| `OUTPUT_FIFO_DEPTH` | `2*N` | Result storage |
-| `IN_FLIGHT_DEPTH` | `LAYERS*(N+G+J+2)+OUTPUT_FIFO_DEPTH+2` | Admission limit |
-
-Even dimensions, rectangular layers, explicit requantization, independent lane
-backpressure, and fixed-resource tiling remain extensions.
-
-## Verification
-
-Run the existing regression entry point with Python, PowerShell 7, and Questa:
+### Run the test suite
 
 ```powershell
 pwsh -File scripts/run_modelsim.ps1
 ```
 
-Questa discovery defaults to `C:/altera_lite/25.1std/questa_fse/win64`; override it
-with `NN_ACCEL_QUESTA_BIN`. On systems where sandbox DLL restrictions prevent
-Questa from starting, run this command in a normal local terminal.
+This runs the Python reference tests, the unit testbenches for the PE, array
+and readout, the parameter-rejection checks, and the integrated RTL-vs-reference
+comparisons. The script looks for Questa in
+`C:/altera_lite/25.1std/questa_fse/win64` by default. To use another location,
+set `NN_ACCEL_QUESTA_BIN`.
 
-The passing suite includes:
-
-- 25 Python tests: the shared fixed-point primitives and the single-layer
-  compatibility oracle, exact-width inference, finite-difference checks of
-  hidden update signs, clocked PE dependencies, loading, timing, bubbles, stalls,
-  reset, training queued behind in-flight inference, and all-layer training.
-- Seven directed matrix profiles at N=3/5/9, one/three layers, WIDTH=8/16,
-  G=0/1, and J=1/2, including three-layer results wider than 64 bits. The bench
-  derives each output's sample from arrival order on its lane, independently of
-  the design, and checks every lane's enabled-step age.
-- Seed/non-seed PE checks for signed arithmetic, configuration, saturated
-  updates, common enable, and reset priority.
-- Parameter checks that reject unsupported dimensions.
-- Four integrated RTL/reference profiles totaling 3,545 checked edges: N=3
-  three-layer integer; N=5 three-layer integer; N=3 three-layer fixed-point with
-  G=1/J=2; and N=3 single-layer fixed-point compatibility. Every edge compares
-  architectural state: public handshakes, the training barrier, result data,
-  every resident weight and readout coefficient, and every raw lane front.
-
-Individual commands:
+To compare one configuration against the reference model:
 
 ```powershell
 pwsh -File scripts/run_rtl_reference_compare.ps1 -N 5 -Layers 3
 pwsh -File scripts/run_rtl_reference_compare.ps1 -FractionBits 2 -RouteStages 1 -JoinLatency 2
 ```
 
-This change was validated with Questa.
-
-## FPGA project
-
-The existing Quartus project still uses `nnAccelerator` as top level on Cyclone V
-`5CSEMA5F31C6`, with virtual data/control pins and a 100 MHz target. It explicitly
-selects the bringup profile `N=5`, `WIDTH=8`, `LAYERS=3`, `FRACTION_BITS=0`, G=0/J=1.
-These project overrides differ from the independently parameterized RTL defaults.
+### Build for FPGA
 
 ```powershell
 cd 'Quartus Stuff'
 quartus_sh --flow compile NN_Acceleration
 ```
 
-The current three-stage prototype completed a fresh full compilation on
-29 October 2026: 6,296 ALMs, 4,882 registers, 87/87 DSP blocks, and 2,490 memory
-bits in seven RAM blocks. The shared backward multiplier maps to logic. Worst
-reported core Fmax is 71.00 MHz; setup slack is -4.084 ns against the 100 MHz
-target, so timing at that target does not close. The slow-85-C detailed report
-identifies the final layer's column join through activation/readout into the
-result FIFO as the worst path at that corner.
-Data/control pins are virtual and lack external I/O constraints; the unassigned
-clock uses non-dedicated routing. This is a core characterization,
-not board sign-off. See specification section 14 for reports and limits. The
-earlier 81.16 MHz figure belongs to the historical single-layer inward design
-and is not a matched comparison.
+The Quartus project targets a Cyclone V `5CSEMA5F31C6` (DE1-SoC) at 100 MHz. It
+uses N=5, WIDTH=8, LAYERS=3, FRACTION_BITS=0, G=0 and J=1. These overrides
+differ from the RTL defaults.
+
+## Using the accelerator
+
+### Parameters
+
+| Parameter | Default | Meaning |
+| --- | ---: | --- |
+| `N` | 3 | Layer size (odd, ≥ 3) |
+| `WIDTH` | 16 | Input and weight width in bits |
+| `LAYERS` | 3 | Number of matrix stages |
+| `FRACTION_BITS` | 4 | Fractional bits of inputs and weights |
+| `TARGET_WIDTH` | `WIDTH` | Training target width |
+| `REDUCTION_WEIGHT_WIDTH` | 8 | Readout coefficient width |
+| `G`, `J` | 0, 1 | Extra route stages, column-join latency |
+| `OUTPUT_FIFO_DEPTH` | `2*N` | Result buffer depth |
+| `IN_FLIGHT_DEPTH` | `LAYERS*(N+G+J+2)+OUTPUT_FIFO_DEPTH+2` | Maximum samples in flight |
+
+### Interface
+
+All streams use valid/ready handshakes, and `rst_n` is a synchronous
+active-low reset.
+
+| Port group | Signals | Purpose |
+| --- | --- | --- |
+| Weights | `weightData[N]`, `weightValid`, `weightReady`, `weightsLoaded` | Load matrix weights row by row |
+| Reload | `reloadWeights`, `reloadReady` | Replace weights once the pipeline is idle |
+| Input | `inputData[N]`, `targetData`, `trainingEnable`, `inputValid`, `inputReady` | Submit a sample, with a target if training |
+| Readout | `reductionWeight[N]`, `loadReductionWeights`, `reduceOutput` | Load and enable the scalar readout |
+| Mode | `passThrough` | Disable ReLU on all stages |
+| Output | `resultData[N]`, `resultValid`, `resultReady` | Read the result vector, or the scalar in lane 0 |
+
+**Loading weights.** Send each layer's rows from `N-1` down to `0`, layer 0
+first, for a total of `LAYERS*N` row handshakes. `weightsLoaded` goes high once
+all layers are in place. Computation waits for it.
+
+**Output format.** With `reduceOutput=0`, `resultData` carries the final
+activated vector with `(LAYERS+1)*FRACTION_BITS` fractional bits. With
+`reduceOutput=1`, lane 0 holds the scalar prediction, rescaled back to
+`FRACTION_BITS` fractional bits.
+
+**Result width.** Results grow with depth so that no precision is lost. Stage k
+has `WIDTH + k*(WIDTH + ceil(log2 N))` bits, and the output port adds another
+`ceil(log2 N)` bits. For example, WIDTH=8 and N=5 give a 44-bit output port.
+
+**Configuration.** Change `passThrough` and `reduceOutput`, and load readout
+weights, only while the accelerator is idle. Busy configuration attempts are
+rejected.
+
+[Fountain_Architecture_Specification.md](Fountain_Architecture_Specification.md)
+covers the exact handshake, stall, reset and timing rules.
+
+## Results
+
+### Simulation
+
+All tests pass in Questa:
+
+- 25 Python tests of the reference models: fixed-point arithmetic, timing,
+  stalls, reset, and finite-difference checks of the training update signs.
+- Matrix-stage testbenches covering N=3/5/9, one and three layers, WIDTH=8/16,
+  and several G/J settings, including results wider than 64 bits.
+- 3,545 cycle-by-cycle RTL/reference comparisons across four configurations.
+  Each one checks handshakes, results, every weight, and every output lane.
+
+### FPGA (Cyclone V, N=5, WIDTH=8, three layers)
+
+| Metric | Value |
+| --- | --- |
+| Logic | 6,296 ALMs |
+| Registers | 4,882 |
+| DSP blocks | 87 / 87 |
+| Memory | 2,490 bits (7 RAM blocks) |
+| Fmax | 71.0 MHz (100 MHz target not yet met) |
+
+The critical path runs from the last layer's column join through the
+activation and readout into the result FIFO. I/O pins are virtual, so these
+numbers describe the core and are not a board-level sign-off.
 
 ## Repository layout
 
-The implementation uses the existing file structure:
+```text
+weightStationaryVariant/
+  weightStationaryProcessingElement.sv   PE: MAC, stationary weight, update logic
+  weightStationarySystolicArray.sv       Center-out PE grid, routes, column joins
+  weightStationaryMatrixMultiplier.sv    Layer chain, weight loader, activation, collector
+  weightedVectorReduction.sv             Scalar readout
+  nnAccelerator.sv                       Top level: control, FIFO, training engine
+  *_tb.sv                                Testbenches
+memory/signedFifo.sv                     Result FIFO
+reference/                               Python functional and cycle-accurate models, tests
+scripts/                                 Simulation and comparison scripts
+Quartus Stuff/                           Quartus project for Cyclone V
+presentation/figures/                    Architecture diagrams
+```
 
-- `weightStationaryVariant/weightStationaryProcessingElement.sv`: MAC,
-  stationary weight, row loading and saturated update.
-- `weightStationaryVariant/weightStationarySystolicArray.sv`: center-out grid,
-  explicit column joins/routes, and the shared lane-delay helper.
-- `weightStationaryVariant/weightStationaryMatrixMultiplier.sv`: source skew,
-  direct stage chaining, multi-layer row loader, activation and final collector.
-- `weightStationaryVariant/nnAccelerator.sv`: public control/FIFO, one readout,
-  training admission barrier and serial backward engine.
-- `weightStationaryVariant/weightedVectorReduction.sv`: full-width readout and
-  an explicit configurable final shift.
-- `reference/` and `scripts/`: reference models and regressions.
-- `presentation/figures/01-architecture.svg`: current Fountain architecture,
-  with the existing visual style and light/dark themes. Other figures describe
-  the historical inward implementation.
+## Documentation
 
-The pre-Fountain implementation remains available in Git at `219a081`.
+- [Architecture specification](Fountain_Architecture_Specification.md):
+  dataflow, timing, arithmetic, interfaces, verification and physical results
+- [Learning analysis](Fountain_Three_Layer_Learning_Analysis.md): derivation
+  and validation of the multi-layer training rule
+
+## Limitations and future work
+
+- The 100 MHz timing target is not yet met on Cyclone V.
+- Only square layers with odd N are supported.
+- Training handles one sample at a time; only inference is fully pipelined.
+- It hasn't been shown yet how well training converges on a real workload. Do
+  not start ReLU networks from all-zero weights, because closed gates cannot
+  start learning.
+- Possible extensions include rectangular layers, requantization between
+  layers, per-lane backpressure, and tiling large layers onto fixed hardware.
+
+An earlier "inward" design, with data entering at two corners and meeting at
+the anti-diagonal, is preserved at commit `219a081`.
