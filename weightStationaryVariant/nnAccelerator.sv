@@ -4,9 +4,8 @@
 module nnAccelerator #(
     parameter int WIDTH=16, N=3, LAYERS=3, FRACTION_BITS=4,
     parameter int TARGET_WIDTH=WIDTH, REDUCTION_WEIGHT_WIDTH=8,
-    parameter int G=0, J=1,
     parameter int OUTPUT_FIFO_DEPTH=2*N,
-    parameter int IN_FLIGHT_DEPTH=LAYERS*(N+G+J+2)+OUTPUT_FIFO_DEPTH+2
+    parameter int IN_FLIGHT_DEPTH=LAYERS*(N+2)+OUTPUT_FIFO_DEPTH+2
 )(
     input logic clk, rst_n,
     input logic signed [WIDTH-1:0] weightData[N],
@@ -69,7 +68,7 @@ module nnAccelerator #(
     initial begin
         if (WIDTH<1 || N<3 || N%2==0 || LAYERS<1 || FRACTION_BITS<0 ||
             TARGET_WIDTH<1 || REDUCTION_WEIGHT_WIDTH<1 ||
-            IN_FLIGHT_DEPTH<1 || OUTPUT_FIFO_DEPTH<1 || G<0 || J<1)
+            IN_FLIGHT_DEPTH<1 || OUTPUT_FIFO_DEPTH<1)
             $fatal(1, "Fountain requires positive widths/depths and odd N>=3");
     end
     assign quiescent=outstanding==0 && !trainingPending && (!weightsLoaded || matrixReloadReady);
@@ -115,8 +114,7 @@ module nnAccelerator #(
     assign backwardSum=((backwardColumn==0)?BACK_SUM_WIDTH'('0):backwardAccumulator)+
         {{LG{backwardProduct[BACK_PRODUCT_WIDTH-1]}},backwardProduct};
 
-    weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS),
-        .G(G), .J(J)) matrixEngine (
+    weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS)) matrixEngine (
         .clk, .rst_n, .weightData, .weightValid, .weightReady,
         .inputData, .inputValid(matrixInputValid), .inputReady(matrixInputReady),
         .passThrough(modePassThrough), .rowDirection, .columnDirection, .matrixUpdateValid,

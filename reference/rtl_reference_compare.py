@@ -14,11 +14,10 @@ IN_FLIGHT_DEPTH=16
 OUTPUT_FIFO_DEPTH=2
 
 
-def configuration(layers=3,fraction_bits=0,g=0,j=1,n=N):
+def configuration(layers=3,fraction_bits=0,n=N):
     return CycleConfig(n=n,width=WIDTH,layers=layers,fraction_bits=fraction_bits,
         target_width=8,reduction_weight_width=8,
-        in_flight_depth=IN_FLIGHT_DEPTH,output_fifo_depth=OUTPUT_FIFO_DEPTH,
-        route_delay=g,join_latency=j)
+        in_flight_depth=IN_FLIGHT_DEPTH,output_fifo_depth=OUTPUT_FIFO_DEPTH)
 
 
 def encode(cycle,inputs,n=N):
@@ -216,7 +215,7 @@ def compare(stimulus,trace,config):
         accepted+=snapshot.accepted
         retired+=snapshot.retired
     print(f'PASS: {len(observed)} RTL edges, {len(names)} state fields, {accepted} admissions, {retired} retirements; '
-          f'N={config.n} LAYERS={config.layers} F={config.fraction_bits} G={config.route_delay} J={config.join_latency}.')
+          f'N={config.n} LAYERS={config.layers} F={config.fraction_bits}.')
 
 
 def main():
@@ -227,10 +226,8 @@ def main():
     parser.add_argument('--layers',type=int,default=3)
     parser.add_argument('--n',type=int,default=3)
     parser.add_argument('--fraction-bits',type=int,default=0)
-    parser.add_argument('--g',type=int,default=0)
-    parser.add_argument('--j',type=int,default=1)
     args=parser.parse_args()
-    config=configuration(args.layers,args.fraction_bits,args.g,args.j,args.n)
+    config=configuration(args.layers,args.fraction_bits,args.n)
     if args.command=='generate':
         driver=build(config)
         Path(args.stimulus).parent.mkdir(parents=True,exist_ok=True)

@@ -44,15 +44,19 @@ Inside a stage:
    both sides.
 2. Partial sums start from two seed rows at the center and travel vertically
    outward, upward and downward.
-3. A registered adder at the edge of each output column joins the upper and
+3. A combinational adder at the edge of each output column joins the upper and
    lower sums into a complete output.
 4. The output lanes keep the center-first timing and feed the next stage
    directly. A collector at the end aligns the lanes into a full vector.
 
 ### Latency
 
-With `h = (N-1)/2`, extra route stages `G`, and column-join latency `J`, each
-stage adds `D = h + 1 + G + J` cycles. For K stages, assuming no stalls:
+With `h = (N-1)/2`, each stage adds `D = h + 1` cycles. The column join has no
+register of its own: the upper and lower boundary PEs capture their sums, and
+the join, ReLU and the next stage's first multiply settle in the following
+cycle. For N=5, if a stage's first PE captures a product at edge 1, the
+boundary rows capture at edge 3 and the next stage's first PE captures at edge
+4. For K stages, assuming no stalls:
 
 | Event | Cycles after input is accepted |
 | --- | --- |
@@ -60,8 +64,8 @@ stage adds `D = h + 1 + G + J` cycles. For K stages, assuming no stalls:
 | Full vector in result FIFO | `K*D + h + 1` |
 | First result available | `K*D + h + 2` |
 
-Example: N=5, three layers, G=0, J=1. The output lanes are ready at cycles
-`[14,13,12,13,14]` and the first result comes out at cycle 16.
+Example: N=5, three layers. The output lanes are ready at cycles
+`[11,10,9,10,11]` and the first result comes out at cycle 13.
 
 ### Training
 
@@ -83,9 +87,11 @@ When a sample is submitted with `trainingEnable`, the accelerator:
    ```
 5. Resumes admitting samples.
 
+![Backpropagation path](presentation/figures/12-backprop-architecture.svg)
+
 Inference stays fully pipelined. Training handles one sample at a time.
-[Fountain_Three_Layer_Learning_Analysis.md](Fountain_Three_Layer_Learning_Analysis.md)
-derives the update rule.
+`reference/functional.py` is the executable statement of the update rule, and
+`reference/test_functional.py` checks its signs against finite differences.
 
 ## Getting started
 
@@ -112,7 +118,7 @@ To compare one configuration against the reference model:
 
 ```powershell
 pwsh -File scripts/run_rtl_reference_compare.ps1 -N 5 -Layers 3
-pwsh -File scripts/run_rtl_reference_compare.ps1 -FractionBits 2 -RouteStages 1 -JoinLatency 2
+pwsh -File scripts/run_rtl_reference_compare.ps1 -FractionBits 2
 ```
 
 ### Build for FPGA
@@ -123,7 +129,7 @@ quartus_sh --flow compile NN_Acceleration
 ```
 
 The Quartus project targets a Cyclone V `5CSEMA5F31C6` (DE1-SoC) at 100 MHz. It
-uses N=5, WIDTH=8, LAYERS=3, FRACTION_BITS=0, G=0 and J=1. These overrides
+uses N=5, WIDTH=8, LAYERS=3, FRACTION_BITS=0. These overrides
 differ from the RTL defaults.
 
 ## Using the accelerator
@@ -138,9 +144,8 @@ differ from the RTL defaults.
 | `FRACTION_BITS` | 4 | Fractional bits of inputs and weights |
 | `TARGET_WIDTH` | `WIDTH` | Training target width |
 | `REDUCTION_WEIGHT_WIDTH` | 8 | Readout coefficient width |
-| `G`, `J` | 0, 1 | Extra route stages, column-join latency |
 | `OUTPUT_FIFO_DEPTH` | `2*N` | Result buffer depth |
-| `IN_FLIGHT_DEPTH` | `LAYERS*(N+G+J+2)+OUTPUT_FIFO_DEPTH+2` | Maximum samples in flight |
+| `IN_FLIGHT_DEPTH` | `LAYERS*(N+2)+OUTPUT_FIFO_DEPTH+2` | Maximum samples in flight |
 
 ### Interface
 
@@ -173,8 +178,8 @@ has `WIDTH + k*(WIDTH + ceil(log2 N))` bits, and the output port adds another
 weights, only while the accelerator is idle. Busy configuration attempts are
 rejected.
 
-[Fountain_Architecture_Specification.md](Fountain_Architecture_Specification.md)
-covers the exact handshake, stall, reset and timing rules.
+The cycle-accurate model in `reference/cycle.py` defines the exact handshake,
+stall, reset and timing rules that the RTL is compared against.
 
 ## Results
 
@@ -185,11 +190,18 @@ All tests pass in Questa:
 - 25 Python tests of the reference models: fixed-point arithmetic, timing,
   stalls, reset, and finite-difference checks of the training update signs.
 - Matrix-stage testbenches covering N=3/5/9, one and three layers, WIDTH=8/16,
-  and several G/J settings, including results wider than 64 bits.
-- 3,545 cycle-by-cycle RTL/reference comparisons across four configurations.
+  including results wider than 64 bits.
+- 3,183 cycle-by-cycle RTL/reference comparisons across four configurations.
   Each one checks handshakes, results, every weight, and every output lane.
 
-### FPGA (Cyclone V, N=5, WIDTH=8, three layers)
+### FPGA (historical fit, earlier registered-join RTL)
+
+These numbers come from a Quartus fit of an earlier revision that registered
+each column join (one extra cycle per stage). They have not been re-measured
+for the current combinational-join RTL, which moves the join adder, ReLU and
+next-stage multiply into a single cycle; its timing is unknown.
+
+Configuration: Cyclone V, N=5, WIDTH=8, three layers.
 
 | Metric | Value |
 | --- | --- |
@@ -197,18 +209,18 @@ All tests pass in Questa:
 | Registers | 4,882 |
 | DSP blocks | 87 / 87 |
 | Memory | 2,490 bits (7 RAM blocks) |
-| Fmax | 71.0 MHz (100 MHz target not yet met) |
+| Fmax | 71.0 MHz (100 MHz target not met) |
 
-The critical path runs from the last layer's column join through the
-activation and readout into the result FIFO. I/O pins are virtual, so these
-numbers describe the core and are not a board-level sign-off.
+In that fit, the critical path ran from the last layer's column join through
+the activation and readout into the result FIFO. I/O pins are virtual, so
+these numbers describe the core and are not a board-level sign-off.
 
 ## Repository layout
 
 ```text
 weightStationaryVariant/
   weightStationaryProcessingElement.sv   PE: MAC, stationary weight, update logic
-  weightStationarySystolicArray.sv       Center-out PE grid, routes, column joins
+  weightStationarySystolicArray.sv       Center-out PE grid, combinational column joins
   weightStationaryMatrixMultiplier.sv    Layer chain, weight loader, activation, collector
   weightedVectorReduction.sv             Scalar readout
   nnAccelerator.sv                       Top level: control, FIFO, training engine
@@ -220,16 +232,11 @@ Quartus Stuff/                           Quartus project for Cyclone V
 presentation/figures/                    Architecture diagrams
 ```
 
-## Documentation
-
-- [Architecture specification](Fountain_Architecture_Specification.md):
-  dataflow, timing, arithmetic, interfaces, verification and physical results
-- [Learning analysis](Fountain_Three_Layer_Learning_Analysis.md): derivation
-  and validation of the multi-layer training rule
-
 ## Limitations and future work
 
-- The 100 MHz timing target is not yet met on Cyclone V.
+- Timing closure is not established. The last fit (registered join) reached
+  71.0 MHz against a 100 MHz target, and the current combinational-join RTL
+  has not been fitted.
 - Only square layers with odd N are supported.
 - Training handles one sample at a time; only inference is fully pipelined.
 - It hasn't been shown yet how well training converges on a real workload. Do

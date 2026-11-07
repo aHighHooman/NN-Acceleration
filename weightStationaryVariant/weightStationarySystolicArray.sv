@@ -1,10 +1,9 @@
-// Center-out PE network with explicit boundary-to-column joining routes.
+// Center-out PE network with combinational joins of registered boundary sums.
 module weightStationarySystolicArray #(
     parameter int N = 5,
     parameter int INPUT_WIDTH = 8,
     parameter int WIDTH = 8,
-    parameter int RESULT_WIDTH = INPUT_WIDTH+WIDTH+$clog2(N),
-    parameter int G = 0, J = 1
+    parameter int RESULT_WIDTH = INPUT_WIDTH+WIDTH+$clog2(N)
 )(
     input logic clk, rst_n, advance,
     input logic cfg_we,
@@ -23,7 +22,6 @@ module weightStationarySystolicArray #(
     localparam int INDEX_WIDTH = (N>1)?$clog2(N):1;
     logic [N-1:0] loaded_rows;
     logic accepted_cfg;
-    logic core_busy, route_busy[N][2], tail_busy[N], joined_valid[N];
     assign loaded = &loaded_rows;
     assign accepted_cfg = cfg_we && !busy && cfg_row<N;
     always_ff @(posedge clk) begin
@@ -48,7 +46,7 @@ module weightStationarySystolicArray #(
     logic activation_valids[N][N];
     logic signed [RESULT_WIDTH-1:0] sums[N][N];
     initial begin
-        if (N<3 || N%2==0 || RESULT_WIDTH<INPUT_WIDTH+WIDTH+$clog2(N) || G<0 || J<1)
+        if (N<3 || N%2==0 || RESULT_WIDTH<INPUT_WIDTH+WIDTH+$clog2(N))
             $fatal(1, "Fountain requires odd N>=3 and a full-width accumulator");
     end
     genvar i,j;
@@ -93,49 +91,28 @@ module weightStationarySystolicArray #(
     end
     endgenerate
     always_comb begin
-        core_busy = 0;
+        busy = 0;
         for (int i=0; i<N; i++)
-            for (int j=0; j<N; j++) core_busy |= activation_valids[i][j];
+            for (int j=0; j<N; j++) busy |= activation_valids[i][j];
     end
     generate
     for (j=0; j<N; j++) begin : columns
-        wire signed [RESULT_WIDTH-1:0] upper, lower;
-        wire uv, lv;
-        logic signed [RESULT_WIDTH-1:0] joined;
-        weightStationaryLaneDelay #(.WIDTH(RESULT_WIDTH), .DEPTH(G)) upper_route (
-            .clk, .rst_n, .advance, .in_data(sums[0][j]), .in_valid(activation_valids[0][j]),
-            .out_data(upper), .out_valid(uv), .busy(route_busy[j][0])
-        );
-        weightStationaryLaneDelay #(.WIDTH(RESULT_WIDTH), .DEPTH(G)) lower_route (
-            .clk, .rst_n, .advance, .in_data(sums[N-1][j]), .in_valid(activation_valids[N-1][j]),
-            .out_data(lower), .out_valid(lv), .busy(route_busy[j][1])
-        );
+        assign result[j] = sums[0][j] + sums[N-1][j];
+        assign resultValid[j] = activation_valids[0][j];
+        // The join and activation settle between boundary capture and the
+        // next layer's PE capture; there is no separate join register.
+        // synthesis translate_off
         always_ff @(posedge clk) begin
-            if (!rst_n) begin
-                joined <= '0;
-                joined_valid[j] <= 0;
-            end else if (advance) begin
-                joined <= upper + lower;
-                joined_valid[j] <= uv;
-                // synthesis translate_off
-                assert (uv==lv) else $fatal(1, "Fountain join valid mismatch");
-                // synthesis translate_on
-            end
+            if (rst_n && advance)
+                assert (activation_valids[0][j]==activation_valids[N-1][j])
+                    else $fatal(1, "Fountain join valid mismatch");
         end
-        weightStationaryLaneDelay #(.WIDTH(RESULT_WIDTH), .DEPTH(J-1)) tail (
-            .clk, .rst_n, .advance, .in_data(joined), .in_valid(joined_valid[j]),
-            .out_data(result[j]), .out_valid(resultValid[j]), .busy(tail_busy[j])
-        );
+        // synthesis translate_on
     end
     endgenerate
-    always_comb begin
-        busy = core_busy;
-        for (int j=0; j<N; j++)
-            busy |= route_busy[j][0] || route_busy[j][1] || joined_valid[j] || tail_busy[j];
-    end
 endmodule
 
-// Shared enabled-step lane storage for array routes and wrapper adapters.
+// Shared enabled-step lane storage for wrapper adapters.
 // A lane delay measured in enabled steps. DEPTH=0 is a real bypass.
 module weightStationaryLaneDelay #(
     parameter int WIDTH = 8,

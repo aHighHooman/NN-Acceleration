@@ -14,21 +14,15 @@ from .functional import ReferenceConfig, Sample, analyze, normalize_weights
 
 @dataclass(frozen=True)
 class CycleConfig(ReferenceConfig):
-    route_delay: int = 0
-    join_latency: int = 1
     in_flight_depth: int | None = None
     output_fifo_depth: int | None = None
 
     def __post_init__(self):
         super().__post_init__()
-        for name, minimum in (('route_delay',0), ('join_latency',1)):
-            value=getattr(self,name)
-            if not isinstance(value,int) or isinstance(value,bool) or value<minimum:
-                raise ValueError(f'invalid {name}')
         if self.output_fifo_depth is None:
             object.__setattr__(self,'output_fifo_depth',2*self.n)
         if self.in_flight_depth is None:
-            object.__setattr__(self,'in_flight_depth',self.layers*(self.n+self.route_delay+self.join_latency+2)+self.output_fifo_depth+2)
+            object.__setattr__(self,'in_flight_depth',self.layers*(self.n+2)+self.output_fifo_depth+2)
         for name in ('in_flight_depth','output_fifo_depth'):
             value=getattr(self,name)
             if not isinstance(value,int) or isinstance(value,bool) or value<1:
@@ -36,7 +30,7 @@ class CycleConfig(ReferenceConfig):
 
     @property
     def center_latency(self):
-        return self.n//2+1+self.route_delay+self.join_latency
+        return self.n//2+1
 
 
 @dataclass(frozen=True)
@@ -96,33 +90,19 @@ class _Layer:
         n=config.n
         self.act=[[None]*n for _ in range(n)]
         self.sums=[[None]*n for _ in range(n)]
-        self.joined=[None]*n
-        self.upper=[_Delay(config.route_delay) for _ in range(n)]
-        self.lower=[_Delay(config.route_delay) for _ in range(n)]
-        self.tail=[_Delay(config.join_latency-1) for _ in range(n)]
 
     def outputs(self):
-        return [delay.read(value) for delay,value in zip(self.tail,self.joined)]
+        return [_join(self.sums[0][j], self.sums[-1][j]) for j in range(self.config.n)]
 
     @property
     def busy(self):
-        return any(value is not None for row in self.act+self.sums for value in row) or any(
-            value is not None for value in self.joined) or any(
-            delay.busy for delay in self.upper+self.lower+self.tail)
+        return any(value is not None for row in self.act+self.sums for value in row)
 
     def tick(self, incoming):
         n=self.config.n
         c=n//2
         next_act=[[None]*n for _ in range(n)]
         next_sums=[[None]*n for _ in range(n)]
-        next_joined=[]
-        for j in range(n):
-            upper=self.sums[0][j]
-            lower=self.sums[-1][j]
-            next_joined.append(_join(self.upper[j].read(upper),self.lower[j].read(lower)))
-            self.upper[j].tick(upper)
-            self.lower[j].tick(lower)
-            self.tail[j].tick(self.joined[j])
         for i in range(n):
             for j in range(n):
                 activation=incoming[i] if j==c else self.act[i][j+1 if j<c else j-1]
@@ -138,7 +118,7 @@ class _Layer:
                     value=activation.value*self.weights[i][j]+(partial.value if partial else 0)
                     assert to_signed(value,self.aw)==value, 'MAC overflow'
                     next_sums[i][j]=Lane(value,activation.sample)
-        self.act,self.sums,self.joined=next_act,next_sums,next_joined
+        self.act,self.sums=next_act,next_sums
 
 
 @dataclass(frozen=True)

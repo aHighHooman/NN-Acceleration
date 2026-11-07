@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 // One input bundle per edge; Python owns the independent expected state.
 module nnAcceleratorStateTrace_tb #(
-    parameter int N=3, LAYERS=3, FRACTION_BITS=0, G=0, J=1
+    parameter int N=3, LAYERS=3, FRACTION_BITS=0
 );
     localparam int WIDTH=8;
     localparam int RAW_WIDTH=WIDTH+LAYERS*(WIDTH+$clog2(N));
@@ -16,7 +16,7 @@ module nnAcceleratorStateTrace_tb #(
     string stimulus_path,trace_path;
     always #5 clk=~clk;
     nnAccelerator #(.WIDTH(WIDTH),.N(N),.LAYERS(LAYERS),.FRACTION_BITS(FRACTION_BITS),
-        .G(G),.J(J),.IN_FLIGHT_DEPTH(16),.OUTPUT_FIFO_DEPTH(2)) dut(.*);
+        .IN_FLIGHT_DEPTH(16),.OUTPUT_FIFO_DEPTH(2)) dut(.*);
 
     for (genvar l=0; l<LAYERS; l++) begin : freeze_layer
         localparam int XW=WIDTH+l*(WIDTH+$clog2(N));

@@ -3,10 +3,10 @@
 // Identity comes from order: each lane sees vectors in admission order, so the
 // bench counts arrivals instead of trusting identity carried by the design.
 module weightStationaryMatrixMultiplier_testcase #(
-    parameter int N=5, WIDTH=8, LAYERS=3, G=0, J=1
+    parameter int N=5, WIDTH=8, LAYERS=3
 )(output logic done);
     localparam int AW=WIDTH+LAYERS*(WIDTH+$clog2(N));
-    localparam int D=N/2+1+G+J;
+    localparam int D=N/2+1;
     localparam int LIMIT=512;
     typedef logic signed [WIDTH-1:0] data_t;
     typedef logic signed [AW-1:0] result_t;
@@ -25,7 +25,7 @@ module weightStationaryMatrixMultiplier_testcase #(
     int laneArrivals[N], collectedArrivals;
     int unsigned randomState;
     always #5 clk=~clk;
-    weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS), .G(G), .J(J)) dut (
+    weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS)) dut (
         .clk, .rst_n, .weightData, .weightValid, .weightReady,
         .inputData, .inputValid, .inputReady, .passThrough,
         .rowDirection, .columnDirection, .matrixUpdateValid,
@@ -88,8 +88,8 @@ module weightStationaryMatrixMultiplier_testcase #(
                     sample=laneArrivals[j]++;
                     q=(j<N/2)?N/2-j:j-N/2;
                     if (sample>=acceptedCount || enabledStep-acceptedStep[sample]!=LAYERS*D+q)
-                        $fatal(1,"Fountain lane timing N=%0d L=%0d G=%0d J=%0d lane=%0d sample=%0d age=%0d expected=%0d",
-                            N,LAYERS,G,J,j,sample,enabledStep-acceptedStep[sample],LAYERS*D+q);
+                        $fatal(1,"Fountain lane timing N=%0d L=%0d lane=%0d sample=%0d age=%0d expected=%0d",
+                            N,LAYERS,j,sample,enabledStep-acceptedStep[sample],LAYERS*D+q);
                 end
                 if (resultValid) begin
                     int sample;
@@ -166,7 +166,7 @@ module weightStationaryMatrixMultiplier_testcase #(
         done=0; rst_n=0; weightValid=0; inputValid=0;
         resultReady=1; reloadWeights=0; passThrough=1; matrixUpdateValid=0;
         cycle=0; enabledStep=0; acceptedCount=0; retiredCount=0;
-        randomState=32'(N*913+LAYERS*43+G*7+J);
+        randomState=32'(N*913+LAYERS*43);
         for (int l=0; l<LAYERS; l++) for (int i=0; i<N; i++) begin rowDirection[l][i]=0; columnDirection[l][i]=0; end
         for (int i=0; i<N; i++) begin inputData[i]=0; weightData[i]=0; end
         reset_dut(); load_weights(0);
@@ -176,7 +176,7 @@ module weightStationaryMatrixMultiplier_testcase #(
         @(negedge clk); inputValid=1;
         @(posedge clk); #1;
         reset_dut(); load_weights(0); stream(8,0);
-        $display("PASS: Fountain matrix N=%0d WIDTH=%0d LAYERS=%0d G=%0d J=%0d arithmetic, lane timing, II=1, stalls, reset/reload",N,WIDTH,LAYERS,G,J);
+        $display("PASS: Fountain matrix N=%0d WIDTH=%0d LAYERS=%0d arithmetic, lane timing, II=1, stalls, reset/reload",N,WIDTH,LAYERS);
         done=1;
     end
 endmodule
@@ -186,8 +186,8 @@ module weightStationaryMatrixMultiplier_tb;
     weightStationaryMatrixMultiplier_testcase #(.N(3),.LAYERS(1)) a(done[0]);
     weightStationaryMatrixMultiplier_testcase #(.N(5),.LAYERS(1)) b(done[1]);
     weightStationaryMatrixMultiplier_testcase #(.N(5),.LAYERS(3)) c(done[2]);
-    weightStationaryMatrixMultiplier_testcase #(.N(5),.LAYERS(3),.G(1)) d(done[3]);
-    weightStationaryMatrixMultiplier_testcase #(.N(3),.WIDTH(16),.LAYERS(1),.J(2)) e(done[4]);
+    weightStationaryMatrixMultiplier_testcase #(.N(9),.LAYERS(3)) d(done[3]);
+    weightStationaryMatrixMultiplier_testcase #(.N(5),.WIDTH(16),.LAYERS(1)) e(done[4]);
     weightStationaryMatrixMultiplier_testcase #(.N(9),.LAYERS(1)) f(done[5]);
     weightStationaryMatrixMultiplier_testcase #(.N(3),.WIDTH(16),.LAYERS(3)) g(done[6]);
     initial begin wait(&done); $display("PASS: Fountain matrix regression"); $finish; end

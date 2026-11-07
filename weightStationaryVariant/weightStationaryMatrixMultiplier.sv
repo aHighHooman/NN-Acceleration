@@ -1,7 +1,7 @@
 // Fountain source, dedicated layer chain, row loader, and final collector.
 // Internal layers stay staggered. Only the external vector boundary is aligned.
 module weightStationaryMatrixMultiplier #(
-    parameter int WIDTH=16, N=3, LAYERS=1, G=0, J=1,
+    parameter int WIDTH=16, N=3, LAYERS=1,
     parameter int RESULT_WIDTH=WIDTH+LAYERS*(WIDTH+$clog2(N))
 )(
     input logic clk, rst_n,
@@ -41,7 +41,7 @@ module weightStationaryMatrixMultiplier #(
     wire collectedValid[N];
     logic skewBusy, pipelineBusy, collectorActive, allLoaded;
     initial begin
-        if (WIDTH<1 || N<3 || N%2==0 || LAYERS<1 || G<0 || J<1 ||
+        if (WIDTH<1 || N<3 || N%2==0 || LAYERS<1 ||
             RESULT_WIDTH!=WIDTH+LAYERS*STEP)
             $fatal(1, "Fountain requires WIDTH>=1, odd N>=3, LAYERS>=1 and exact widths");
     end
@@ -102,7 +102,7 @@ module weightStationaryMatrixMultiplier #(
             assign tapSign[l][j]=(activated==0)?2'sd0:(activated[AW-1]?-2'sd1:2'sd1);
         end
         weightStationarySystolicArray #(.N(N), .WIDTH(WIDTH), .INPUT_WIDTH(XW),
-            .RESULT_WIDTH(AW), .G(G), .J(J)) systolicArray (
+            .RESULT_WIDTH(AW)) systolicArray (
             .clk, .rst_n, .advance(arrayAdvance), .cfg_we(cfgWe[l]),
             .cfg_row(INDEX_WIDTH'(loadStep)), .cfg_data(cfgData),
             .update_valid(matrixUpdateValid), .row_direction(rowDirection[l]),

@@ -23,19 +23,18 @@ class CycleTests(unittest.TestCase):
     def test_raw_front_and_public_boundaries(self):
         for n in (3,5,9):
             for layers in (1,3,10):
-                for g,j in ((0,1),(1,1),(0,2)):
-                    cfg=CycleConfig(n=n,width=8,layers=layers,route_delay=g,join_latency=j)
-                    model=CycleReference(cfg,[identity(n)]*layers,[64]*n)
-                    model.step(CycleInputs(input_valid=True,input_data=tuple(range(1,n+1))))
-                    seen={}
-                    for _ in range(layers*cfg.center_latency+n+5):
-                        model.step()
-                        for index,lane in enumerate(model.lane_outputs()[-1]):
-                            if lane is not None: seen.setdefault(index,model.cycle-1)
-                    self.assertEqual([seen[i] for i in range(n)],
-                        [layers*cfg.center_latency+abs(i-n//2) for i in range(n)])
-                    self.assertEqual(model.timings[0].enqueued_at,layers*cfg.center_latency+n//2+1)
-                    self.assertEqual(model.timings[0].retired_at,layers*cfg.center_latency+n//2+2)
+                cfg=CycleConfig(n=n,width=8,layers=layers)
+                model=CycleReference(cfg,[identity(n)]*layers,[64]*n)
+                model.step(CycleInputs(input_valid=True,input_data=tuple(range(1,n+1))))
+                seen={}
+                for _ in range(layers*cfg.center_latency+n+5):
+                    model.step()
+                    for index,lane in enumerate(model.lane_outputs()[-1]):
+                        if lane is not None: seen.setdefault(index,model.cycle-1)
+                self.assertEqual([seen[i] for i in range(n)],
+                    [layers*cfg.center_latency+abs(i-n//2) for i in range(n)])
+                self.assertEqual(model.timings[0].enqueued_at,layers*cfg.center_latency+n//2+1)
+                self.assertEqual(model.timings[0].retired_at,layers*cfg.center_latency+n//2+2)
 
     def test_streaming_random_signed_vectors_and_bubbles(self):
         rng=random.Random(124)
@@ -167,8 +166,6 @@ class CycleTests(unittest.TestCase):
         layer=_Layer(cfg,0,identity(3))
         layer.tick([None,Lane(1,1),None])
         with self.assertRaisesRegex(AssertionError,'sample mismatch'): layer.tick([Lane(1,1),None,Lane(1,2)])
-        with self.assertRaises(ValueError): CycleConfig(route_delay=-1)
-        with self.assertRaises(ValueError): CycleConfig(join_latency=0)
 
 
 if __name__=='__main__': unittest.main()
