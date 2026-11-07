@@ -1,5 +1,5 @@
-// Fountain source, dedicated layer chain, row loader, and final collector.
-// Internal layers stay staggered. Only the external vector boundary is aligned.
+// Fountain source, dedicated layer chain and row loader. Every layer's lanes,
+// including the outputs, stay on the staggered center-first front.
 module weightStationaryMatrixMultiplier #(
     parameter int WIDTH=16, N=3, LAYERS=1,
     parameter int RESULT_WIDTH=WIDTH+LAYERS*(WIDTH+$clog2(N))
@@ -15,8 +15,8 @@ module weightStationaryMatrixMultiplier #(
     input logic signed [1:0] rowDirection[LAYERS][N], columnDirection[LAYERS][N],
     input logic matrixUpdateValid,
     output logic signed [RESULT_WIDTH-1:0] resultData[N],
-    output logic resultValid,
-    input logic resultReady,
+    output logic resultValid[N],
+    input logic outputBlocked,
     output logic weightsLoaded,
     input logic reloadWeights,
     output logic reloadReady, arrayAdvance,
@@ -32,14 +32,13 @@ module weightStationaryMatrixMultiplier #(
     logic loadingWeights, captureWeights, weightPush;
     logic signed [WIDTH-1:0] inputVectorData[N];
     logic inputVectorValid;
-    logic inputPush, inputPop, outputBlocked;
+    logic inputPush, inputPop;
     logic cfgWe[LAYERS];
     logic signed [WIDTH-1:0] cfgData[N];
     wire signed [RESULT_WIDTH-1:0] chainData[LAYERS+1][N];
     wire chainValid[LAYERS+1][N];
-    wire sourceBusy[N], collectorBusy[N], arrayBusy[LAYERS], arrayLoaded[LAYERS];
-    wire collectedValid[N];
-    logic skewBusy, pipelineBusy, collectorActive, allLoaded;
+    wire sourceBusy[N], arrayBusy[LAYERS], arrayLoaded[LAYERS];
+    logic skewBusy, pipelineBusy, allLoaded;
     initial begin
         if (WIDTH<1 || N<3 || N%2==0 || LAYERS<1 ||
             RESULT_WIDTH!=WIDTH+LAYERS*STEP)
@@ -50,16 +49,13 @@ module weightStationaryMatrixMultiplier #(
     assign inputReady=weightsLoaded && !(reloadWeights && reloadReady) &&
                       !matrixUpdateValid && (!inputVectorValid || inputPop);
     assign inputPush=inputValid && inputReady;
-    assign outputBlocked=resultValid && !resultReady;
     assign arrayAdvance=weightsLoaded && !outputBlocked;
     assign inputPop=inputVectorValid && arrayAdvance;
     assign reloadReady=weightsLoaded && !inputVectorValid && !skewBusy &&
-                       !pipelineBusy && !collectorActive && !resultValid && !matrixUpdateValid;
+                       !pipelineBusy && !matrixUpdateValid;
     always_comb begin
-        resultValid=1;
         skewBusy=0;
         pipelineBusy=0;
-        collectorActive=0;
         allLoaded=1;
         for (int l=0; l<LAYERS; l++) begin
             pipelineBusy |= arrayBusy[l];
@@ -67,10 +63,10 @@ module weightStationaryMatrixMultiplier #(
             cfgWe[l]=loadingWeights && loadLayer==l;
         end
         for (int j=0; j<N; j++) begin
-            resultValid &= collectedValid[j];
             skewBusy |= sourceBusy[j];
-            collectorActive |= collectorBusy[j];
             cfgData[j]=weightBuffer[loadLayer][loadStep][j];
+            resultData[j]=chainData[LAYERS][j];
+            resultValid[j]=chainValid[LAYERS][j];
         end
     end
     genvar i,l,j;
@@ -110,16 +106,6 @@ module weightStationaryMatrixMultiplier #(
             .in_data(laneInput), .in_valid(chainValid[l]),
             .result(raw), .resultValid(rawValid),
             .weights(weights[l]), .loaded(arrayLoaded[l]), .busy(arrayBusy[l])
-        );
-    end
-    for (j=0; j<N; j++) begin : collector
-        localparam int Q=(j<H)?H-j:j-H;
-        // Clamp only to let unsupported even dimensions elaborate far enough
-        // to report the parameter contract instead of an illegal array size.
-        weightStationaryLaneDelay #(.WIDTH(RESULT_WIDTH), .DEPTH((H>=Q)?H-Q:0)) align (
-            .clk, .rst_n, .advance(arrayAdvance),
-            .in_data(chainData[LAYERS][j]), .in_valid(chainValid[LAYERS][j]),
-            .out_data(resultData[j]), .out_valid(collectedValid[j]), .busy(collectorBusy[j])
         );
     end
     endgenerate
@@ -178,9 +164,6 @@ module weightStationaryMatrixMultiplier #(
             // synthesis translate_off
             if (captureWeights) assert (allLoaded)
                 else $fatal(1, "Fountain loader committed incomplete weights");
-            if (rst_n && arrayAdvance) for (int j=1; j<N; j++)
-                assert (collectedValid[j]==collectedValid[0])
-                    else $fatal(1, "Fountain collector valid mismatch");
             // synthesis translate_on
         end
     end

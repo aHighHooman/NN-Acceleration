@@ -24,15 +24,15 @@ def encode(cycle,inputs,n=N):
     return [cycle,int(inputs.reset_n),int(inputs.weight_valid),*(inputs.weight_data or (0,)*n),
         int(inputs.input_valid),*(inputs.input_data or (0,)*n),inputs.target_data,
         int(inputs.training_enable),int(inputs.result_ready),*(inputs.reduction_weight or (0,)*n),
-        int(inputs.load_reduction_weights),int(inputs.reload_weights),int(inputs.pass_through),int(inputs.reduce_output)]
+        int(inputs.load_reduction_weights),int(inputs.reload_weights),int(inputs.pass_through)]
 
 
 def decode(row,n=N):
-    if len(row)!=11+3*n: raise ValueError('wrong stimulus column count')
+    if len(row)!=10+3*n: raise ValueError('wrong stimulus column count')
     return row[0],CycleInputs(reset_n=bool(row[1]),weight_valid=bool(row[2]),weight_data=tuple(row[3:3+n]),
         input_valid=bool(row[3+n]),input_data=tuple(row[4+n:4+2*n]),target_data=row[4+2*n],training_enable=bool(row[5+2*n]),
         result_ready=bool(row[6+2*n]),reduction_weight=tuple(row[7+2*n:7+3*n]),load_reduction_weights=bool(row[7+3*n]),
-        reload_weights=bool(row[8+3*n]),pass_through=bool(row[9+3*n]),reduce_output=bool(row[10+3*n]))
+        reload_weights=bool(row[8+3*n]),pass_through=bool(row[9+3*n]))
 
 
 class Driver:
@@ -40,13 +40,11 @@ class Driver:
         self.model=CycleReference(config)
         self.lines=[]
         self.pass_through=True
-        self.reduce_output=False
         self.scenarios=[]
 
     def tick(self,**kwargs):
         if 'pass_through' in kwargs: self.pass_through=kwargs['pass_through']
-        if 'reduce_output' in kwargs: self.reduce_output=kwargs['reduce_output']
-        values=dict(pass_through=self.pass_through,reduce_output=self.reduce_output)
+        values=dict(pass_through=self.pass_through)
         values.update(kwargs)
         n=self.model.config.n
         for field in ('input_data','reduction_weight'):
@@ -122,8 +120,8 @@ def build(config):
     driver.pass_through=True
     driver.drain()
     assert driver.model.configuration_error and driver.model.R==before
-    driver.mark('quiescent scalar mode and ReLU')
-    driver.tick(pass_through=False,reduce_output=True)
+    driver.mark('quiescent ReLU mode')
+    driver.tick(pass_through=False)
     for _ in range(15): driver.offer([rng.randint(-8,8) for _ in range(n)])
     driver.drain()
     driver.mark('reload wins over simultaneous input')
@@ -146,7 +144,6 @@ def build(config):
     matrices[-1][0][1]=-1
     matrices[-1][1][1]=2
     driver.pass_through=False
-    driver.reduce_output=False
     driver.load(matrices,[1,3]+[0]*(n-2))
     for target in (1,-1,127):
         driver.offer((1,1,1),target=target,training=True)
@@ -176,7 +173,6 @@ def build(config):
         while not driver.model.fifo: driver.tick()
     driver.tick(reset_n=False)
     driver.pass_through=True
-    driver.reduce_output=True
     driver.mark('negative extrema and saturation')
     matrices=[[[(-128 if (i+j+l)%2 else 127) for j in range(n)] for i in range(n)] for l in range(config.layers)]
     driver.load(matrices,[-128,127,-128])
@@ -190,11 +186,11 @@ def build(config):
 
 def labels(config):
     n=config.n
-    result=['weightReady','inputReady','resultValid','weightsLoaded','reloadReady','trainingPending']
-    result += [f'resultData[{i}]' for i in range(n)]
+    result=['weightReady','inputReady','resultValid','weightsLoaded','reloadReady','trainingPending','resultData']
     result += [f'W[{l}][{i}][{j}]' for l in range(config.layers) for i in range(n) for j in range(n)]
     result += [f'r[{i}]' for i in range(n)]
     result += [f'lane[{l}][{i}].{field}' for l in range(config.layers) for i in range(n) for field in ('valid','value')]
+    result += ['prediction.valid','prediction.value']
     return ['cycle','accepted','retired']+result
 
 

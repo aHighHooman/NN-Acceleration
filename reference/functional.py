@@ -18,7 +18,6 @@ class ReferenceConfig:
     target_width: int | None = None
     reduction_weight_width: int = 8
     pass_through: bool = True
-    reduce_output: bool = False
 
     def __post_init__(self):
         for name in ('n', 'width', 'layers', 'reduction_weight_width'):

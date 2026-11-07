@@ -16,8 +16,8 @@ module nnAccelerator #(
     input logic trainingEnable, inputValid,
     output logic inputReady,
     input logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N],
-    input logic loadReductionWeights, passThrough, reduceOutput,
-    output logic signed [WIDTH+LAYERS*(WIDTH+$clog2(N))+$clog2(N)-1:0] resultData[N],
+    input logic loadReductionWeights, passThrough,
+    output logic signed [WIDTH+LAYERS*(WIDTH+$clog2(N))+$clog2(N)-1:0] resultData,
     output logic resultValid,
     input logic resultReady,
     output logic weightsLoaded,
@@ -30,27 +30,22 @@ module nnAccelerator #(
     localparam int SENS_WIDTH=REDUCTION_WEIGHT_WIDTH+(LAYERS-1)*(WIDTH+LG);
     localparam int BACK_PRODUCT_WIDTH=WIDTH+SENS_WIDTH;
     localparam int BACK_SUM_WIDTH=BACK_PRODUCT_WIDTH+LG;
-    localparam int RESULT_ENTRY_WIDTH=N*MATRIX_RESULT_WIDTH+PREDICTION_WIDTH;
     localparam int COUNT_WIDTH=$clog2(IN_FLIGHT_DEPTH+1);
     localparam int COMPARE_WIDTH=(PREDICTION_WIDTH>TARGET_WIDTH)?PREDICTION_WIDTH:TARGET_WIDTH;
-    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0] R_MIN={1'b1,{(REDUCTION_WEIGHT_WIDTH-1){1'b0}}};
-    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0] R_MAX={1'b0,{(REDUCTION_WEIGHT_WIDTH-1){1'b1}}};
-    localparam logic signed [REDUCTION_WEIGHT_WIDTH-1:0] R_ONE={{(REDUCTION_WEIGHT_WIDTH-1){1'b0}},1'b1};
     typedef enum logic [1:0] {IDLE, BACKWARD, APPLY} training_state_t;
     training_state_t trainingState;
-    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] residentReductionWeight[N];
+    wire signed [REDUCTION_WEIGHT_WIDTH-1:0] residentReductionWeight[N];
     wire signed [WIDTH-1:0] residentWeights[LAYERS][N][N];
     wire signed [MATRIX_RESULT_WIDTH-1:0] activatedMatrixResultData[N];
-    wire matrixResultValid, matrixInputReady, matrixReloadReady, arrayAdvance;
-    logic matrixInputValid, matrixResultReady, matrixUpdateValid, samplePush;
-    logic resultFifoPush, resultFifoPop, resultFifoCanAccept;
+    wire matrixResultValid[N];
+    wire matrixInputReady, matrixReloadReady, arrayAdvance, predictionValid;
+    logic matrixInputValid, matrixUpdateValid, samplePush;
+    logic resultFifoPop, resultFifoCanAccept;
     wire resultFifoFull, resultFifoEmpty;
-    logic signed [RESULT_ENTRY_WIDTH-1:0] resultFifoPushData;
-    wire signed [RESULT_ENTRY_WIDTH-1:0] resultFifoHead;
-    wire signed [PREDICTION_WIDTH-1:0] enqueuePrediction, prediction;
+    wire signed [PREDICTION_WIDTH-1:0] prediction;
     logic [COUNT_WIDTH-1:0] outstanding;
     logic trainingPending, configurationError;
-    logic modePassThrough, modeReduceOutput, quiescent, reloadAccepted, sampleCanAccept;
+    logic modePassThrough, quiescent, reloadAccepted, sampleCanAccept;
     logic signed [TARGET_WIDTH-1:0] savedTarget;
     logic signed [1:0] inputSigns[LAYERS][N], finalSigns[N];
     logic activationGates[LAYERS][N];
@@ -82,21 +77,10 @@ module nnAccelerator #(
     assign resultValid=!resultFifoEmpty;
     assign resultFifoPop=resultValid && resultReady;
     assign resultFifoCanAccept=!resultFifoFull || resultFifoPop;
-    assign matrixResultReady=resultFifoCanAccept;
-    assign resultFifoPush=matrixResultValid && matrixResultReady;
     assign matrixUpdateValid=trainingState==APPLY;
-    assign prediction=resultFifoHead[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH];
     assign compareTarget=savedTarget;
-    assign comparePrediction=prediction;
+    assign comparePrediction=resultData;
     always_comb begin
-        resultFifoPushData='0;
-        for (int j=0; j<N; j++) begin
-            resultFifoPushData[j*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH]=activatedMatrixResultData[j];
-            if (modeReduceOutput) resultData[j]=(j==0)?prediction:PREDICTION_WIDTH'('0);
-            else resultData[j]={{LG{resultFifoHead[j*MATRIX_RESULT_WIDTH+MATRIX_RESULT_WIDTH-1]}},
-                               resultFifoHead[j*MATRIX_RESULT_WIDTH +: MATRIX_RESULT_WIDTH]};
-        end
-        resultFifoPushData[N*MATRIX_RESULT_WIDTH +: PREDICTION_WIDTH]=enqueuePrediction;
         for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++) begin
             rowDirection[l][j]=inputSigns[l][j];
             if (learningDirection==0 || sensitivity[l][j]==0) columnDirection[l][j]=0;
@@ -119,20 +103,24 @@ module nnAccelerator #(
         .inputData, .inputValid(matrixInputValid), .inputReady(matrixInputReady),
         .passThrough(modePassThrough), .rowDirection, .columnDirection, .matrixUpdateValid,
         .resultData(activatedMatrixResultData), .resultValid(matrixResultValid),
-        .resultReady(matrixResultReady), .weightsLoaded, .reloadWeights(reloadAccepted),
+        .outputBlocked(predictionValid && !resultFifoCanAccept), .weightsLoaded,
+        .reloadWeights(reloadAccepted),
         .reloadReady(matrixReloadReady), .arrayAdvance, .weights(residentWeights),
         .tapValid, .tapGate, .tapSign
     );
-    // Only one scalar readout, after all matrix stages and the final collector.
+    // One scalar readout on the last stage's lanes; it advances with the array.
     weightedVectorReduction #(.MATRIX_RESULT_WIDTH(MATRIX_RESULT_WIDTH),
-        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH), .N(N), .FRACTION_BITS(FRACTION_BITS),
-        .RESCALE_SHIFT(LAYERS*FRACTION_BITS+REDUCTION_WEIGHT_WIDTH-1)) weightedReadoutAtMatrixResult (
-        .inputData(activatedMatrixResultData), .reductionWeight(residentReductionWeight),
-        .prediction(enqueuePrediction)
+        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH), .N(N),
+        .RESCALE_SHIFT(LAYERS*FRACTION_BITS+REDUCTION_WEIGHT_WIDTH-1)) reductionColumn (
+        .clk, .rst_n, .advance(arrayAdvance),
+        .cfg_we(loadReductionWeights && quiescent), .cfg_data(reductionWeight),
+        .update_valid(matrixUpdateValid), .row_direction(finalSigns), .column_direction(learningDirection),
+        .in_data(activatedMatrixResultData), .in_valid(matrixResultValid),
+        .prediction, .predictionValid, .weights(residentReductionWeight)
     );
-    signedFifo #(.WIDTH(RESULT_ENTRY_WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)) resultFifo (
-        .clk, .rst_n, .push(resultFifoPush), .pushData(resultFifoPushData),
-        .pop(resultFifoPop), .popData(resultFifoHead), .full(resultFifoFull), .empty(resultFifoEmpty)
+    signedFifo #(.WIDTH(PREDICTION_WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)) resultFifo (
+        .clk, .rst_n, .push(predictionValid), .pushData(prediction),
+        .pop(resultFifoPop), .popData(resultData), .full(resultFifoFull), .empty(resultFifoEmpty)
     );
 
     always_ff @(posedge clk) begin
@@ -143,14 +131,12 @@ module nnAccelerator #(
             savedTarget<='0;
             learningDirection<=0;
             modePassThrough<=0;
-            modeReduceOutput<=0;
             configurationError<=0;
             backwardLayer<=0;
             backwardRow<=0;
             backwardColumn<=0;
             backwardAccumulator<='0;
             for (int j=0; j<N; j++) begin
-                residentReductionWeight[j]<='0;
                 finalSigns[j]<=0;
                 for (int l=0; l<LAYERS; l++) begin
                     inputSigns[l][j]<=0;
@@ -159,15 +145,8 @@ module nnAccelerator #(
                 end
             end
         end else begin
-            if (quiescent) begin
-                modePassThrough<=passThrough;
-                modeReduceOutput<=reduceOutput;
-            end else if (passThrough!=modePassThrough || reduceOutput!=modeReduceOutput)
-                configurationError<=1;
-            if (loadReductionWeights) begin
-                if (quiescent) for (int j=0; j<N; j++) residentReductionWeight[j]<=reductionWeight[j];
-                else configurationError<=1;
-            end
+            if (quiescent) modePassThrough<=passThrough;
+            else if (passThrough!=modePassThrough || loadReductionWeights) configurationError<=1;
             case ({samplePush,resultFifoPop})
                 2'b10: outstanding<=outstanding+1'b1;
                 2'b01: outstanding<=outstanding-1'b1;
@@ -219,12 +198,6 @@ module nnAccelerator #(
                     end
                 end
                 APPLY: if (arrayAdvance) begin
-                    for (int j=0; j<N; j++) if (learningDirection!=0 && finalSigns[j]!=0) begin
-                        if (learningDirection==finalSigns[j] && residentReductionWeight[j]!=R_MAX)
-                            residentReductionWeight[j]<=residentReductionWeight[j]+R_ONE;
-                        else if (learningDirection!=finalSigns[j] && residentReductionWeight[j]!=R_MIN)
-                            residentReductionWeight[j]<=residentReductionWeight[j]-R_ONE;
-                    end
                     trainingPending<=0;
                     trainingState<=IDLE;
                 end
@@ -234,7 +207,7 @@ module nnAccelerator #(
             if (resultFifoPop) assert (outstanding!=0) else $fatal(1, "Unsolicited result");
             if (trainingState!=IDLE) assert (outstanding==0 && resultFifoEmpty &&
                 !matrixEngine.inputVectorValid && !matrixEngine.skewBusy &&
-                !matrixEngine.pipelineBusy && !matrixEngine.collectorActive && !matrixResultValid)
+                !matrixEngine.pipelineBusy && reductionColumn.activationValid=='0)
                 else $fatal(1, "Learning barrier did not drain");
             if (trainingState==BACKWARD && backwardColumn==N-1)
                 assert (backwardSum=={{(BACK_SUM_WIDTH-SENS_WIDTH){backwardSum[SENS_WIDTH-1]}},backwardSum[SENS_WIDTH-1:0]})

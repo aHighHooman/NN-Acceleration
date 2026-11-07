@@ -112,8 +112,8 @@ module weightStationarySystolicArray #(
     endgenerate
 endmodule
 
-// Shared enabled-step lane storage for wrapper adapters.
-// A lane delay measured in enabled steps. DEPTH=0 is a real bypass.
+// A lane delay measured in enabled steps, used by the source skew. DEPTH=0 is a
+// real bypass.
 module weightStationaryLaneDelay #(
     parameter int WIDTH = 8,
     parameter int DEPTH = 0

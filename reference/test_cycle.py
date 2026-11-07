@@ -2,7 +2,7 @@
 from dataclasses import replace
 import random
 import unittest
-from reference.cycle import CycleConfig,CycleInputs,CycleReference,Lane,_Layer
+from reference.cycle import CycleConfig,CycleInputs,CycleReference,Lane,_Layer,_Reduction
 from reference.functional import FunctionalReference,Sample
 
 
@@ -33,8 +33,9 @@ class CycleTests(unittest.TestCase):
                         if lane is not None: seen.setdefault(index,model.cycle-1)
                 self.assertEqual([seen[i] for i in range(n)],
                     [layers*cfg.center_latency+abs(i-n//2) for i in range(n)])
-                self.assertEqual(model.timings[0].enqueued_at,layers*cfg.center_latency+n//2+1)
-                self.assertEqual(model.timings[0].retired_at,layers*cfg.center_latency+n//2+2)
+                # The readout column is one more stage on the same lane front.
+                self.assertEqual(model.timings[0].enqueued_at,(layers+1)*cfg.center_latency+1)
+                self.assertEqual(model.timings[0].retired_at,(layers+1)*cfg.center_latency+2)
 
     def test_streaming_random_signed_vectors_and_bubbles(self):
         rng=random.Random(124)
@@ -166,6 +167,27 @@ class CycleTests(unittest.TestCase):
         layer=_Layer(cfg,0,identity(3))
         layer.tick([None,Lane(1,1),None])
         with self.assertRaisesRegex(AssertionError,'sample mismatch'): layer.tick([Lane(1,1),None,Lane(1,2)])
+        column=_Reduction(cfg)
+        column.tick([None,Lane(1,1),None],[1,1,1])
+        with self.assertRaisesRegex(AssertionError,'readout valid mismatch'): column.tick([None,None,None],[1,1,1])
+        column=_Reduction(cfg)
+        column.tick([None,Lane(1,1),None],[1,1,1])
+        with self.assertRaisesRegex(AssertionError,'readout sample mismatch'): column.tick([Lane(1,1),None,Lane(1,2)],[1,1,1])
+
+    def test_reduction_column_matches_dense_sum_on_the_lane_front(self):
+        rng=random.Random(5)
+        for n in (3,5,9):
+            c=n//2
+            cfg=CycleConfig(n=n,layers=1)
+            weights=[rng.randint(-128,127) for _ in range(n)]
+            values=[rng.randint(-1000,1000) for _ in range(n)]
+            column=_Reduction(cfg)
+            for step in range(c+1):
+                self.assertIsNone(column.output())
+                column.tick([Lane(values[i],7) if abs(i-c)==step else None for i in range(n)],weights)
+            self.assertEqual(column.output(),Lane(sum(v*r for v,r in zip(values,weights)),7))
+            column.tick([None]*n,weights)
+            self.assertFalse(column.busy)
 
 
 if __name__=='__main__': unittest.main()

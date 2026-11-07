@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1700 1290" width="1700" height="1290" role="img" aria-labelledby="title desc">
 <title id="title">nnAccelerator architecture — three-layer Fountain</title>
-<desc id="desc">RTL architecture at N=3, LAYERS=3, WIDTH=16, F=4. Host weight rows are staged for all three layers, then written one row per clock into the resident PEs before a single commit. A one-entry input register feeds a source skew with lane delays one, zero, one. In each stage activations enter the center column and move outward horizontally; partial sums start at two seed rows and move outward vertically; a combinational join adds the upper and lower boundary sums of each column, then ReLU or pass-through is applied. The staggered lanes chain directly into stages two and three. A final collector aligns the vector at edge seven; one weighted readout forms the scalar prediction and the result FIFO holds the activated vector and prediction. A single pending training sample blocks admission; at its retirement the training engine computes the error sign, serial backward sensitivities and one atomic saturating sign update of every matrix and readout weight.</desc>
+<desc id="desc">RTL architecture at N=3, LAYERS=3, WIDTH=16, F=4. Host weight rows are staged for all three layers, then written one row per clock into the resident PEs before a single commit. A one-entry input register feeds a source skew with lane delays one, zero, one. In each stage activations enter the center column and move outward horizontally; partial sums start at two seed rows and move outward vertically; a combinational join adds the upper and lower boundary sums of each column, then ReLU or pass-through is applied. The staggered lanes chain directly into stages two and three. The third stage's staggered lanes enter a final N-by-1 column of PEs, whose combinational join forms the scalar prediction; the result FIFO holds the prediction. A single pending training sample blocks admission; at its retirement the training engine computes the error sign, serial backward sensitivities and one atomic saturating sign update of every matrix and readout weight.</desc>
 <style>
 svg{--paper:#F3F5F3; --panel:#FFFFFF; --ink:#15191C; --ink-2:#48525A; --ink-3:#7A848B;
   --rule:#D5DBD8; --grid:#E5E9E6;
@@ -190,31 +190,27 @@ text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{fo
 <circle cx="1005" cy="868" r="3.5" class="fs"/>
 <text x="1010" y="610" class="ms wire-label">W₂ W₃</text>
 <path d="M560,895 L560,925" class="ld" marker-end="url(#d)"/>
-<path d="M560,980 L560,1000" class="ld" marker-end="url(#d)"/>
+<path d="M560,980 L560,1025" class="ld"/>
 <path d="M700,895 L700,925" class="ld" marker-end="url(#d)"/>
-<path d="M700,980 L700,1000" class="ld" marker-end="url(#d)"/>
+<path d="M700,980 L700,1025" class="ld"/>
 <path d="M840,895 L840,925" class="ld" marker-end="url(#d)"/>
-<path d="M840,980 L840,1000" class="ld" marker-end="url(#d)"/>
+<path d="M840,980 L840,1025" class="ld"/>
 <rect x="280" y="690" width="160" height="92" rx="5" class="bx2"/>
 <text x="292" y="712" class="b">Key</text>
 <text x="292" y="738" class="ms tdata">shaded</text>
 <text x="352" y="738" class="ms">starts a sum</text>
 <text x="292" y="759" class="ms tdata">+</text>
 <text x="352" y="759" class="ms">comb. join</text>
-<rect x="512" y="1000" width="376" height="50" rx="5" class="bx2"/>
-<text x="524" y="1030" class="b">Final collector</text>
-<rect x="688" y="1013" width="24" height="24" rx="2" class="bxd"/>
-<text x="700" y="1030" class="ms mid">D</text>
-<path d="M700,1000 L700,1013" class="ld"/>
-<path d="M888,1025 L1250,1025" class="halo"/>
-<path d="M888,1025 L1250,1025" class="ld" marker-end="url(#d)"/>
-<text x="900" y="1018" class="ms tdata wire-label">a₃[N]</text>
+<path d="M560,1025 L1100,1025 L1100,1036" class="halo"/>
+<path d="M560,1025 L1100,1025 L1100,1036" class="ld" marker-end="url(#d)"/>
+<circle cx="700" cy="1025" r="3.5" class="fd"/>
+<circle cx="840" cy="1025" r="3.5" class="fd"/>
+<text x="572" y="1049" class="ms tdata wire-label">a₃[N] · center-first lanes, no realignment</text>
 <rect x="1020" y="95" width="420" height="65" rx="5" class="bx"/>
-<text x="1230" y="120" class="b mid">Admission, advance &amp; modes</text>
-<text x="1230" y="145" class="ms mid">modes latched while quiescent</text>
+<text x="1230" y="120" class="b mid">Admission, advance &amp; mode</text>
+<text x="1230" y="145" class="ms mid">mode latched while quiescent</text>
 <rect x="1480" y="92" width="200" height="72" rx="5" class="bx2"/>
-<text x="1580.0" y="122" class="m mid">passThrough</text>
-<text x="1580.0" y="144" class="m mid">reduceOutput</text>
+<text x="1580.0" y="133" class="m mid">passThrough</text>
 <path d="M1480,128 L1440,128" class="ls" marker-end="url(#s)"/>
 <path d="M1020,140 L905,140 L905,255" class="halo"/>
 <path d="M1020,140 L905,140 L905,255" class="lk" marker-end="url(#k)"/>
@@ -252,7 +248,7 @@ text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{fo
 <text x="271" y="1090" class="ms wire-label">sgn x</text>
 <rect x="1020" y="690" width="190" height="60" rx="5" class="bxs"/>
 <text x="1115.0" y="716" class="b mid">Resident r[N]</text>
-<text x="1115.0" y="736" class="ms mid">8-bit Q0.7</text>
+<text x="1115.0" y="736" class="ms mid">in column PEs · Q0.7</text>
 <path d="M1080,690 L1080,535" class="ls" marker-end="url(#s)"/>
 <text x="1086" y="616" class="ms wire-label">r</text>
 <path d="M1160,535 L1160,690" class="ll" marker-end="url(#l)"/>
@@ -262,30 +258,24 @@ text{font-size:15px}.m{font-size:14px}.s{font-size:13px}.ms{font-size:12px}.h{fo
 <text x="1580.0" y="735" class="ms mid">loadReductionWeights</text>
 <path d="M1480,720 L1210,720" class="halo"/>
 <path d="M1480,720 L1210,720" class="ls" marker-end="url(#s)"/>
-<rect x="1020" y="1048" width="190" height="62" rx="5" class="bxd"/>
-<text x="1115.0" y="1073" class="b mid">weightedVectorReduction</text>
-<text x="1115.0" y="1096" class="m mid">ŷ = (Σ rⱼ·a₃ⱼ) ≫ 19</text>
-<circle cx="1130" cy="1025" r="3.5" class="fd"/>
-<path d="M1130,1025 L1130,1048" class="ld" marker-end="url(#d)"/>
-<path d="M1060,750 L1060,1048" class="halo"/>
-<path d="M1060,750 L1060,1048" class="ls" marker-end="url(#s)"/>
+<rect x="1020" y="1036" width="190" height="86" rx="5" class="bxd"/>
+<text x="1115.0" y="1059" class="b mid">weightedVectorReduction</text>
+<text x="1115.0" y="1081" class="ms mid">N×1 PE column</text>
+<text x="1115.0" y="1106" class="m mid">ŷ = (Σ rⱼ·a₃ⱼ) ≫ 19</text>
+<path d="M1060,750 L1060,1036" class="halo"/>
+<path d="M1060,750 L1060,1036" class="ls" marker-end="url(#s)"/>
 <path d="M1210,1083 L1250,1083" class="ld" marker-end="url(#d)"/>
 <text x="1214" y="1077" class="m tdata wire-label">ŷ</text>
 <rect x="1250" y="985" width="190" height="125" rx="5" class="bxs"/>
 <text x="1345.0" y="1014" class="b mid">resultFifo · depth 6</text>
-<text x="1345.0" y="1048" class="m mid">{a₃[N], ŷ}</text>
+<text x="1345.0" y="1048" class="m mid">ŷ</text>
 <text x="1345.0" y="1082" class="ms mid">full → stalls array</text>
 <path d="M1420,985 L1420,535" class="ls" marker-end="url(#s)"/>
 <text x="1414" y="616" class="ms wire-label" text-anchor="end">pop · ŷ</text>
-<rect x="1250" y="1135" width="190" height="75" rx="5" class="bx"/>
-<text x="1345.0" y="1157" class="b mid">Output select</text>
-<text x="1345.0" y="1178" class="ms mid">reduceOutput ?</text>
-<text x="1345.0" y="1197" class="m mid">{ŷ, 0, 0} : a₃[N]</text>
-<path d="M1345.0,1110 L1345.0,1135" class="ld" marker-end="url(#d)"/>
+<path d="M1345,1110 L1345,1172 L1480,1172" class="ld" marker-end="url(#d)"/>
 <rect x="1480" y="1135" width="200" height="75" rx="5" class="bx2"/>
-<text x="1580.0" y="1164" class="b mid">resultData[N]</text>
+<text x="1580.0" y="1164" class="b mid">resultData</text>
 <text x="1580.0" y="1186" class="ms mid">resultValid / resultReady</text>
-<path d="M1440,1172 L1480,1172" class="ld" marker-end="url(#d)"/>
 <text x="25" y="1270" class="s tdata">Blue: activations</text>
 <text x="170" y="1270" class="s tsum">Teal: partial sums</text>
 <text x="330" y="1270" class="s tlearn">Orange: learning</text>

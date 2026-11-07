@@ -17,8 +17,8 @@ re-skewing it. Each extra layer therefore adds only a small, fixed delay.
 ## Features
 
 - **Multi-layer network in hardware.** A configurable chain of `LAYERS` N×N
-  matrix stages (three by default), each followed by ReLU or pass-through. An
-  optional weighted scalar readout follows the last stage.
+  matrix stages (three by default), each followed by ReLU or pass-through. A
+  final Nx1 column of PEs reduces the last stage to one scalar prediction.
 - **Pipelined inference.** Accepts up to one input vector per clock. A result
   FIFO and a single global stall signal handle downstream backpressure.
 - **On-chip training.** Backpropagates full error sensitivities through every
@@ -35,7 +35,7 @@ grid of processing elements (PEs) and computes:
 
 ```text
 a[layer+1] = activation(a[layer] * W[layer])
-prediction = sum(a[last][j] * r[j])          (optional scalar readout)
+prediction = sum(a[last][j] * r[j])          (scalar readout)
 ```
 
 Inside a stage:
@@ -47,7 +47,11 @@ Inside a stage:
 3. A combinational adder at the edge of each output column joins the upper and
    lower sums into a complete output.
 4. The output lanes keep the center-first timing and feed the next stage
-   directly. A collector at the end aligns the lanes into a full vector.
+   directly.
+
+The readout works the same way, as an Nx1 column of PEs holding `r`. Each row
+takes one lane of the last stage as it arrives, and the two sum chains join into
+the prediction, so no lane is ever realigned into a vector.
 
 ### Latency
 
@@ -60,12 +64,14 @@ boundary rows capture at edge 3 and the next stage's first PE captures at edge
 
 | Event | Cycles after input is accepted |
 | --- | --- |
-| Output lane `j` ready | `K*D + abs(j-h)` |
-| Full vector in result FIFO | `K*D + h + 1` |
-| First result available | `K*D + h + 2` |
+| Last-stage lane `j` ready | `K*D + abs(j-h)` |
+| Prediction ready | `(K+1)*D` |
+| Prediction in result FIFO | `(K+1)*D + 1` |
+| First result available | `(K+1)*D + 2` |
 
-Example: N=5, three layers. The output lanes are ready at cycles
-`[11,10,9,10,11]` and the first result comes out at cycle 13.
+Example: N=5, three layers. The last stage's lanes are ready at cycles
+`[11,10,9,10,11]`, the prediction at cycle 12, and the first result comes out at
+cycle 14.
 
 ### Training
 
@@ -157,26 +163,23 @@ active-low reset.
 | Weights | `weightData[N]`, `weightValid`, `weightReady`, `weightsLoaded` | Load matrix weights row by row |
 | Reload | `reloadWeights`, `reloadReady` | Replace weights once the pipeline is idle |
 | Input | `inputData[N]`, `targetData`, `trainingEnable`, `inputValid`, `inputReady` | Submit a sample, with a target if training |
-| Readout | `reductionWeight[N]`, `loadReductionWeights`, `reduceOutput` | Load and enable the scalar readout |
+| Readout | `reductionWeight[N]`, `loadReductionWeights` | Load the readout coefficients |
 | Mode | `passThrough` | Disable ReLU on all stages |
-| Output | `resultData[N]`, `resultValid`, `resultReady` | Read the result vector, or the scalar in lane 0 |
+| Output | `resultData`, `resultValid`, `resultReady` | Read the scalar prediction |
 
 **Loading weights.** Send each layer's rows from `N-1` down to `0`, layer 0
 first, for a total of `LAYERS*N` row handshakes. `weightsLoaded` goes high once
 all layers are in place. Computation waits for it.
 
-**Output format.** With `reduceOutput=0`, `resultData` carries the final
-activated vector with `(LAYERS+1)*FRACTION_BITS` fractional bits. With
-`reduceOutput=1`, lane 0 holds the scalar prediction, rescaled back to
-`FRACTION_BITS` fractional bits.
+**Output format.** `resultData` is the scalar prediction, rescaled back to
+`FRACTION_BITS` fractional bits. The accelerator has no vector output.
 
 **Result width.** Results grow with depth so that no precision is lost. Stage k
 has `WIDTH + k*(WIDTH + ceil(log2 N))` bits, and the output port adds another
 `ceil(log2 N)` bits. For example, WIDTH=8 and N=5 give a 44-bit output port.
 
-**Configuration.** Change `passThrough` and `reduceOutput`, and load readout
-weights, only while the accelerator is idle. Busy configuration attempts are
-rejected.
+**Configuration.** Change `passThrough` and load readout weights only while the
+accelerator is idle. Busy configuration attempts are rejected.
 
 The cycle-accurate model in `reference/cycle.py` defines the exact handshake,
 stall, reset and timing rules that the RTL is compared against.
@@ -187,33 +190,31 @@ stall, reset and timing rules that the RTL is compared against.
 
 All tests pass in Questa:
 
-- 25 Python tests of the reference models: fixed-point arithmetic, timing,
+- 26 Python tests of the reference models: fixed-point arithmetic, timing,
   stalls, reset, and finite-difference checks of the training update signs.
 - Matrix-stage testbenches covering N=3/5/9, one and three layers, WIDTH=8/16,
   including results wider than 64 bits.
-- 3,183 cycle-by-cycle RTL/reference comparisons across four configurations.
-  Each one checks handshakes, results, every weight, and every output lane.
+- Readout-column testbenches covering N=3/5/9 and the 41-bit lanes of the Quartus
+  build: results against a dense sum, lane timing, stalls, loads and updates.
+- 3,270 cycle-by-cycle RTL/reference comparisons across four configurations.
+  Each one checks handshakes, results, every weight, every lane of every stage,
+  and the readout output.
 
-### FPGA (historical fit, earlier registered-join RTL)
-
-These numbers come from a Quartus fit of an earlier revision that registered
-each column join (one extra cycle per stage). They have not been re-measured
-for the current combinational-join RTL, which moves the join adder, ReLU and
-next-stage multiply into a single cycle; its timing is unknown.
-
-Configuration: Cyclone V, N=5, WIDTH=8, three layers.
+### FPGA (Cyclone V, N=5, WIDTH=8, three layers)
 
 | Metric | Value |
 | --- | --- |
-| Logic | 6,296 ALMs |
-| Registers | 4,882 |
+| Logic | 7,423 ALMs |
+| Registers | 5,540 |
 | DSP blocks | 87 / 87 |
-| Memory | 2,490 bits (7 RAM blocks) |
-| Fmax | 71.0 MHz (100 MHz target not met) |
+| Memory | 440 bits (2 RAM blocks) |
+| Fmax | 73.1 MHz (100 MHz target not met) |
 
-In that fit, the critical path ran from the last layer's column join through
-the activation and readout into the result FIFO. I/O pins are virtual, so
-these numbers describe the core and are not a board-level sign-off.
+The critical path runs from the last layer's weights through the shared backward
+multiplier into the sensitivity registers. That multiplier is built from logic
+because the forward stages use every DSP block. These numbers come from one fit
+with the default seed. I/O pins are virtual, so they describe the core and are
+not a board-level sign-off.
 
 ## Repository layout
 
@@ -221,8 +222,8 @@ these numbers describe the core and are not a board-level sign-off.
 weightStationaryVariant/
   weightStationaryProcessingElement.sv   PE: MAC, stationary weight, update logic
   weightStationarySystolicArray.sv       Center-out PE grid, combinational column joins
-  weightStationaryMatrixMultiplier.sv    Layer chain, weight loader, activation, collector
-  weightedVectorReduction.sv             Scalar readout
+  weightStationaryMatrixMultiplier.sv    Layer chain, weight loader, activation
+  weightedVectorReduction.sv             Scalar readout: Nx1 PE column
   nnAccelerator.sv                       Top level: control, FIFO, training engine
   *_tb.sv                                Testbenches
 memory/signedFifo.sv                     Result FIFO
@@ -234,10 +235,10 @@ presentation/figures/                    Architecture diagrams
 
 ## Limitations and future work
 
-- Timing closure is not established. The last fit (registered join) reached
-  71.0 MHz against a 100 MHz target, and the current combinational-join RTL
-  has not been fitted.
-- Only square layers with odd N are supported.
+- The 100 MHz timing target is not met on Cyclone V; the latest fit reaches
+  73.1 MHz.
+- The output is one scalar, so multi-output networks are not supported.
+- Only square matrix stages with odd N are supported.
 - Training handles one sample at a time; only inference is fully pipelined.
 - It hasn't been shown yet how well training converges on a real workload. Do
   not start ReLU networks from all-zero weights, because closed gates cannot

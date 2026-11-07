@@ -7,12 +7,12 @@ module nnAcceleratorStateTrace_tb #(
     localparam int RAW_WIDTH=WIDTH+LAYERS*(WIDTH+$clog2(N));
     localparam int RESULT_WIDTH=RAW_WIDTH+$clog2(N);
     logic clk=0, rst_n=0, weightValid=0, inputValid=0, trainingEnable=0, resultReady=1;
-    logic loadReductionWeights=0, reloadWeights=0, passThrough=1, reduceOutput=0;
+    logic loadReductionWeights=0, reloadWeights=0, passThrough=1;
     logic signed [7:0] weightData[N], inputData[N], targetData, reductionWeight[N];
     wire weightReady, inputReady, resultValid, weightsLoaded, reloadReady;
-    wire signed [RESULT_WIDTH-1:0] resultData[N];
+    wire signed [RESULT_WIDTH-1:0] resultData;
     integer stimulus_fd, trace_fd, status, cycle_count, accepted, retired;
-    integer fields[11+3*N];
+    integer fields[10+3*N];
     string stimulus_path,trace_path;
     always #5 clk=~clk;
     nnAccelerator #(.WIDTH(WIDTH),.N(N),.LAYERS(LAYERS),.FRACTION_BITS(FRACTION_BITS),
@@ -41,16 +41,29 @@ module nnAcceleratorStateTrace_tb #(
             end
         end
     end
+    for (genvar i=0; i<N; i++) begin : freeze_reduction
+        always @(posedge clk) begin
+            logic signed [$bits(dut.reductionColumn.sumOut[i])-1:0] partial;
+            logic av;
+            if (rst_n && weightsLoaded && !dut.arrayAdvance) begin
+                partial=dut.reductionColumn.sumOut[i];
+                av=dut.reductionColumn.activationValid[i];
+                #1;
+                if (partial!==dut.reductionColumn.sumOut[i] || av!==dut.reductionColumn.activationValid[i])
+                    $fatal(1,"Reduction PE changed during a global stall");
+            end
+        end
+    end
     always @(posedge clk) begin
-        logic signed [RESULT_WIDTH-1:0] held[N];
+        logic signed [RESULT_WIDTH-1:0] held;
         bit blocked, resetting;
         blocked=rst_n && resultValid && !resultReady;
         resetting=!rst_n;
-        for (int j=0; j<N; j++) held[j]=resultData[j];
+        held=resultData;
         #1;
         if (blocked) begin
             if (!resultValid) $fatal(1,"Public valid dropped during backpressure");
-            for (int j=0; j<N; j++) if (resultData[j]!==held[j]) $fatal(1,"Public result changed while blocked");
+            if (resultData!==held) $fatal(1,"Public result changed while blocked");
         end
         if (resetting && (weightsLoaded || resultValid || reloadReady))
             $fatal(1,"Reset did not clear the public interface");
@@ -58,10 +71,9 @@ module nnAcceleratorStateTrace_tb #(
     task automatic dump();
         $fwrite(trace_fd,"%0d %0d %0d",cycle_count,accepted,retired);
         // Architectural state only: public handshakes, the training barrier,
-        // result data, resident parameters and the per-lane raw fronts.
-        $fwrite(trace_fd," %0d %0d %0d %0d %0d %0d",weightReady,inputReady,resultValid,
-            weightsLoaded,reloadReady,dut.trainingPending);
-        for (int j=0; j<N; j++) $fwrite(trace_fd," %0d",$signed(resultData[j]));
+        // result data, resident parameters, the per-lane raw fronts and the readout output.
+        $fwrite(trace_fd," %0d %0d %0d %0d %0d %0d %0d",weightReady,inputReady,resultValid,
+            weightsLoaded,reloadReady,dut.trainingPending,$signed(resultData));
         for (int l=0; l<LAYERS; l++) for (int i=0; i<N; i++) for (int j=0; j<N; j++)
             $fwrite(trace_fd," %0d",$signed(dut.residentWeights[l][i][j]));
         for (int j=0; j<N; j++) $fwrite(trace_fd," %0d",$signed(dut.residentReductionWeight[j]));
@@ -70,6 +82,8 @@ module nnAcceleratorStateTrace_tb #(
                 $fwrite(trace_fd," 1 %0d",$signed(dut.matrixEngine.chainData[l+1][j]));
             else $fwrite(trace_fd," 0 0");
         end
+        if (dut.predictionValid) $fwrite(trace_fd," 1 %0d",$signed(dut.prediction));
+        else $fwrite(trace_fd," 0 0");
         $fwrite(trace_fd,"\n");
     endtask
     initial begin
@@ -84,7 +98,7 @@ module nnAcceleratorStateTrace_tb #(
             @(negedge clk);
             status=$fscanf(stimulus_fd,"%d",fields[0]);
             if (status==1) begin
-                for (int field=1; field<11+3*N; field++) begin
+                for (int field=1; field<10+3*N; field++) begin
                     status=$fscanf(stimulus_fd," %d",fields[field]);
                     if (status!=1) $fatal(1,"Malformed stimulus field %0d",field);
                 end
@@ -94,7 +108,7 @@ module nnAcceleratorStateTrace_tb #(
                     reductionWeight[j]=8'(fields[7+2*N+j]);
                 end
                 targetData=8'(fields[4+2*N]); trainingEnable=fields[5+2*N]; resultReady=fields[6+2*N];
-                loadReductionWeights=fields[7+3*N]; reloadWeights=fields[8+3*N]; passThrough=fields[9+3*N]; reduceOutput=fields[10+3*N];
+                loadReductionWeights=fields[7+3*N]; reloadWeights=fields[8+3*N]; passThrough=fields[9+3*N];
                 @(posedge clk);
                 accepted=rst_n && inputValid && inputReady;
                 retired=rst_n && resultValid && resultReady;

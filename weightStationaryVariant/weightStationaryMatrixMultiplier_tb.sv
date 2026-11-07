@@ -11,25 +11,26 @@ module weightStationaryMatrixMultiplier_testcase #(
     typedef logic signed [WIDTH-1:0] data_t;
     typedef logic signed [AW-1:0] result_t;
     logic clk=0, rst_n, weightValid, weightReady, inputValid, inputReady;
-    logic resultValid, resultReady, weightsLoaded, reloadWeights, reloadReady, advance;
+    logic outputBlocked, weightsLoaded, reloadWeights, reloadReady, advance;
     logic passThrough;
     data_t weightData[N], inputData[N], matrix[LAYERS][N][N];
     wire signed [WIDTH-1:0] weights[LAYERS][N][N];
     logic signed [1:0] rowDirection[LAYERS][N], columnDirection[LAYERS][N];
     logic matrixUpdateValid;
     result_t resultData[N];
+    wire resultValid[N];
     wire tapValid[LAYERS][N], tapGate[LAYERS][N];
     wire signed [1:0] tapSign[LAYERS][N];
     result_t expected[LIMIT][N];
-    int acceptedStep[LIMIT], acceptedCount, retiredCount, cycle, enabledStep;
-    int laneArrivals[N], collectedArrivals;
+    int acceptedStep[LIMIT], acceptedCount, cycle, enabledStep;
+    int laneArrivals[N];
     int unsigned randomState;
     always #5 clk=~clk;
     weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS)) dut (
         .clk, .rst_n, .weightData, .weightValid, .weightReady,
         .inputData, .inputValid, .inputReady, .passThrough,
         .rowDirection, .columnDirection, .matrixUpdateValid,
-        .resultData, .resultValid, .resultReady,
+        .resultData, .resultValid, .outputBlocked,
         .weightsLoaded, .reloadWeights, .reloadReady, .arrayAdvance(advance),
         .weights, .tapValid, .tapGate, .tapSign
     );
@@ -42,24 +43,17 @@ module weightStationaryMatrixMultiplier_testcase #(
         // whose exact dense results exceed a native 64-bit scoreboard value.
         result_t activation[N], nextActivation[N], sum;
         result_t held[N];
+        bit heldValid[N];
         bit blocked, stepped;
         cycle++;
-        blocked=rst_n && resultValid && !resultReady;
+        blocked=rst_n && outputBlocked;
         stepped=rst_n && advance;
-        for (int j=0; j<N; j++) held[j]=resultData[j];
+        for (int j=0; j<N; j++) begin held[j]=resultData[j]; heldValid[j]=resultValid[j]; end
         if (!rst_n) begin
-            acceptedCount=0; retiredCount=0; enabledStep=0; collectedArrivals=0;
+            acceptedCount=0; enabledStep=0;
             for (int j=0; j<N; j++) laneArrivals[j]=0;
         end else begin
             if (advance) enabledStep++;
-            if (resultValid && resultReady) begin
-                if (retiredCount>=acceptedCount)
-                    $fatal(1,"Fountain result ordering N=%0d L=%0d",N,LAYERS);
-                for (int j=0; j<N; j++) if (resultData[j]!==expected[retiredCount][j])
-                    $fatal(1,"Fountain result N=%0d L=%0d sample=%0d lane=%0d got=%0d expected=%0d",
-                        N,LAYERS,retiredCount,j,resultData[j],expected[retiredCount][j]);
-                retiredCount++;
-            end
             if (inputValid && inputReady) begin
                 if (acceptedCount>=LIMIT) $fatal(1,"Fountain test sample limit");
                 for (int j=0; j<N; j++) activation[j]=$signed(inputData[j]);
@@ -76,26 +70,25 @@ module weightStationaryMatrixMultiplier_testcase #(
                 acceptedCount++;
             end
             #1;
-            if (blocked) begin
-                if (!resultValid) $fatal(1,"Fountain stalled validity changed");
-                for (int j=0; j<N; j++) if (held[j]!==resultData[j]) $fatal(1,"Fountain stalled data changed");
+            if (blocked) for (int j=0; j<N; j++) begin
+                if (heldValid[j]!==resultValid[j]) $fatal(1,"Fountain stalled validity changed");
+                if (held[j]!==resultData[j]) $fatal(1,"Fountain stalled data changed");
             end
             // Lane registers change only on an advancing edge, so each valid
             // value seen after one is the next vector in that lane's order.
-            if (stepped) begin
-                for (int j=0; j<N; j++) if (tapValid[LAYERS-1][j]) begin
+            if (stepped) for (int j=0; j<N; j++) begin
+                if (tapValid[LAYERS-1][j]!==resultValid[j])
+                    $fatal(1,"Fountain tap valid N=%0d L=%0d lane=%0d",N,LAYERS,j);
+                if (resultValid[j]) begin
                     int sample, q;
                     sample=laneArrivals[j]++;
                     q=(j<N/2)?N/2-j:j-N/2;
                     if (sample>=acceptedCount || enabledStep-acceptedStep[sample]!=LAYERS*D+q)
                         $fatal(1,"Fountain lane timing N=%0d L=%0d lane=%0d sample=%0d age=%0d expected=%0d",
                             N,LAYERS,j,sample,enabledStep-acceptedStep[sample],LAYERS*D+q);
-                end
-                if (resultValid) begin
-                    int sample;
-                    sample=collectedArrivals++;
-                    if (sample>=acceptedCount || enabledStep-acceptedStep[sample]!=LAYERS*D+N/2)
-                        $fatal(1,"Fountain collector timing N=%0d L=%0d",N,LAYERS);
+                    if (resultData[j]!==expected[sample][j])
+                        $fatal(1,"Fountain result N=%0d L=%0d sample=%0d lane=%0d got=%0d expected=%0d",
+                            N,LAYERS,sample,j,resultData[j],expected[sample][j]);
                 end
             end
         end
@@ -132,7 +125,7 @@ module weightStationaryMatrixMultiplier_testcase #(
         sent=0; guard=0;
         while (sent<count) begin
             @(negedge clk);
-            resultReady=(mode!=2 || (random_word()>>16)%4==0);
+            outputBlocked=(mode==2 && (random_word()>>16)%4!=0);
             inputValid=(mode!=1 || random_word()%3!=0);
             for (int i=0; i<N; i++) begin
                 if (mode==3) inputData[i]=data_t'((sent+i)%2 ? -(1<<(WIDTH-1)) : (1<<(WIDTH-1))-1);
@@ -144,12 +137,17 @@ module weightStationaryMatrixMultiplier_testcase #(
             #1;
             if (++guard>3000) $fatal(1,"Fountain input timeout");
         end
-        @(negedge clk); inputValid=0; resultReady=1;
+        @(negedge clk); inputValid=0; outputBlocked=0;
         guard=0;
-        while (retiredCount<acceptedCount || !reloadReady) begin
+        // The outermost lane finishes each vector last.
+        while (laneArrivals[0]<acceptedCount || !reloadReady) begin
             @(posedge clk); #1;
             if (++guard>400) $fatal(1,"Fountain drain timeout");
         end
+        // Nothing may go missing: a drained array has delivered every vector on every lane.
+        for (int j=0; j<N; j++) if (laneArrivals[j]!=acceptedCount)
+            $fatal(1,"Fountain lane completeness N=%0d L=%0d lane=%0d arrivals=%0d accepted=%0d",
+                N,LAYERS,j,laneArrivals[j],acceptedCount);
     endtask
     task automatic reload();
         int previous;
@@ -164,8 +162,8 @@ module weightStationaryMatrixMultiplier_testcase #(
     endtask
     initial begin
         done=0; rst_n=0; weightValid=0; inputValid=0;
-        resultReady=1; reloadWeights=0; passThrough=1; matrixUpdateValid=0;
-        cycle=0; enabledStep=0; acceptedCount=0; retiredCount=0;
+        outputBlocked=0; reloadWeights=0; passThrough=1; matrixUpdateValid=0;
+        cycle=0; enabledStep=0; acceptedCount=0;
         randomState=32'(N*913+LAYERS*43);
         for (int l=0; l<LAYERS; l++) for (int i=0; i<N; i++) begin rowDirection[l][i]=0; columnDirection[l][i]=0; end
         for (int i=0; i<N; i++) begin inputData[i]=0; weightData[i]=0; end

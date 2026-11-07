@@ -29,11 +29,13 @@ try {
     if (-not (Test-Path -LiteralPath work)) { & $vlib work; if ($LASTEXITCODE) { throw "vlib failed" } }
     & $vlog -sv @sources *> compile.log
     if ($LASTEXITCODE) { Get-Content -LiteralPath compile.log -Tail 30; throw "RTL compilation failed" }
-    foreach ($badN in @(1,2,4,8)) {
-        $log = "invalid-N$badN.log"
-        & $vsim -c work.weightStationaryMatrixMultiplier "-GN=$badN" -l $log -do "run 1ns; quit -f" *> "$log.console"
-        if (-not (Select-String -LiteralPath $log -SimpleMatch "Fountain requires" -Quiet)) {
-            throw "Invalid N=$badN did not produce its intended parameter diagnostic"
+    foreach ($top in @("weightStationaryMatrixMultiplier", "nnAccelerator")) {
+        foreach ($badN in @(1,2,4,8)) {
+            $log = "invalid-$top-N$badN.log"
+            & $vsim -c "work.$top" "-GN=$badN" -l $log -do "run 1ns; quit -f" *> "$log.console"
+            if (-not (Select-String -LiteralPath $log -SimpleMatch "Fountain requires" -Quiet)) {
+                throw "$top with invalid N=$badN did not produce its intended parameter diagnostic"
+            }
         }
     }
     Write-Output "PASS: unsupported single/even dimensions reject with a parameter diagnostic."

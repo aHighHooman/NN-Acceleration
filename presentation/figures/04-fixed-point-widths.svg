@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="f04" viewBox="0 0 840 490" width="840" height="490" role="img" aria-labelledby="f04-title f04-description">
 <title id="f04-title">Exact widths in the three-layer Fountain project</title>
-<desc id="f04-description">The Quartus profile is N=5, WIDTH=8, LAYERS=3, FRACTION_BITS=0. Layer products are 16, 27 and 38 bits; full sums and activations are 19, 30 and 41 bits. Five final 41 by 8 bit readout products are accumulated in 52 bits, shifted right by seven, and returned in a 44-bit public lane. Separate RTL defaults use 16-bit weights and three layers, with 34, 52 and 70-bit layer outputs and 72-bit public lanes.</desc>
+<desc id="f04-description">The Quartus profile is N=5, WIDTH=8, LAYERS=3, FRACTION_BITS=0. Layer products are 16, 27 and 38 bits; full sums and activations are 19, 30 and 41 bits. Five final 41 by 8 bit readout products are accumulated in 52 bits, shifted right by seven, and returned on the 44-bit resultData port. Separate RTL defaults use 16-bit weights and three layers, with 34, 52 and 70-bit layer outputs and a 72-bit public prediction.</desc>
 <style>
 .f04{--panel:#FFFFFF;--ink:#15191C;--muted:#48525A;--rule:#D5DBD8;--data:#2350C8;--data-soft:#DDE5FB;--learn:#CF4F16;--learn-soft:#FCE4D7}
 @media(prefers-color-scheme:dark){.f04{--panel:#171B1E;--ink:#E6E9EB;--muted:#AEB7BD;--rule:#2C3337;--data:#86A6FF;--data-soft:#1B2847;--learn:#FF8F57;--learn-soft:#3A2116}}
@@ -38,9 +38,9 @@
 <rect x="450" y="295" width="140" height="62" rx="6" class="box"/>
 <text x="520" y="320" class="center mono">&gt;&gt;&gt; 7</text><text x="520" y="343" class="center small">arithmetic shift</text>
 <rect x="620" y="295" width="200" height="62" rx="6" class="box"/>
-<text x="720" y="320" class="center">44-bit prediction</text><text x="720" y="343" class="center small">lane 0; other lanes zero</text>
+<text x="720" y="320" class="center">44-bit prediction</text><text x="720" y="343" class="center small">resultData</text>
 <path d="M240 326 H268" class="arrow"/><path d="M420 326 H448" class="arrow"/><path d="M590 326 H618" class="arrow"/>
-<text x="20" y="388" class="small">Vector mode sign-extends each final 41-bit activation into a 44-bit public lane.</text>
+<text x="20" y="388" class="small">An N×1 PE column accumulates the products as the lanes arrive; only the complete sum is shifted.</text>
 <text x="20" y="412" class="small">Each layer joins its full column sum, then applies ReLU or stream-wide passThrough.</text>
 <line x1="20" x2="820" y1="430" y2="430" class="line"/>
 <text x="20" y="454" class="small">RTL defaults: N=3, WIDTH=16, F=4, LAYERS=3; layer sums are 34 → 52 → 70 bits.</text>

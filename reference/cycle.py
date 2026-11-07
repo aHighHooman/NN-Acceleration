@@ -47,7 +47,6 @@ class CycleInputs:
     reload_weights: bool = False
     reset_n: bool = True
     pass_through: bool = True
-    reduce_output: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,7 +91,7 @@ class _Layer:
         self.sums=[[None]*n for _ in range(n)]
 
     def outputs(self):
-        return [_join(self.sums[0][j], self.sums[-1][j]) for j in range(self.config.n)]
+        return [_join(self.sums[0][j],self.sums[-1][j]) for j in range(self.config.n)]
 
     @property
     def busy(self):
@@ -121,9 +120,38 @@ class _Layer:
         self.act,self.sums=next_act,next_sums
 
 
+class _Reduction:
+    """Nx1 column: each row takes one lane of the last layer on its own front."""
+    def __init__(self, config):
+        self.config=config
+        self.sums=[None]*config.n
+
+    def output(self):
+        return _join(self.sums[0],self.sums[-1])
+
+    @property
+    def busy(self):
+        return any(value is not None for value in self.sums)
+
+    def tick(self, incoming, weights):
+        n=self.config.n
+        c=n//2
+        next_sums=[None]*n
+        for i,activation in enumerate(incoming):
+            seed=i in (c,c-1)
+            partial=None if seed else self.sums[i+1 if i<c else i-1]
+            if not seed:
+                if (activation is None)!=(partial is None):
+                    raise AssertionError(f'readout valid mismatch at {i}')
+                if activation is not None and activation.sample!=partial.sample:
+                    raise AssertionError(f'readout sample mismatch at {i}')
+            if activation is not None:
+                next_sums[i]=Lane(activation.value*weights[i]+(partial.value if partial else 0),activation.sample)
+        self.sums=next_sums
+
+
 @dataclass(frozen=True)
 class ResultEntry:
-    activated_result: tuple[int,...]
     prediction: int
     sample: int
 
@@ -158,7 +186,6 @@ class CycleReference:
             if len(R)!=config.n: raise ValueError('readout length must equal n')
             self._R=[to_signed(value,config.reduction_weight_width) for value in R]
         self.mode_pass=config.pass_through
-        self.mode_reduce=config.reduce_output
 
     def _hardware_reset(self):
         cfg=self.config
@@ -167,7 +194,7 @@ class CycleReference:
         self._R=[0]*n
         self.layers=[_Layer(cfg,l,self._W[l]) for l in range(k)]
         self.source=[_Delay(abs(i-n//2)) for i in range(n)]
-        self.collector=[_Delay(n//2-abs(i-n//2)) for i in range(n)]
+        self.reduction=_Reduction(cfg)
         self.weight_buffer=[[[0]*n for _ in range(n)] for _ in range(k)]
         self.weights_loaded=False
         self.host_layer=self.loaded_rows=self.load_layer=self.load_step=0
@@ -186,7 +213,7 @@ class CycleReference:
         self.training_state=0
         self.back_layer=self.back_row=self.back_col=self.back_acc=0
         self.direction=0
-        self.mode_pass=self.mode_reduce=False
+        self.mode_pass=False
         self.configuration_error=False
         self.expected={}
         self.timings={}
@@ -204,21 +231,13 @@ class CycleReference:
         return [[None if lane is None else Lane(lane.value if self.mode_pass or lane.value>=0 else 0,lane.sample)
                  for lane in layer.outputs()] for layer in self.layers]
 
-    def collected(self):
-        lanes=[delay.read(value) for delay,value in zip(self.collector,self.lane_outputs()[-1])]
-        if any(value is not None for value in lanes):
-            assert all(value is not None for value in lanes), 'collector valid mismatch'
-            assert len({value.sample for value in lanes})==1, 'collector sample mismatch'
-            return lanes
-        return None
-
     @property
     def pipeline_busy(self):
-        return self.input_stage is not None or any(delay.busy for delay in self.source+self.collector) or any(layer.busy for layer in self.layers) or self.collected() is not None
+        return self.input_stage is not None or any(delay.busy for delay in self.source) or any(layer.busy for layer in self.layers) or self.reduction.busy
 
     def signals(self,inputs: CycleInputs | None=None):
-        inputs=inputs or CycleInputs(pass_through=self.mode_pass,reduce_output=self.mode_reduce)
-        collected=self.collected()
+        inputs=inputs or CycleInputs(pass_through=self.mode_pass)
+        output=self.reduction.output()
         result_valid=bool(self.fifo)
         retire=result_valid and inputs.result_ready
         matrix_reload=self.weights_loaded and not self.pipeline_busy and self.training_state!=2
@@ -226,17 +245,17 @@ class CycleReference:
         reload_ready=self.weights_loaded and matrix_reload and quiescent and not self.fifo
         reload=inputs.reload_weights and reload_ready
         can_accept=len(self.fifo)<self.config.output_fifo_depth or retire
-        advance=self.weights_loaded and not(collected is not None and not can_accept)
+        advance=self.weights_loaded and not(output is not None and not can_accept)
         matrix_input=self.weights_loaded and not reload and self.training_state!=2 and (self.input_stage is None or advance)
         capacity=(self.outstanding<self.config.in_flight_depth or retire) and not self.training_pending and self.training_state==0 and not inputs.load_reduction_weights and not reload
         return dict(weight_ready=inputs.reset_n and not self.weights_loaded and not self.loading and not self.capture,
             input_ready=matrix_input and capacity,result_valid=result_valid,
             reload_ready=reload_ready,advance=advance,quiescent=quiescent,
-            retire=retire,reload=reload,push=collected is not None and can_accept,
-            collected=collected)
+            retire=retire,reload=reload,push=output is not None and can_accept,
+            output=output)
 
     def step(self,inputs: CycleInputs | None=None):
-        inputs=inputs or CycleInputs(pass_through=self.mode_pass,reduce_output=self.mode_reduce)
+        inputs=inputs or CycleInputs(pass_through=self.mode_pass)
         cfg=self.config
         sig=self.signals(inputs)
         accepted=bool(inputs.reset_n and inputs.input_valid and sig['input_ready'])
@@ -253,11 +272,9 @@ class CycleReference:
             raw_outputs=[layer.outputs() for layer in self.layers]
             activated=self.lane_outputs()
             head=self.fifo[0] if self.fifo else None
-            collected=sig['collected']
             if sig['quiescent']:
                 self.mode_pass=inputs.pass_through
-                self.mode_reduce=inputs.reduce_output
-            elif inputs.pass_through!=self.mode_pass or inputs.reduce_output!=self.mode_reduce:
+            elif inputs.pass_through!=self.mode_pass:
                 self.configuration_error=True
             if inputs.load_reduction_weights:
                 if sig['quiescent']:
@@ -275,7 +292,10 @@ class CycleReference:
                             if l<cfg.layers-1: self.input_signs[l+1][j]=sign
                             else: self.final_signs[j]=sign
             if sig['advance']:
-                for j,delay in enumerate(self.collector): delay.tick(activated[-1][j])
+                for j,lane in enumerate(activated[-1]):
+                    if lane is not None:
+                        assert lane.value==self.expected[lane.sample].activated_result[j], 'clocked/functional mismatch'
+                self.reduction.tick(activated[-1],old_r)
                 source_words=[None if old_input is None else Lane(old_input[0][i],old_input[1]) for i in range(cfg.n)]
                 layer_inputs=[[delay.read(word) for delay,word in zip(self.source,source_words)]]+activated[:-1]
                 for layer,lane_inputs in zip(self.layers,layer_inputs): layer.tick(lane_inputs)
@@ -285,18 +305,16 @@ class CycleReference:
                 self.timings[head.sample].retired_at=self.cycle
                 self.records.append(self.expected[head.sample])
             if sig['push']:
-                values=tuple(lane.value for lane in collected)
-                sample=collected[0].sample
-                prediction=sum(v*r for v,r in zip(values,old_r)) >> cfg.rescale_shift
-                record=self.expected[sample]
-                assert values==record.activated_result and prediction==record.prediction, 'clocked/functional mismatch'
-                self.fifo.append(ResultEntry(values,prediction,sample))
+                sample=sig['output'].sample
+                prediction=sig['output'].value >> cfg.rescale_shift
+                assert prediction==self.expected[sample].prediction, 'clocked/functional mismatch'
+                self.fifo.append(ResultEntry(prediction,sample))
                 self.timings[sample].enqueued_at=self.cycle
             if accepted:
                 values=tuple(to_signed(value,cfg.width) for value in inputs.input_data)
                 if len(values)!=cfg.n: raise ValueError('input length')
                 sample=self.next_sample
-                self.expected[sample]=analyze(replace(cfg,pass_through=self.mode_pass,reduce_output=self.mode_reduce),self._W,old_r,
+                self.expected[sample]=analyze(replace(cfg,pass_through=self.mode_pass),self._W,old_r,
                     Sample(values,inputs.target_data,inputs.training_enable),sample)
                 self.timings[sample]=SampleTiming(self.cycle)
                 self.next_sample=sample+1
@@ -374,18 +392,20 @@ class CycleReference:
 
     def state_vector(self,inputs=None):
         """Architectural state compared with the RTL on every edge: public
-        handshakes, the training barrier, result data, resident parameters and
-        the per-lane raw fronts. Controller and loader internals stay private."""
+        handshakes, the training barrier, result data, resident parameters, the
+        per-lane raw fronts and the readout output. Controller and loader
+        internals stay private."""
         sig=self.signals(inputs)
-        head=self.fifo[0] if self.fifo else ResultEntry((0,)*self.config.n,0,0)
-        result=(head.prediction,)+(0,)*(self.config.n-1) if self.mode_reduce else head.activated_result
+        head=self.fifo[0].prediction if self.fifo else 0
         state=[int(sig[name]) for name in ('weight_ready','input_ready','result_valid')]
-        state += [int(self.weights_loaded),int(sig['reload_ready']),int(self.training_pending),*result]
+        state += [int(self.weights_loaded),int(sig['reload_ready']),int(self.training_pending),head]
         state += [v for matrix in self._W for row in matrix for v in row]
         state += self._R
         for layer in self.lane_outputs():
             for value in layer:
                 state.extend((0,0) if value is None else (1,value.value))
+        output=sig['output']
+        state.extend((0,0) if output is None else (1,output.value >> self.config.rescale_shift))
         return tuple(state)
 
     def run(self,cycles: Sequence[CycleInputs]):
