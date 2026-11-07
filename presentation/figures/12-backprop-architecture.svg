@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1195" width="1600" height="1195" role="img" aria-labelledby="title desc">
-<title id="title">Fountain backpropagation path — capture, serial sensitivities, atomic sign update</title>
-<desc id="desc">A training sample runs through the normal forward pipeline while taps after each matrix stage record the ReLU gate and the sign of each activated output; the input signs are latched at admission. When the training result is popped from the result FIFO, the training engine compares the saved target with the prediction to form sign(e) and seeds the last-layer sensitivity with the gated readout coefficients. In the BACKWARD state one shared multiply-accumulate unit reads the resident PE weights in place and computes s[l][row] = g[l][row] times the sum over columns of W[l+1][row][col] times s[l+1][col], one product per advancing cycle, for (LAYERS-1)*N*N cycles. In the one-cycle APPLY state each layer receives N row-direction lanes equal to sign(a[l][i]) and N column-direction lanes equal to sign(e)*sign(s[l][j]); each PE combines its row and column sign with a comparator and steps its weight by one saturating LSB. The readout coefficients update in the same cycle by sign(e)*sign(a[L][j]).</desc>
+<title id="title">Fountain backpropagation path — capture, arrays run backward, atomic sign update</title>
+<desc id="desc">A training sample runs through the normal forward pipeline while taps after each matrix stage record the ReLU gate and the sign of each activated output; the input signs are latched at admission. When the training result is popped from the result FIFO, the training engine compares the saved target with the prediction to form sign(e) and holds the gated readout coefficients on the last array. In the BACKWARD state the arrays exchange their row and column routes and run in reverse, so each computes W times the gradient vector on its own PEs, for LAYERS*(N+1)/2 cycles, and the sign of each gradient vector is captured. In the one-cycle APPLY state each layer receives N row-direction lanes equal to sign(a[l][i]) and N column-direction lanes equal to sign(e)*sign(grad[l][j]); each PE combines its row and column sign with a comparator and steps its weight by one saturating LSB. The readout coefficients update in the same cycle by sign(e)*sign(a[L][j]).</desc>
 <style>
 svg{--paper:#F3F5F3; --panel:#FFFFFF; --ink:#15191C; --ink-2:#48525A; --ink-3:#7A848B;
   --rule:#D5DBD8; --grid:#E5E9E6;
@@ -56,9 +56,9 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 <rect x="0" y="0" width="1600" height="1195" style="fill:var(--paper)"/>
 
 <!-- Header -->
-<text x="40" y="44" class="h" style="font-size:25px">Fountain backpropagation — capture, serial sensitivities, atomic sign update</text>
-<text x="40" y="72" class="s">A training sample uses the normal forward pipeline. Afterwards the engine in nnAccelerator.sv computes full sensitivities on one shared MAC and steps every weight by one LSB in a single cycle.</text>
-<text x="40" y="94" class="ms">L = LAYERS · a[l] = input to stage l (a[0] = x, a[L] = final activated vector) · g = ReLU gate · s = sensitivity · e = target − prediction</text>
+<text x="40" y="44" class="h" style="font-size:25px">Fountain backpropagation — capture, arrays run backward, atomic sign update</text>
+<text x="40" y="72" class="s">A training sample uses the normal forward pipeline. Afterwards the matrix arrays run in reverse to compute the gradient vectors, and every weight steps by one LSB in a single cycle.</text>
+<text x="40" y="94" class="ms">L = LAYERS · a[l] = input to stage l (a[0] = x, a[L] = final activated vector) · g = ReLU gate · grad = gradient vector · e = target − prediction</text>
 <g transform="translate(1180,94)">
   <line x1="0" y1="-4" x2="28" y2="-4" class="ld"/><text x="34" y="0" class="ms">forward</text>
   <line x1="100" y1="-4" x2="128" y2="-4" class="ll"/><text x="134" y="0" class="ms">learning</text>
@@ -100,12 +100,8 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 <path d="M1080,205 H1138" class="ld" marker-end="url(#d)"/><text x="1109" y="196" class="ms mid tdata">a[L]</text>
 <path d="M1330,205 H1388" class="ld" marker-end="url(#d)"/><text x="1359" y="196" class="ms mid tdata">ŷ</text>
 
-<!-- weight read-in-place (store) -->
-<path d="M760,244 V338 H585 V418" class="halo"/>
-<path d="M760,244 V338 H585 V418" class="ls dash" marker-end="url(#s)"/>
-<path d="M1050,244 V338 H760" class="ls dash"/>
-<text x="1060" y="300" class="ms tstore">W[1], W[2] read in place</text>
-<text x="1060" y="316" class="ms tstore">(residentWeights, no copy)</text>
+<text x="1060" y="300" class="ms tstore">Stages 1 and 2 are the same</text>
+<text x="1060" y="316" class="ms tstore">arrays the backward pass uses</text>
 
 <!-- taps -->
 <circle cx="385" cy="244" r="4" class="fl"/><circle cx="675" cy="244" r="4" class="fl"/><circle cx="965" cy="244" r="4" class="fl"/>
@@ -130,7 +126,7 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 
 <!-- ============ Band 2: training engine ============ -->
 <rect x="20" y="364" width="1560" height="440" rx="8" class="framel"/>
-<text x="40" y="391" class="h tlearn">② Training engine — nnAccelerator.sv</text>
+<text x="40" y="391" class="h tlearn">② Backward pass — the matrix arrays, run by nnAccelerator.sv</text>
 <text x="1560" y="391" class="s end">runs only after the pipeline drains · every step waits for arrayAdvance</text>
 
 <!-- captured state -->
@@ -138,7 +134,7 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 <text x="56" y="446" class="b">Captured forward state</text>
 <rect x="56" y="460" width="338" height="62" rx="4" class="bx"/>
 <text x="68" y="484" class="m">r[j]  (residentReductionWeight)</text>
-<text x="68" y="508" class="s">readout coefficients · seed for s[L−1]</text>
+<text x="68" y="508" class="s">readout coefficients · start of the pass</text>
 <rect x="56" y="532" width="338" height="62" rx="4" class="bx"/>
 <text x="68" y="556" class="m">activationGates[l][j] = g[l][j]</text>
 <text x="68" y="580" class="s">raw &gt; 0 under ReLU · always 1 in passThrough</text>
@@ -151,53 +147,47 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 <text x="56" y="760" class="s">2-bit signs and 1-bit gates only —</text>
 <text x="56" y="776" class="s">no activation magnitudes are kept.</text>
 
-<!-- seed path -->
-<path d="M394,491 H426 V406 H950 V418" class="halo"/>
-<path d="M394,491 H426 V406 H950 V418" class="ll dash" marker-end="url(#l)"/>
-<text x="600" y="401" class="ms tlearn">seed at retirement: s[L−1][j] = g[L−1][j] ? r[j] : 0</text>
+<!-- held readout weights start the pass -->
+<path d="M394,491 H426 V406 H560 V418" class="halo"/>
+<path d="M394,491 H426 V406 H560 V418" class="ll dash" marker-end="url(#l)"/>
+<text x="580" y="401" class="ms tlearn">held for the whole pass; each entry is 0 where the condition fails</text>
 
-<!-- resident weights mux -->
-<rect x="460" y="420" width="250" height="72" rx="6" class="bxs"/>
-<text x="585" y="448" class="mid b">Resident weight mux</text>
-<text x="585" y="474" class="m mid">W[l+1][row][col]</text>
+<!-- the arrays, in reverse -->
+<rect x="460" y="420" width="200" height="72" rx="6" class="bxl"/>
+<text x="560" y="448" class="m mid">grad[2] = r</text>
+<text x="560" y="474" class="ms mid">| output2 &gt; 0</text>
+<rect x="690" y="420" width="220" height="72" rx="6" class="bxd"/>
+<text x="800" y="448" class="m mid">grad[1] = W[2] × grad[2]</text>
+<text x="800" y="474" class="ms mid">array 2 · | output1 &gt; 0</text>
+<rect x="940" y="420" width="220" height="72" rx="6" class="bxd"/>
+<text x="1050" y="448" class="m mid">grad[0] = W[1] × grad[1]</text>
+<text x="1050" y="474" class="ms mid">array 1 · | output0 &gt; 0</text>
+<path d="M660,456 H688" class="ll" marker-end="url(#l)"/>
+<path d="M910,456 H938" class="ll" marker-end="url(#l)"/>
 
-<!-- sensitivity registers -->
-<rect x="760" y="420" width="380" height="72" rx="6" class="bxl"/>
-<text x="950" y="448" class="mid b">Sensitivity registers s[l][j]</text>
-<text x="950" y="474" class="ms mid">SENS_WIDTH = RW + (L−1)(WIDTH + ⌈log₂N⌉)</text>
+<!-- gradient signs -->
+<path d="M560,492 V528" class="ll" marker-end="url(#l)"/>
+<path d="M800,492 V528" class="ll" marker-end="url(#l)"/>
+<path d="M1050,492 V528" class="ll" marker-end="url(#l)"/>
+<rect x="460" y="530" width="700" height="62" rx="6" class="bxl"/>
+<text x="810" y="556" class="m mid">gradientSign[l][j]</text>
+<text x="810" y="578" class="ms mid">2 bits per lane, captured on the edge into APPLY · no gradient magnitudes are stored</text>
 
-<!-- multiplier -->
-<rect x="520" y="530" width="130" height="58" rx="6" class="bx"/>
-<text x="585" y="561" class="mid big" dy="4">×</text>
-<text x="585" y="582" class="ms mid">LUT, not DSP</text>
-<path d="M585,492 V528" class="ls" marker-end="url(#s)"/>
-<path d="M800,492 V559 H652" class="ll" marker-end="url(#l)"/>
-<text x="808" y="524" class="ms tlearn">s[l+1][col]</text>
-
-<!-- adder + accumulator -->
-<rect x="520" y="622" width="130" height="58" rx="6" class="bxp"/>
-<text x="585" y="657" class="mid big tsum" dy="2" style="fill:var(--sum)">+</text>
-<path d="M585,588 V620" class="lp" marker-end="url(#p)"/>
-<text x="594" y="610" class="ms">backwardProduct</text>
-<rect x="710" y="622" width="150" height="58" rx="6" class="bxs"/>
-<text x="785" y="646" class="mid b">accumulator</text>
-<text x="785" y="668" class="ms mid">cleared at col = 0</text>
-<path d="M650,638 H708" class="lp" marker-end="url(#p)"/>
-<path d="M710,664 H652" class="lp" marker-end="url(#p)"/>
-
-<!-- gate + write back -->
-<rect x="900" y="622" width="240" height="58" rx="6" class="bxl"/>
-<text x="1020" y="646" class="m mid">g[l][row] ? sum : 0</text>
-<text x="1020" y="668" class="ms mid">write s[l][row] at col = N−1</text>
-<path d="M585,680 V702 H1020 V682" class="lp" marker-end="url(#p)"/>
-<text x="700" y="697" class="ms" style="fill:var(--sum)">backwardSum</text>
-<path d="M1020,622 V494" class="ll" marker-end="url(#l)"/>
-<text x="1028" y="540" class="ms tlearn">s[l][row]</text>
-
-<!-- counters -->
-<rect x="460" y="722" width="680" height="62" rx="6" class="bx2"/>
-<text x="476" y="746" class="m">counters: layer L−2 → 0 · row 0 → N−1 · col 0 → N−1</text>
-<text x="476" y="770" class="ms">one product per cycle: s[l][row] = g[l][row] · Σcol W[l+1][row][col] · s[l+1][col]</text>
+<!-- routes -->
+<rect x="460" y="610" width="700" height="174" rx="6" class="bx2"/>
+<text x="476" y="636" class="b">Same PEs and multipliers, row and column routes exchanged</text>
+<text x="620" y="664" class="ms">forward: vector × W</text>
+<text x="890" y="664" class="ms">backward: W × vector</text>
+<text x="476" y="690" class="s">vector</text>
+<text x="620" y="690" class="ms">along rows, from column C</text>
+<text x="890" y="690" class="ms">along columns, from row C</text>
+<text x="476" y="716" class="s">sums</text>
+<text x="620" y="716" class="ms">along columns, seeds at rows C−1, C</text>
+<text x="890" y="716" class="ms">along rows, seeds at columns C−1, C</text>
+<text x="476" y="742" class="s">join</text>
+<text x="620" y="742" class="ms">top + bottom of each column</text>
+<text x="890" y="742" class="ms">left + right of each row</text>
+<text x="476" y="768" class="s">PE fires at |i−C| + |j−C| either way, so the center-first timing carries over.</text>
 
 <!-- error sign -->
 <rect x="1190" y="420" width="370" height="120" rx="6" class="bxl"/>
@@ -220,7 +210,7 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 <path d="M1508,642 C1508,676 1252,676 1252,644" class="lk" marker-end="url(#k)"/>
 <text x="1206" y="700" class="ms">IDLE→BACKWARD: training result popped, e≠0</text>
 <text x="1206" y="720" class="ms">IDLE→APPLY directly if e=0 or L=1</text>
-<text x="1206" y="740" class="ms">BACKWARD: (L−1)·N² advancing cycles</text>
+<text x="1206" y="740" class="ms">BACKWARD: L·(N+1)/2 advancing cycles</text>
 <text x="1206" y="760" class="ms">APPLY: one cycle, clears trainingPending</text>
 
 <!-- ============ Band 3: atomic update ============ -->
@@ -228,8 +218,8 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 <text x="40" y="847" class="h tlearn">③ Atomic update — APPLY, one cycle</text>
 <path d="M394,707 H426 V812 H650 V868" class="ll" marker-end="url(#l)"/>
 <text x="658" y="858" class="ms tlearn">sgn a[l][i]</text>
-<path d="M1140,456 H1166 V846 H760 V868" class="ll" marker-end="url(#l)"/>
-<text x="1000" y="838" class="ms tlearn">sgn s[l][j], sgn e</text>
+<path d="M1160,561 H1172 V846 H760 V868" class="ll" marker-end="url(#l)"/>
+<text x="1000" y="838" class="ms tlearn">sgn grad[l][j], sgn e</text>
 <path d="M360,784 V868" class="ll" marker-end="url(#l)"/>
 <text x="368" y="840" class="ms tlearn">r, finalSigns, sgn e</text>
 
@@ -245,10 +235,10 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 <rect x="440" y="870" width="420" height="184" rx="6" class="bxl"/>
 <text x="456" y="896" class="b">Direction lanes, per layer l</text>
 <text x="456" y="928" class="m">rowDirection[l][i]    = sgn a[l][i]</text>
-<text x="456" y="954" class="m">columnDirection[l][j] = sgn e · sgn s[l][j]</text>
+<text x="456" y="954" class="m">columnDirection[l][j] = sgn e · sgn grad[l][j]</text>
 <text x="456" y="988" class="s">2N ternary lanes per layer instead of N² update products.</text>
 <text x="456" y="1008" class="s">Each PE combines its row and column sign locally, so</text>
-<text x="456" y="1028" class="s">ΔW[l][i,j] = sgn a[l][i] · sgn e · sgn s[l][j].</text>
+<text x="456" y="1028" class="s">ΔW[l][i,j] = sgn a[l][i] · sgn e · sgn grad[l][j].</text>
 
 <!-- mini PE grid -->
 <g>
@@ -290,10 +280,10 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 <text x="445" y="1160" class="ms mid">earlier samples, then the training sample</text>
 <rect x="620" y="1118" width="230" height="52" rx="6" class="bxl"/>
 <text x="735" y="1140" class="mid b">Host pops the result</text>
-<text x="735" y="1160" class="ms mid">sgn e, seed s[L−1]</text>
+<text x="735" y="1160" class="ms mid">sgn e</text>
 <rect x="860" y="1118" width="380" height="52" rx="6" class="bxl"/>
 <text x="1050" y="1140" class="mid b">BACKWARD</text>
-<text x="1050" y="1160" class="ms mid">(L−1)·N² cycles — 50 at N=5, L=3</text>
+<text x="1050" y="1160" class="ms mid">L·(N+1)/2 cycles — 9 at N=5, L=3</text>
 <rect x="1250" y="1118" width="150" height="52" rx="6" class="bxl"/>
 <text x="1325" y="1140" class="mid b">APPLY</text>
 <text x="1325" y="1160" class="ms mid">1 cycle</text>

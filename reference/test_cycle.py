@@ -90,7 +90,44 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(model.outstanding,0)
         self.assertEqual(model.host_layer,0)
 
-    def test_training_uses_serial_exact_oracle_and_blocks_following_samples(self):
+    def test_backward_pass_settles_on_the_oracle_in_layers_times_center_latency(self):
+        rng=random.Random(77)
+        for n in (3,5,9):
+            for layers in (2,3,4,6):
+                cfg=CycleConfig(n=n,width=8,layers=layers,pass_through=False)
+                for _ in range(4):
+                    w=[[[rng.randint(-128,127) for _ in range(n)] for _ in range(n)] for _ in range(layers)]
+                    r=[rng.randint(-128,127) for _ in range(n)]
+                    x=tuple(rng.randint(-128,127) for _ in range(n))
+                    model=CycleReference(cfg,w,r)
+                    oracle=FunctionalReference(cfg,w,r)
+                    sample=Sample(x,127,True)
+                    expected=oracle.step(sample)
+                    if expected.learning_direction==0: continue
+                    model.step(CycleInputs(input_valid=True,input_data=x,target_data=127,training_enable=True,pass_through=False))
+                    while model.training_state==0: model.step(CycleInputs(pass_through=False))
+                    backward=0
+                    while model.training_state==1:
+                        model.step(CycleInputs(pass_through=False))
+                        backward+=1
+                    self.assertEqual(backward,layers*cfg.center_latency)
+                    self.assertEqual(model.gradient,[list(row) for row in expected.gradients])
+                    model.step(CycleInputs(pass_through=False))
+                    self.assertEqual(model.W,oracle.W)
+                    self.assertEqual(model.R,oracle.R)
+
+    def test_stopping_the_backward_pass_one_edge_early_fails_the_oracle(self):
+        cfg=CycleConfig(n=5,width=8,layers=3,pass_through=False)
+        rng=random.Random(9)
+        w=[[[rng.randint(1,127) for _ in range(5)] for _ in range(5)] for _ in range(3)]
+        model=CycleReference(cfg,w,[64]*5)
+        expected=FunctionalReference(cfg,w,[64]*5).step(Sample((1,1,1,1,1),-128,True))
+        model.step(CycleInputs(input_valid=True,input_data=(1,1,1,1,1),target_data=-128,training_enable=True,pass_through=False))
+        while model.training_state==0: model.step(CycleInputs(pass_through=False))
+        for _ in range(cfg.backward_cycles-1): model.step(CycleInputs(pass_through=False))
+        self.assertNotEqual(model.gradient,[list(row) for row in expected.gradients])
+
+    def test_training_uses_exact_oracle_and_blocks_following_samples(self):
         cfg=CycleConfig(n=3,layers=3,pass_through=False)
         w=[identity(3),identity(3),[[2,-1,0],[0,2,0],[0,0,1]]]
         model=CycleReference(cfg,w,[1,3,0])
@@ -109,7 +146,7 @@ class CycleTests(unittest.TestCase):
             self.assertLess(cycles,100)
         self.assertEqual(model.W,oracle.W)
         self.assertEqual(model.R,oracle.R)
-        self.assertEqual(model.sensitivity,[list(row) for row in expected.sensitivities])
+        self.assertEqual(model.gradient,[list(row) for row in expected.gradients])
         self.assertEqual(len(model.records),1)
         model.step(CycleInputs(input_valid=True,input_data=(2,2,2),pass_through=False))
         self.drain(model)

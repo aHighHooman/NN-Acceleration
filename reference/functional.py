@@ -1,4 +1,4 @@
-"""Exact-widening Fountain inference and serial full-sensitivity sign learning.
+"""Exact-widening Fountain inference and full-gradient sign learning.
 
 This model has no pipeline state. Each training step is an atomic reference
 transaction, matching the hardware admission barrier rather than delayed LMS.
@@ -70,7 +70,7 @@ class SampleRecord:
     activated_result: tuple[int, ...]
     prediction: int
     learning_direction: int
-    sensitivities: tuple[tuple[int, ...], ...]
+    gradients: tuple[tuple[int, ...], ...]
     matrix_update_directions: tuple
     reduction_update_directions: tuple[int, ...]
 
@@ -108,21 +108,21 @@ def analyze(config: ReferenceConfig, weights, readout, sample: Sample, index=0):
     assert to_signed(prediction, config.prediction_width) == prediction
     target = to_signed(sample.target, config.target_width)
     error = ternary_sign(target - prediction)
-    sensitivity = [[0] * config.n for _ in range(config.layers)]
-    sensitivity[-1] = [r[j] if gates[-1][j] else 0 for j in range(config.n)]
+    gradient = [[0] * config.n for _ in range(config.layers)]
+    gradient[-1] = [r[j] if gates[-1][j] else 0 for j in range(config.n)]
     for layer in range(config.layers - 2, -1, -1):
-        sensitivity[layer] = [sum(w[layer+1][i][j] * sensitivity[layer+1][j]
-                                 for j in range(config.n)) if gates[layer][i] else 0
-                              for i in range(config.n)]
+        gradient[layer] = [sum(w[layer+1][i][j] * gradient[layer+1][j]
+                               for j in range(config.n)) if gates[layer][i] else 0
+                           for i in range(config.n)]
     direction = tuple(tuple(tuple(ternary_sign(activations[layer][i]) * error *
-                        ternary_sign(sensitivity[layer][j]) if sample.training_enable else 0
+                        ternary_sign(gradient[layer][j]) if sample.training_enable else 0
                         for j in range(config.n)) for i in range(config.n))
                         for layer in range(config.layers))
     reduction = tuple(error * ternary_sign(a) if sample.training_enable else 0 for a in activations[-1])
     return SampleRecord(index, x, target, sample.training_enable,
         tuple(tuple(tuple(row) for row in matrix) for matrix in w), r,
         tuple(activations), tuple(gates), raw, activations[-1], prediction, error,
-        tuple(tuple(row) for row in sensitivity), direction, reduction)
+        tuple(tuple(row) for row in gradient), direction, reduction)
 
 
 class FunctionalReference:

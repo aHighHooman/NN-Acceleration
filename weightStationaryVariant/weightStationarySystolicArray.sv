@@ -1,19 +1,21 @@
 // Center-out PE network with combinational joins of registered boundary sums.
+// Forward it computes in_data * W. Backward it computes W * gradient_in on the
+// same PEs by exchanging the row and column routes.
 module weightStationarySystolicArray #(
     parameter int N = 5,
     parameter int INPUT_WIDTH = 8,
     parameter int WIDTH = 8,
     parameter int RESULT_WIDTH = INPUT_WIDTH+WIDTH+$clog2(N)
 )(
-    input logic clk, rst_n, advance,
+    input logic clk, rst_n, advance, backward,
     input logic cfg_we,
     input logic [((N>1)?$clog2(N):1)-1:0] cfg_row,
     input logic signed [WIDTH-1:0] cfg_data[N],
     input logic update_valid,
     input logic signed [1:0] row_direction[N], column_direction[N],
-    input logic signed [INPUT_WIDTH-1:0] in_data[N],
+    input logic signed [INPUT_WIDTH-1:0] in_data[N], gradient_in[N],
     input logic in_valid[N],
-    output logic signed [RESULT_WIDTH-1:0] result[N],
+    output logic signed [RESULT_WIDTH-1:0] result[N], gradient_out[N],
     output logic resultValid[N],
     output logic signed [WIDTH-1:0] weights[N][N],
     output logic loaded, busy
@@ -22,6 +24,13 @@ module weightStationarySystolicArray #(
     localparam int INDEX_WIDTH = (N>1)?$clog2(N):1;
     logic [N-1:0] loaded_rows;
     logic accepted_cfg;
+    logic signed [INPUT_WIDTH-1:0] activations[N][N], activation_in[N][N];
+    logic activation_valids[N][N], activation_valid_in[N][N];
+    logic signed [RESULT_WIDTH-1:0] sums[N][N], sum_in[N][N];
+    initial begin
+        if (N<3 || N%2==0 || RESULT_WIDTH<INPUT_WIDTH+WIDTH+$clog2(N))
+            $fatal(1, "Fountain requires odd N>=3 and a full-width accumulator");
+    end
     assign loaded = &loaded_rows;
     assign accepted_cfg = cfg_we && !busy && cfg_row<N;
     always_ff @(posedge clk) begin
@@ -42,47 +51,39 @@ module weightStationarySystolicArray #(
         end
         // synthesis translate_on
     end
-    logic signed [INPUT_WIDTH-1:0] activations[N][N];
-    logic activation_valids[N][N];
-    logic signed [RESULT_WIDTH-1:0] sums[N][N];
-    initial begin
-        if (N<3 || N%2==0 || RESULT_WIDTH<INPUT_WIDTH+WIDTH+$clog2(N))
-            $fatal(1, "Fountain requires odd N>=3 and a full-width accumulator");
+    // Forward: the vector leaves column C along the rows, and sums start at rows
+    // C-1 and C and run along the columns. Backward exchanges rows and columns.
+    // A PE fires at |i-C|+|j-C| either way, so the center-first timing holds.
+    // Only forward vectors carry valid bits, so a backward pass never reads as busy.
+    always_comb begin
+        for (int i=0; i<N; i++) for (int j=0; j<N; j++) begin
+            activation_valid_in[i][j] = (j==C) ? in_valid[i] : activation_valids[i][(j<C)?j+1:j-1];
+            if (backward) begin
+                activation_in[i][j] = (i==C) ? gradient_in[j] : activations[(i<C)?i+1:i-1][j];
+                sum_in[i][j] = (j==C || j==C-1) ? '0 : sums[i][(j<C)?j+1:j-1];
+            end else begin
+                activation_in[i][j] = (j==C) ? in_data[i] : activations[i][(j<C)?j+1:j-1];
+                sum_in[i][j] = (i==C || i==C-1) ? '0 : sums[(i<C)?i+1:i-1][j];
+            end
+        end
     end
     genvar i,j;
     generate
     for (i=0; i<N; i++) begin : rows
         for (j=0; j<N; j++) begin : columns
-            localparam bit IS_SEED = (i==C || i==C-1);
-            wire signed [INPUT_WIDTH-1:0] act;
-            wire av;
-            wire signed [RESULT_WIDTH-1:0] ps;
             logic signed [1:0] direction;
-            if (j==C) begin : center
-                assign act = in_data[i];
-                assign av = in_valid[i];
-            end else begin : horizontal
-                localparam int NEIGHBOR = (j<C) ? j+1 : j-1;
-                assign act = activations[i][NEIGHBOR];
-                assign av = activation_valids[i][NEIGHBOR];
-            end
-            if (IS_SEED) begin : seed
-                assign ps = '0;
-            end else begin : vertical
-                localparam int NEIGHBOR = (i<C) ? i+1 : i-1;
-                assign ps = sums[NEIGHBOR][j];
-            end
             always_comb begin
                 if (row_direction[i]==0 || column_direction[j]==0) direction = 0;
                 else if (row_direction[i]==column_direction[j]) direction = 2'sd1;
                 else direction = -2'sd1;
             end
-            weightStationaryProcessingElement #(.INPUT_WIDTH(INPUT_WIDTH), .WIDTH(WIDTH), .RESULT_WIDTH(RESULT_WIDTH),
-                          .SEED(IS_SEED)) pe (
+            weightStationaryProcessingElement #(.INPUT_WIDTH(INPUT_WIDTH), .WIDTH(WIDTH),
+                          .RESULT_WIDTH(RESULT_WIDTH)) pe (
                 .clk, .rst_n, .advance,
                 .cfg_we(accepted_cfg && cfg_row==INDEX_WIDTH'(i)), .cfg_data(cfg_data[j]),
                 .update_valid(update_valid && !busy && loaded), .update_direction(direction),
-                .activation_in(act), .activation_valid(av), .sum_in(ps),
+                .activation_in(activation_in[i][j]), .activation_valid(activation_valid_in[i][j]),
+                .sum_in(sum_in[i][j]),
                 .activation_out(activations[i][j]),
                 .activation_out_valid(activation_valids[i][j]),
                 .sum_out(sums[i][j]), .weight(weights[i][j])
@@ -98,6 +99,7 @@ module weightStationarySystolicArray #(
     generate
     for (j=0; j<N; j++) begin : columns
         assign result[j] = sums[0][j] + sums[N-1][j];
+        assign gradient_out[j] = sums[j][0] + sums[j][N-1];
         assign resultValid[j] = activation_valids[0][j];
         // The join and activation settle between boundary capture and the
         // next layer's PE capture; there is no separate join register.

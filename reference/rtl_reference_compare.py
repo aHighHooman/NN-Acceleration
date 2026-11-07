@@ -137,7 +137,7 @@ def build(config):
     driver.tick(reset_n=False,result_ready=False)
     driver.idle(20)
     assert not driver.model.pipeline_busy and not driver.model.fifo
-    driver.mark('full sensitivity learning and hidden sign cancellation')
+    driver.mark('full gradient learning and hidden sign cancellation')
     identity=[[int(i==j) for j in range(n)] for i in range(n)]
     matrices=[[row[:] for row in identity] for _ in range(config.layers)]
     matrices[-1][0][0]=2
@@ -162,7 +162,7 @@ def build(config):
     driver.mark('zero error, zero activation and gated learning')
     driver.offer((0,0,0),target=0,training=True)
     driver.drain()
-    driver.mark('reset during backward sensitivity calculation')
+    driver.mark('reset during the backward pass')
     driver.offer((2,1,3),target=-128,training=True)
     if config.layers>1:
         for _ in range(100):

@@ -32,6 +32,10 @@ class CycleConfig(ReferenceConfig):
     def center_latency(self):
         return self.n//2+1
 
+    @property
+    def backward_cycles(self):
+        return self.layers*self.center_latency
+
 
 @dataclass(frozen=True)
 class CycleInputs:
@@ -118,6 +122,30 @@ class _Layer:
                     assert to_signed(value,self.aw)==value, 'MAC overflow'
                     next_sums[i][j]=Lane(value,activation.sample)
         self.act,self.sums=next_act,next_sums
+
+    def begin_backward(self):
+        # The RTL's PE registers still hold forward leftovers here. Poison stands
+        # in for them, so stopping before everything settles fails the oracle.
+        n=self.config.n
+        self.back_act=[[1<<self.aw]*n for _ in range(n)]
+        self.back_sums=[[1<<self.aw]*n for _ in range(n)]
+
+    def gradient_outputs(self):
+        return [self.back_sums[i][0]+self.back_sums[i][-1] for i in range(self.config.n)]
+
+    def tick_backward(self, incoming):
+        # Forward's routes with rows and columns exchanged.
+        n=self.config.n
+        c=n//2
+        next_act=[[0]*n for _ in range(n)]
+        next_sums=[[0]*n for _ in range(n)]
+        for i in range(n):
+            for j in range(n):
+                gradient=incoming[j] if i==c else self.back_act[i+1 if i<c else i-1][j]
+                partial=0 if j in (c,c-1) else self.back_sums[i][j+1 if j<c else j-1]
+                next_act[i][j]=gradient
+                next_sums[i][j]=gradient*self.weights[i][j]+partial
+        self.back_act,self.back_sums=next_act,next_sums
 
 
 class _Reduction:
@@ -209,9 +237,9 @@ class CycleReference:
         self.input_signs=[[0]*n for _ in range(k)]
         self.gates=[[False]*n for _ in range(k)]
         self.final_signs=[0]*n
-        self.sensitivity=[[0]*n for _ in range(k)]
+        self.gradient=[[0]*n for _ in range(k)]
         self.training_state=0
-        self.back_layer=self.back_row=self.back_col=self.back_acc=0
+        self.back_count=0
         self.direction=0
         self.mode_pass=False
         self.configuration_error=False
@@ -230,6 +258,14 @@ class CycleReference:
     def lane_outputs(self):
         return [[None if lane is None else Lane(lane.value if self.mode_pass or lane.value>=0 else 0,lane.sample)
                  for lane in layer.outputs()] for layer in self.layers]
+
+    def gradient_lanes(self,readout):
+        """The gradient vector at each layer's output, as the wires show it now."""
+        lanes=[None]*self.config.layers
+        for l in range(self.config.layers):
+            source=readout if l==self.config.layers-1 else self.layers[l+1].gradient_outputs()
+            lanes[l]=[value if gate else 0 for value,gate in zip(source,self.gates[l])]
+        return lanes
 
     @property
     def pipeline_busy(self):
@@ -330,29 +366,26 @@ class CycleReference:
             if old_state==0 and retired and old_pending and old_outstanding==1:
                 assert head.sample==self.training_sample, 'training sample did not retire last'
                 self.direction=ternary_sign(self.saved_target-head.prediction)
-                self.sensitivity[-1]=[r if gate else 0 for r,gate in zip(old_r,self.gates[-1])]
-                self.back_layer=max(0,cfg.layers-2)
-                self.back_row=self.back_col=self.back_acc=0
+                for layer in self.layers: layer.begin_backward()
+                self.gradient=self.gradient_lanes(old_r)
+                self.back_count=0
                 self.training_state=2 if cfg.layers==1 or self.direction==0 else 1
             elif old_state==1 and sig['advance']:
-                value=(self.back_acc if self.back_col else 0)+self._W[self.back_layer+1][self.back_row][self.back_col]*self.sensitivity[self.back_layer+1][self.back_col]
-                if self.back_col==cfg.n-1:
-                    self.sensitivity[self.back_layer][self.back_row]=value if self.gates[self.back_layer][self.back_row] else 0
-                    self.back_col=self.back_acc=0
-                    if self.back_row==cfg.n-1:
-                        self.back_row=0
-                        if self.back_layer==0: self.training_state=2
-                        else: self.back_layer-=1
-                    else: self.back_row+=1
-                else:
-                    self.back_acc=value
-                    self.back_col+=1
+                self.gradient=self.gradient_lanes(old_r)
+                for l in range(1,cfg.layers): self.layers[l].tick_backward(self.gradient[l])
+                self.back_count+=1
+                if self.back_count==cfg.backward_cycles:
+                    self.training_state=2
+                    step_width=cfg.width+(cfg.n-1).bit_length()
+                    for l,lanes in enumerate(self.gradient):
+                        width=cfg.reduction_weight_width+(cfg.layers-1-l)*step_width
+                        assert all(to_signed(value,width)==value for value in lanes), 'gradient overflow'
             elif old_state==2 and sig['advance']:
                 record=self.expected[self.training_sample]
                 for l in range(cfg.layers):
                     for i in range(cfg.n):
                         for j in range(cfg.n):
-                            direction=self.input_signs[l][i]*self.direction*ternary_sign(self.sensitivity[l][j])
+                            direction=self.input_signs[l][i]*self.direction*ternary_sign(self.gradient[l][j])
                             assert direction==record.matrix_update_directions[l][i][j]
                             self._W[l][i][j]=saturating_lsb_update(self._W[l][i][j],direction,cfg.width)
                 self._R=[saturating_lsb_update(r,self.direction*sign,cfg.reduction_weight_width) for r,sign in zip(old_r,self.final_signs)]

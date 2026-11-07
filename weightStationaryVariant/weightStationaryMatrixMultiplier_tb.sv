@@ -8,32 +8,38 @@ module weightStationaryMatrixMultiplier_testcase #(
     localparam int AW=WIDTH+LAYERS*(WIDTH+$clog2(N));
     localparam int D=N/2+1;
     localparam int LIMIT=512;
+    localparam int REDUCTION_WEIGHT_WIDTH=8;
     typedef logic signed [WIDTH-1:0] data_t;
     typedef logic signed [AW-1:0] result_t;
     logic clk=0, rst_n, weightValid, weightReady, inputValid, inputReady;
     logic outputBlocked, weightsLoaded, reloadWeights, reloadReady, advance;
-    logic passThrough;
+    logic passThrough, backward;
     data_t weightData[N], inputData[N], matrix[LAYERS][N][N];
     wire signed [WIDTH-1:0] weights[LAYERS][N][N];
+    logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N];
+    logic activationGates[LAYERS][N];
     logic signed [1:0] rowDirection[LAYERS][N], columnDirection[LAYERS][N];
     logic matrixUpdateValid;
     result_t resultData[N];
     wire resultValid[N];
     wire tapValid[LAYERS][N], tapGate[LAYERS][N];
-    wire signed [1:0] tapSign[LAYERS][N];
+    wire signed [1:0] tapSign[LAYERS][N], tapGradientSign[LAYERS][N];
+    wire signed [REDUCTION_WEIGHT_WIDTH+(LAYERS-1)*(WIDTH+$clog2(N))-1:0] laneGradient[LAYERS][N];
     result_t expected[LIMIT][N];
     int acceptedStep[LIMIT], acceptedCount, cycle, enabledStep;
     int laneArrivals[N];
     int unsigned randomState;
     always #5 clk=~clk;
     weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS)) dut (
-        .clk, .rst_n, .weightData, .weightValid, .weightReady,
-        .inputData, .inputValid, .inputReady, .passThrough,
+        .clk, .rst_n, .backward, .weightData, .weightValid, .weightReady,
+        .inputData, .inputValid, .inputReady, .passThrough, .reductionWeight, .activationGates,
         .rowDirection, .columnDirection, .matrixUpdateValid,
         .resultData, .resultValid, .outputBlocked,
         .weightsLoaded, .reloadWeights, .reloadReady, .arrayAdvance(advance),
-        .weights, .tapValid, .tapGate, .tapSign
+        .weights, .tapValid, .tapGate, .tapSign, .tapGradientSign
     );
+    for (genvar l=0; l<LAYERS; l++) for (genvar j=0; j<N; j++)
+        assign laneGradient[l][j]=dut.layers[l].lanes[j].gradient;
     function automatic int unsigned random_word();
         randomState=1664525*randomState+1013904223;
         return randomState;
@@ -149,6 +155,36 @@ module weightStationaryMatrixMultiplier_testcase #(
             $fatal(1,"Fountain lane completeness N=%0d L=%0d lane=%0d arrivals=%0d accepted=%0d",
                 N,LAYERS,j,laneArrivals[j],acceptedCount);
     endtask
+    // Hold the readout weights for one edge less than the accelerator's backward
+    // count, because this bench reads the signs before they are captured, and
+    // compare every layer's lanes with a dense calculation.
+    task automatic check_backward();
+        logic signed [WIDTH+LAYERS*(WIDTH+$clog2(N))+REDUCTION_WEIGHT_WIDTH-1:0] gradient[N], next[N];
+        @(negedge clk);
+        backward=1;
+        for (int j=0; j<N; j++) reductionWeight[j]=REDUCTION_WEIGHT_WIDTH'(random_word());
+        for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++) activationGates[l][j]=random_word()%4!=0;
+        repeat(LAYERS*D-1) @(posedge clk);
+        #1;
+        for (int j=0; j<N; j++) gradient[j]=activationGates[LAYERS-1][j]?reductionWeight[j]:0;
+        for (int l=LAYERS-1; l>=0; l--) begin
+            for (int j=0; j<N; j++) begin
+                if (laneGradient[l][j]!==gradient[j])
+                    $fatal(1,"Fountain gradient N=%0d L=%0d layer=%0d lane=%0d got=%0d expected=%0d",
+                        N,LAYERS,l,j,laneGradient[l][j],gradient[j]);
+                if (tapGradientSign[l][j]!==((gradient[j]==0)?2'sd0:((gradient[j]<0)?-2'sd1:2'sd1)))
+                    $fatal(1,"Fountain gradient sign N=%0d L=%0d layer=%0d lane=%0d",N,LAYERS,l,j);
+            end
+            if (l>0) begin
+                for (int i=0; i<N; i++) begin
+                    next[i]=0;
+                    if (activationGates[l-1][i]) for (int j=0; j<N; j++) next[i]+=$signed(matrix[l][i][j])*gradient[j];
+                end
+                gradient=next;
+            end
+        end
+        @(negedge clk); backward=0;
+    endtask
     task automatic reload();
         int previous;
         @(negedge clk);
@@ -162,15 +198,20 @@ module weightStationaryMatrixMultiplier_testcase #(
     endtask
     initial begin
         done=0; rst_n=0; weightValid=0; inputValid=0;
-        outputBlocked=0; reloadWeights=0; passThrough=1; matrixUpdateValid=0;
+        outputBlocked=0; reloadWeights=0; passThrough=1; matrixUpdateValid=0; backward=0;
         cycle=0; enabledStep=0; acceptedCount=0;
         randomState=32'(N*913+LAYERS*43);
-        for (int l=0; l<LAYERS; l++) for (int i=0; i<N; i++) begin rowDirection[l][i]=0; columnDirection[l][i]=0; end
-        for (int i=0; i<N; i++) begin inputData[i]=0; weightData[i]=0; end
+        for (int l=0; l<LAYERS; l++) for (int i=0; i<N; i++) begin
+            rowDirection[l][i]=0; columnDirection[l][i]=0; activationGates[l][i]=1;
+        end
+        for (int i=0; i<N; i++) begin inputData[i]=0; weightData[i]=0; reductionWeight[i]=0; end
         reset_dut(); load_weights(0);
         stream(N,4); stream(50,0); stream(40,1); stream(45,2);
+        // A backward pass leaves the PE registers dirty; forward results must not care.
+        check_backward(); stream(16,0);
         reload(); passThrough=0; load_weights(0); stream(32,0);
         reload(); passThrough=1; load_weights(1); stream(8,3);
+        check_backward(); stream(8,3);
         @(negedge clk); inputValid=1;
         @(posedge clk); #1;
         reset_dut(); load_weights(0); stream(8,0);
@@ -180,7 +221,7 @@ module weightStationaryMatrixMultiplier_testcase #(
 endmodule
 
 module weightStationaryMatrixMultiplier_tb;
-    wire [6:0] done;
+    wire [7:0] done;
     weightStationaryMatrixMultiplier_testcase #(.N(3),.LAYERS(1)) a(done[0]);
     weightStationaryMatrixMultiplier_testcase #(.N(5),.LAYERS(1)) b(done[1]);
     weightStationaryMatrixMultiplier_testcase #(.N(5),.LAYERS(3)) c(done[2]);
@@ -188,6 +229,7 @@ module weightStationaryMatrixMultiplier_tb;
     weightStationaryMatrixMultiplier_testcase #(.N(5),.WIDTH(16),.LAYERS(1)) e(done[4]);
     weightStationaryMatrixMultiplier_testcase #(.N(9),.LAYERS(1)) f(done[5]);
     weightStationaryMatrixMultiplier_testcase #(.N(3),.WIDTH(16),.LAYERS(3)) g(done[6]);
+    weightStationaryMatrixMultiplier_testcase #(.N(3),.LAYERS(4)) h(done[7]);
     initial begin wait(&done); $display("PASS: Fountain matrix regression"); $finish; end
     initial begin #1000000; $fatal(1,"Fountain matrix regression timeout"); end
 endmodule

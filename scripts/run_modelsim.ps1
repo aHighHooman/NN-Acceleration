@@ -51,4 +51,6 @@ if ($LASTEXITCODE) { throw "N=5 reference comparison failed" }
 if ($LASTEXITCODE) { throw "Fixed-point reference comparison failed" }
 & pwsh -File (Join-Path $PSScriptRoot "run_rtl_reference_compare.ps1") -ArtifactDir (Join-Path $projectRoot "build/rtl_reference_compare/single") -Layers 1 -FractionBits 4
 if ($LASTEXITCODE) { throw "Single-layer reference comparison failed" }
+& pwsh -File (Join-Path $PSScriptRoot "run_rtl_reference_compare.ps1") -ArtifactDir (Join-Path $projectRoot "build/rtl_reference_compare/four") -Layers 4
+if ($LASTEXITCODE) { throw "Four-layer reference comparison failed" }
 Write-Output "PASS: Fountain arithmetic, enabled-step timing, loading, global stalls, all-layer learning and RTL/reference states."

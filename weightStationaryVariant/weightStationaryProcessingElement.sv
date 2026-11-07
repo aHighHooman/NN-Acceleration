@@ -1,8 +1,7 @@
 module weightStationaryProcessingElement #(
     parameter int INPUT_WIDTH = 8,
     parameter int WIDTH = 8,
-    parameter int RESULT_WIDTH = INPUT_WIDTH+WIDTH+3,
-    parameter bit SEED = 0
+    parameter int RESULT_WIDTH = INPUT_WIDTH+WIDTH+3
 )(
     input logic clk, rst_n, advance,
     input logic cfg_we,
@@ -52,7 +51,7 @@ module weightStationaryProcessingElement #(
         end else if (advance) begin
             activation_out <= activation_in;
             activation_out_valid <= activation_valid;
-            sum_out <= (SEED ? RESULT_WIDTH'('0) : sum_in) + extended_product;
+            sum_out <= sum_in + extended_product;
         end
     end
 endmodule

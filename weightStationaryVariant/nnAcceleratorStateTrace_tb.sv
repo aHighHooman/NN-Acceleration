@@ -19,13 +19,11 @@ module nnAcceleratorStateTrace_tb #(
         .IN_FLIGHT_DEPTH(16),.OUTPUT_FIFO_DEPTH(2)) dut(.*);
 
     for (genvar l=0; l<LAYERS; l++) begin : freeze_layer
-        localparam int XW=WIDTH+l*(WIDTH+$clog2(N));
-        localparam int AW=XW+WIDTH+$clog2(N);
         for (genvar i=0; i<N; i++) begin : freeze_row
             for (genvar j=0; j<N; j++) begin : freeze_column
                 always @(posedge clk) begin
-                    logic signed [XW-1:0] activation;
-                    logic signed [AW-1:0] partial;
+                    logic signed [$bits(dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.activation_out)-1:0] activation;
+                    logic signed [$bits(dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.sum_out)-1:0] partial;
                     logic av;
                     if (rst_n && weightsLoaded && !dut.arrayAdvance) begin
                         activation=dut.matrixEngine.layers[l].systolicArray.rows[i].columns[j].pe.activation_out;

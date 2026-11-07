@@ -21,8 +21,8 @@ re-skewing it. Each extra layer therefore adds only a small, fixed delay.
   final Nx1 column of PEs reduces the last stage to one scalar prediction.
 - **Pipelined inference.** Accepts up to one input vector per clock. A result
   FIFO and a single global stall signal handle downstream backpressure.
-- **On-chip training.** Backpropagates full error sensitivities through every
-  layer and applies saturating one-LSB sign updates to all weights.
+- **On-chip training.** Runs the gradient vectors back through the matrix stages
+  themselves and applies saturating one-LSB sign updates to all weights.
 - **Exact arithmetic.** Signed fixed-point with no rounding or saturation
   between layers. Each stage widens just enough to stay exact.
 - **Verified against a reference model.** Python functional and cycle-accurate
@@ -79,23 +79,43 @@ When a sample is submitted with `trainingEnable`, the accelerator:
 
 1. Lets earlier inference samples finish and stops admitting new ones.
 2. Runs the training sample forward and computes `e = target - prediction`.
-3. Computes the backward sensitivities on one shared multiply-accumulate unit
-   in `(LAYERS-1)*N*N` cycles:
+3. Computes each layer's gradient vector by running the readout weights back
+   through the matrix stages, in `LAYERS*(h+1)` cycles. Each entry is 0 where the
+   condition fails:
    ```text
-   s[last] = g[last] .* r
-   s[l]    = g[l] .* (W[l+1] * s[l+1])
+   grad[last] = r                  | output[last] > 0
+   grad[l]    = W[l+1] * grad[l+1] | output[l] > 0
    ```
 4. Updates every weight by one LSB in a single cycle, saturating at its range
    limit:
    ```text
-   W[l][i,j] += sign(a[l][i]) * sign(e) * sign(s[l][j])
+   W[l][i,j] += sign(a[l][i]) * sign(e) * sign(grad[l][j])
    r[j]      += sign(e) * sign(a[last+1][j])
    ```
 5. Resumes admitting samples.
 
 ![Backpropagation path](presentation/figures/12-backprop-architecture.svg)
 
-Inference stays fully pipelined. Training handles one sample at a time.
+The backward pass multiplies on the other side of each matrix, `W * vector`
+instead of `vector * W`. Each PE therefore has two muxes that exchange the row
+and column routes: the vector runs along the columns from the center row, and the
+sums run along the rows from the two center columns. A PE fires at
+`|i-C| + |j-C|` in both directions, so the same center-first timing carries one
+array's outputs straight into the previous array.
+
+The readout weights are held still, and the path from them to every lane is
+feed-forward. The controller only has to wait for the longest path,
+`(LAYERS-1)*(h+1) + h` cycles, and capture the signs on one more edge. The pass
+needs no valid bits or lane skew, and stores only two sign bits per lane.
+
+Array 0 never runs backward, so it has no muxes. Gradient vectors get wider going
+backward as activations get wider going forward, so with `LAYERS <= 3` and
+`REDUCTION_WEIGHT_WIDTH <= WIDTH` they fit the existing registers. Other
+configurations widen an array's registers and multipliers only where needed, which
+keeps the gradients exact.
+
+Inference stays fully pipelined. Training handles one sample at a time, and the
+stages can't run inference while they run backward.
 `reference/functional.py` is the executable statement of the update rule, and
 `reference/test_functional.py` checks its signs against finite differences.
 
@@ -190,13 +210,15 @@ stall, reset and timing rules that the RTL is compared against.
 
 All tests pass in Questa:
 
-- 26 Python tests of the reference models: fixed-point arithmetic, timing,
-  stalls, reset, and finite-difference checks of the training update signs.
-- Matrix-stage testbenches covering N=3/5/9, one and three layers, WIDTH=8/16,
-  including results wider than 64 bits.
+- 28 Python tests of the reference models: fixed-point arithmetic, timing,
+  stalls, reset, the backward pass settling on the exact gradients, and
+  finite-difference checks of the training update signs.
+- Matrix-stage testbenches covering N=3/5/9, one, three and four layers,
+  WIDTH=8/16, including results wider than 64 bits and exact backward gradients
+  against a dense calculation.
 - Readout-column testbenches covering N=3/5/9 and the 41-bit lanes of the Quartus
   build: results against a dense sum, lane timing, stalls, loads and updates.
-- 3,270 cycle-by-cycle RTL/reference comparisons across four configurations.
+- 3,580 cycle-by-cycle RTL/reference comparisons across five configurations.
   Each one checks handshakes, results, every weight, every lane of every stage,
   and the readout output.
 
@@ -204,17 +226,21 @@ All tests pass in Questa:
 
 | Metric | Value |
 | --- | --- |
-| Logic | 7,423 ALMs |
-| Registers | 5,540 |
+| Logic | 6,875 ALMs |
+| Registers | 5,328 |
 | DSP blocks | 87 / 87 |
 | Memory | 440 bits (2 RAM blocks) |
-| Fmax | 73.1 MHz (100 MHz target not met) |
+| Fmax | 69.4 MHz (100 MHz target not met) |
 
-The critical path runs from the last layer's weights through the shared backward
-multiplier into the sensitivity registers. That multiplier is built from logic
-because the forward stages use every DSP block. These numbers come from one fit
-with the default seed. I/O pins are virtual, so they describe the core and are
+The critical path runs from one stage's boundary sums through the column join,
+ReLU and the backward mux into the next stage's multiplier and sum register, all in
+one cycle. Across seeds 1 to 3 Fmax is 68.8 to 70.5 MHz. These numbers come from the
+default seed unless noted. I/O pins are virtual, so they describe the core and are
 not a board-level sign-off.
+
+The PEs need 90 DSP blocks when all their multipliers use DSPs, because a PE that
+adds an incoming sum merges that adder into its DSP and takes a whole block. The
+Quartus project therefore builds the five multipliers in array 0's row 0 from logic.
 
 ## Repository layout
 
@@ -224,7 +250,7 @@ weightStationaryVariant/
   weightStationarySystolicArray.sv       Center-out PE grid, combinational column joins
   weightStationaryMatrixMultiplier.sv    Layer chain, weight loader, activation
   weightedVectorReduction.sv             Scalar readout: Nx1 PE column
-  nnAccelerator.sv                       Top level: control, FIFO, training engine
+  nnAccelerator.sv                       Top level: control, FIFO, training control
   *_tb.sv                                Testbenches
 memory/signedFifo.sv                     Result FIFO
 reference/                               Python functional and cycle-accurate models, tests
@@ -236,7 +262,7 @@ presentation/figures/                    Architecture diagrams
 ## Limitations and future work
 
 - The 100 MHz timing target is not met on Cyclone V; the latest fit reaches
-  73.1 MHz.
+  69.4 MHz.
 - The output is one scalar, so multi-output networks are not supported.
 - Only square matrix stages with odd N are supported.
 - Training handles one sample at a time; only inference is fully pipelined.

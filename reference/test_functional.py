@@ -49,7 +49,7 @@ class FunctionalTests(unittest.TestCase):
         cfg=ReferenceConfig(n=3,layers=3,pass_through=False)
         w=[identity(3),identity(3),[[2,-1,0],[0,2,0],[0,0,1]]]
         record=analyze(cfg,w,[1,3,0],Sample((1,1,1),1,True))
-        self.assertEqual(record.sensitivities,((-1,6,0),(-1,6,0),(1,3,0)))
+        self.assertEqual(record.gradients,((-1,6,0),(-1,6,0),(1,3,0)))
         self.assertEqual(record.matrix_update_directions[1][0][0],-1)
         self.assertEqual(sum(w[2][0][j]*(1 if [1,3,0][j]>0 else 0) for j in range(3)),1)
 
@@ -76,7 +76,7 @@ class FunctionalTests(unittest.TestCase):
         model.step(Sample((1,1,1),base.prediction,True))
         self.assertEqual(model.W,before)
 
-    def test_full_sensitivity_signs_match_finite_differences(self):
+    def test_full_gradient_signs_match_finite_differences(self):
         rng=random.Random(1963)
         cfg=ReferenceConfig(n=3,layers=3,target_width=64,pass_through=False)
         checked=0

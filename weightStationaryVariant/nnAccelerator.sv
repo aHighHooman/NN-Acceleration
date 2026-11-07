@@ -1,6 +1,7 @@
 // Fountain replaces the former inward datapath in the existing hierarchy.
 // Inference is pipelined; training drains behind one accepted training sample,
-// computes full backward sensitivities, and commits one-LSB updates atomically.
+// runs the gradient vectors back through the arrays, and commits one-LSB updates
+// atomically.
 module nnAccelerator #(
     parameter int WIDTH=16, N=3, LAYERS=3, FRACTION_BITS=4,
     parameter int TARGET_WIDTH=WIDTH, REDUCTION_WEIGHT_WIDTH=8,
@@ -27,9 +28,9 @@ module nnAccelerator #(
     localparam int LG=$clog2(N);
     localparam int MATRIX_RESULT_WIDTH=WIDTH+LAYERS*(WIDTH+LG);
     localparam int PREDICTION_WIDTH=MATRIX_RESULT_WIDTH+LG;
-    localparam int SENS_WIDTH=REDUCTION_WEIGHT_WIDTH+(LAYERS-1)*(WIDTH+LG);
-    localparam int BACK_PRODUCT_WIDTH=WIDTH+SENS_WIDTH;
-    localparam int BACK_SUM_WIDTH=BACK_PRODUCT_WIDTH+LG;
+    // The longest register path from the held readout weights to the last lane
+    // is (LAYERS-1)*((N-1)/2+1)+(N-1)/2, and one more edge captures the signs.
+    localparam int BACKWARD_CYCLES=LAYERS*((N-1)/2+1);
     localparam int COUNT_WIDTH=$clog2(IN_FLIGHT_DEPTH+1);
     localparam int COMPARE_WIDTH=(PREDICTION_WIDTH>TARGET_WIDTH)?PREDICTION_WIDTH:TARGET_WIDTH;
     typedef enum logic [1:0] {IDLE, BACKWARD, APPLY} training_state_t;
@@ -50,15 +51,11 @@ module nnAccelerator #(
     logic signed [1:0] inputSigns[LAYERS][N], finalSigns[N];
     logic activationGates[LAYERS][N];
     wire tapValid[LAYERS][N], tapGate[LAYERS][N];
-    wire signed [1:0] tapSign[LAYERS][N];
-    logic signed [SENS_WIDTH-1:0] sensitivity[LAYERS][N];
+    wire signed [1:0] tapSign[LAYERS][N], tapGradientSign[LAYERS][N];
+    logic signed [1:0] gradientSign[LAYERS][N];
     logic signed [1:0] learningDirection, rowDirection[LAYERS][N], columnDirection[LAYERS][N];
     logic signed [COMPARE_WIDTH-1:0] compareTarget, comparePrediction;
-    integer backwardLayer, backwardRow, backwardColumn;
-    // Reserve DSP capacity for the II=1 forward stages on the Cyclone V.
-    // The single time-shared backward multiplier is implemented in logic.
-    (* multstyle = "logic" *) logic signed [BACK_PRODUCT_WIDTH-1:0] backwardProduct;
-    logic signed [BACK_SUM_WIDTH-1:0] backwardAccumulator, backwardSum;
+    logic [$clog2(BACKWARD_CYCLES)-1:0] backwardCount;
 
     initial begin
         if (WIDTH<1 || N<3 || N%2==0 || LAYERS<1 || FRACTION_BITS<0 ||
@@ -83,30 +80,22 @@ module nnAccelerator #(
     always_comb begin
         for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++) begin
             rowDirection[l][j]=inputSigns[l][j];
-            if (learningDirection==0 || sensitivity[l][j]==0) columnDirection[l][j]=0;
-            else columnDirection[l][j]=sensitivity[l][j][SENS_WIDTH-1]?-learningDirection:learningDirection;
+            if (gradientSign[l][j]==0) columnDirection[l][j]=0;
+            else columnDirection[l][j]=(gradientSign[l][j]<0)?-learningDirection:learningDirection;
         end
     end
-    generate
-    if (LAYERS>1) begin : backward_multiplier
-        assign backwardProduct=residentWeights[backwardLayer+1][backwardRow][backwardColumn]*
-                               sensitivity[backwardLayer+1][backwardColumn];
-    end else begin : single_layer
-        assign backwardProduct='0;
-    end
-    endgenerate
-    assign backwardSum=((backwardColumn==0)?BACK_SUM_WIDTH'('0):backwardAccumulator)+
-        {{LG{backwardProduct[BACK_PRODUCT_WIDTH-1]}},backwardProduct};
 
-    weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS)) matrixEngine (
-        .clk, .rst_n, .weightData, .weightValid, .weightReady,
+    weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS),
+        .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH)) matrixEngine (
+        .clk, .rst_n, .backward(trainingState==BACKWARD), .weightData, .weightValid, .weightReady,
         .inputData, .inputValid(matrixInputValid), .inputReady(matrixInputReady),
-        .passThrough(modePassThrough), .rowDirection, .columnDirection, .matrixUpdateValid,
+        .passThrough(modePassThrough), .reductionWeight(residentReductionWeight), .activationGates,
+        .rowDirection, .columnDirection, .matrixUpdateValid,
         .resultData(activatedMatrixResultData), .resultValid(matrixResultValid),
         .outputBlocked(predictionValid && !resultFifoCanAccept), .weightsLoaded,
         .reloadWeights(reloadAccepted),
         .reloadReady(matrixReloadReady), .arrayAdvance, .weights(residentWeights),
-        .tapValid, .tapGate, .tapSign
+        .tapValid, .tapGate, .tapSign, .tapGradientSign
     );
     // One scalar readout on the last stage's lanes; it advances with the array.
     weightedVectorReduction #(.MATRIX_RESULT_WIDTH(MATRIX_RESULT_WIDTH),
@@ -132,19 +121,20 @@ module nnAccelerator #(
             learningDirection<=0;
             modePassThrough<=0;
             configurationError<=0;
-            backwardLayer<=0;
-            backwardRow<=0;
-            backwardColumn<=0;
-            backwardAccumulator<='0;
+            backwardCount<='0;
             for (int j=0; j<N; j++) begin
                 finalSigns[j]<=0;
                 for (int l=0; l<LAYERS; l++) begin
                     inputSigns[l][j]<=0;
                     activationGates[l][j]<=0;
-                    sensitivity[l][j]<='0;
+                    gradientSign[l][j]<=0;
                 end
             end
         end else begin
+            // Free-running: only the edge into APPLY matters, and the lanes have
+            // settled by then.
+            for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++)
+                gradientSign[l][j]<=tapGradientSign[l][j];
             if (quiescent) modePassThrough<=passThrough;
             else if (passThrough!=modePassThrough || loadReductionWeights) configurationError<=1;
             case ({samplePush,resultFifoPop})
@@ -172,30 +162,13 @@ module nnAccelerator #(
                     if (compareTarget>comparePrediction) learningDirection<=2'sd1;
                     else if (compareTarget<comparePrediction) learningDirection<=-2'sd1;
                     else learningDirection<=0;
-                    for (int j=0; j<N; j++) sensitivity[LAYERS-1][j]<=activationGates[LAYERS-1][j] ?
-                        {{(SENS_WIDTH-REDUCTION_WEIGHT_WIDTH){residentReductionWeight[j][REDUCTION_WEIGHT_WIDTH-1]}},residentReductionWeight[j]} : SENS_WIDTH'('0);
-                    backwardLayer<=(LAYERS>1)?LAYERS-2:0;
-                    backwardRow<=0;
-                    backwardColumn<=0;
-                    backwardAccumulator<='0;
+                    backwardCount<='0;
                     if (LAYERS==1 || compareTarget==comparePrediction) trainingState<=APPLY;
                     else trainingState<=BACKWARD;
                 end
                 BACKWARD: if (arrayAdvance) begin
-                    if (backwardColumn==N-1) begin
-                        sensitivity[backwardLayer][backwardRow]<=activationGates[backwardLayer][backwardRow] ?
-                            backwardSum[SENS_WIDTH-1:0] : SENS_WIDTH'('0);
-                        backwardColumn<=0;
-                        backwardAccumulator<='0;
-                        if (backwardRow==N-1) begin
-                            backwardRow<=0;
-                            if (backwardLayer==0) trainingState<=APPLY;
-                            else backwardLayer<=backwardLayer-1;
-                        end else backwardRow<=backwardRow+1;
-                    end else begin
-                        backwardAccumulator<=backwardSum;
-                        backwardColumn<=backwardColumn+1;
-                    end
+                    backwardCount<=backwardCount+1'b1;
+                    if (backwardCount==BACKWARD_CYCLES-1) trainingState<=APPLY;
                 end
                 APPLY: if (arrayAdvance) begin
                     trainingPending<=0;
@@ -209,9 +182,6 @@ module nnAccelerator #(
                 !matrixEngine.inputVectorValid && !matrixEngine.skewBusy &&
                 !matrixEngine.pipelineBusy && reductionColumn.activationValid=='0)
                 else $fatal(1, "Learning barrier did not drain");
-            if (trainingState==BACKWARD && backwardColumn==N-1)
-                assert (backwardSum=={{(BACK_SUM_WIDTH-SENS_WIDTH){backwardSum[SENS_WIDTH-1]}},backwardSum[SENS_WIDTH-1:0]})
-                    else $fatal(1, "Backward sensitivity overflow");
             // synthesis translate_on
         end
     end

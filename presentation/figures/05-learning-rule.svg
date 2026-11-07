@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="f05" viewBox="0 0 840 535" width="840" height="535" role="img" aria-labelledby="f05-title f05-description">
-<title id="f05-title">Fountain full-sensitivity learning and atomic commit</title>
-<desc id="f05-description">A training admission blocks later samples. After the pipeline drains and the training result retires, the shared backward engine computes full weighted sensitivities. All matrix weights and readout coefficients commit saturated one-LSB updates together. At N=5 and three layers, a nonzero error requires 50 advancing backward clocks and one commit clock. Hidden update signs use weighted downstream sensitivities, not just readout coefficient signs.</desc>
+<title id="f05-title">Fountain full-gradient learning and atomic commit</title>
+<desc id="f05-description">A training admission blocks later samples. After the pipeline drains and the training result retires, the gradient vectors run back through the matrix arrays. All matrix weights and readout coefficients commit saturated one-LSB updates together. At N=5 and three layers, a nonzero error requires 50 advancing backward clocks and one commit clock. Hidden update signs use weighted downstream sensitivities, not just readout coefficient signs.</desc>
 <style>
 .f05{--panel:#FFFFFF;--ink:#15191C;--muted:#48525A;--rule:#D5DBD8;--data:#2350C8;--data-soft:#DDE5FB;--learn:#CF4F16;--learn-soft:#FCE4D7}
 @media(prefers-color-scheme:dark){.f05{--panel:#171B1E;--ink:#E6E9EB;--muted:#AEB7BD;--rule:#2C3337;--data:#86A6FF;--data-soft:#1B2847;--learn:#FF8F57;--learn-soft:#3A2116}}
@@ -17,18 +17,18 @@
 </style>
 <defs><marker id="f05-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z" style="fill:var(--muted)"/></marker></defs>
 <rect width="840" height="535" style="fill:var(--panel)"/>
-<text x="20" y="32" class="title">Full sensitivities · one atomic training update</text>
+<text x="20" y="32" class="title">Full gradients · one atomic training update</text>
 <text x="20" y="62" class="mono">e = target − prediction; a[l] is the input to matrix layer l.</text>
-<text x="20" y="94" class="head">Backward sensitivity</text>
+<text x="20" y="94" class="head">Gradient vectors</text>
 <text x="440" y="94" class="head">Saturated one-LSB updates</text>
 <rect x="20" y="108" width="390" height="145" rx="6" class="learning"/>
-<text x="36" y="138" class="mono">s[last] = g[last] ⊙ r</text>
-<text x="36" y="167" class="mono">s[l] = g[l] ⊙ (W[l+1] · s[l+1])</text>
-<text x="36" y="199" class="small">ReLU: g = 1 when the raw sum is positive.</text>
-<text x="36" y="224" class="small">passThrough: g = 1, including at zero.</text>
+<text x="36" y="138" class="mono">grad[last] = r | output &gt; 0</text>
+<text x="36" y="167" class="mono">grad[l] = W[l+1] · grad[l+1] | output &gt; 0</text>
+<text x="36" y="199" class="small">Each entry is 0 where the condition fails.</text>
+<text x="36" y="224" class="small">passThrough: every entry passes, including at zero.</text>
 <rect x="430" y="108" width="390" height="145" rx="6" class="learning"/>
 <text x="446" y="138" class="mono">ΔW[l][i,j] = sign(a[l][i])</text>
-<text x="462" y="164" class="mono">× sign(e) × sign(s[l][j])</text>
+<text x="462" y="164" class="mono">× sign(e) × sign(grad[l][j])</text>
 <text x="446" y="199" class="mono">Δr[j] = sign(e) × sign(a[last+1][j])</text>
 <text x="446" y="230" class="small">Hold at the signed weight limits.</text>
 <text x="20" y="290" class="head">Hidden-layer signs depend on magnitudes</text>
@@ -39,11 +39,11 @@
 <rect x="205" y="373" width="160" height="70" rx="6" class="box"/>
 <text x="285" y="399" class="center">Training result</text><text x="285" y="423" class="center small">retires at the FIFO</text>
 <rect x="395" y="373" width="205" height="70" rx="6" class="learning"/>
-<text x="497.5" y="399" class="center">Backward weighted sums</text><text x="497.5" y="423" class="center small">(LAYERS−1) × N × N steps</text>
+<text x="497.5" y="399" class="center">Arrays run backward</text><text x="497.5" y="423" class="center small">LAYERS × (N+1)/2 steps</text>
 <rect x="630" y="373" width="190" height="70" rx="6" class="learning"/>
 <text x="725" y="399" class="center">All weights commit</text><text x="725" y="423" class="center small">one advancing edge</text>
 <path d="M175 408 H203" class="arrow"/><path d="M365 408 H393" class="arrow"/><path d="M600 408 H628" class="arrow"/>
-<text x="20" y="475" class="small">N=5, LAYERS=3: 50 backward steps + 1 commit. Zero error or one layer skips the sums.</text>
+<text x="20" y="475" class="small">N=5, LAYERS=3: 9 backward steps + 1 commit. Zero error or one layer skips them.</text>
 <text x="20" y="501" class="small">Saved signs and gates belong to the training forward pass. Admission resumes after commit.</text>
 <text x="20" y="525" class="small">Inference samples retire without changing weights.</text>
 </svg>
