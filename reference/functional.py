@@ -1,4 +1,4 @@
-"""Exact-widening Fountain inference and full-gradient sign learning.
+"""Uniform-width Fountain inference and full-gradient sign learning.
 
 This model has no pipeline state. Each training step is an atomic reference
 transaction, matching the hardware admission barrier rather than delayed LMS.
@@ -6,13 +6,14 @@ transaction, matching the hardware admission barrier rather than delayed LMS.
 from __future__ import annotations
 from dataclasses import dataclass
 from collections.abc import Sequence
-from .arithmetic import clog2, to_signed, ternary_sign, saturating_lsb_update
+from .arithmetic import clog2, to_signed, ternary_sign, saturating_lsb_update, requantize
 
 
 @dataclass(frozen=True)
 class ReferenceConfig:
     n: int = 5
     width: int = 8
+    activation_width: int = 19
     layers: int = 3
     fraction_bits: int = 0
     target_width: int | None = None
@@ -20,7 +21,7 @@ class ReferenceConfig:
     pass_through: bool = True
 
     def __post_init__(self):
-        for name in ('n', 'width', 'layers', 'reduction_weight_width'):
+        for name in ('n', 'width', 'activation_width', 'layers', 'reduction_weight_width'):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f'{name} must be a positive integer')
@@ -32,18 +33,25 @@ class ReferenceConfig:
             raise ValueError('target_width must be a positive integer')
         if not isinstance(self.fraction_bits, int) or isinstance(self.fraction_bits, bool) or self.fraction_bits < 0:
             raise ValueError('fraction_bits must be a nonnegative integer')
+        if self.reduction_weight_width > self.activation_width:
+            raise ValueError('readout weights start the gradient vectors, so they must fit an activation')
 
     @property
-    def matrix_result_width(self):
-        return self.width + self.layers * (self.width + clog2(self.n))
+    def sum_width(self):
+        return self.activation_width + self.width + clog2(self.n)
 
     @property
     def prediction_width(self):
-        return self.matrix_result_width + clog2(self.n)
+        return self.activation_width + clog2(self.n)
 
     @property
     def rescale_shift(self):
-        return self.layers * self.fraction_bits + self.reduction_weight_width - 1
+        return self.reduction_weight_width - 1
+
+    def requantize(self, value):
+        """Inputs and weights share fraction_bits, so a product has twice as many;
+        one shift restores the activation format, then the value is capped."""
+        return requantize(value, self.fraction_bits, self.activation_width)
 
 
 @dataclass(frozen=True)
@@ -96,14 +104,14 @@ def analyze(config: ReferenceConfig, weights, readout, sample: Sample, index=0):
         raise ValueError('input/readout length must equal n')
     w = normalize_weights(config, weights)
     r = tuple(to_signed(value, config.reduction_weight_width) for value in readout)
-    x = tuple(to_signed(value, config.width) for value in sample.x)
+    x = tuple(to_signed(value, config.activation_width) for value in sample.x)
     activations, gates = [x], []
     raw = ()
     for matrix in w:
         raw = tuple(sum(activations[-1][i] * matrix[i][j] for i in range(config.n))
                     for j in range(config.n))
         gates.append(tuple(config.pass_through or value > 0 for value in raw))
-        activations.append(tuple(value if config.pass_through or value >= 0 else 0 for value in raw))
+        activations.append(tuple(config.requantize(value if config.pass_through or value >= 0 else 0) for value in raw))
     prediction = sum(a * coefficient for a, coefficient in zip(activations[-1], r)) >> config.rescale_shift
     assert to_signed(prediction, config.prediction_width) == prediction
     target = to_signed(sample.target, config.target_width)
@@ -111,8 +119,8 @@ def analyze(config: ReferenceConfig, weights, readout, sample: Sample, index=0):
     gradient = [[0] * config.n for _ in range(config.layers)]
     gradient[-1] = [r[j] if gates[-1][j] else 0 for j in range(config.n)]
     for layer in range(config.layers - 2, -1, -1):
-        gradient[layer] = [sum(w[layer+1][i][j] * gradient[layer+1][j]
-                               for j in range(config.n)) if gates[layer][i] else 0
+        gradient[layer] = [config.requantize(sum(w[layer+1][i][j] * gradient[layer+1][j]
+                                                 for j in range(config.n))) if gates[layer][i] else 0
                            for i in range(config.n)]
     direction = tuple(tuple(tuple(ternary_sign(activations[layer][i]) * error *
                         ternary_sign(gradient[layer][j]) if sample.training_enable else 0

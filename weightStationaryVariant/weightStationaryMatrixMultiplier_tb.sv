@@ -3,18 +3,20 @@
 // Identity comes from order: each lane sees vectors in admission order, so the
 // bench counts arrivals instead of trusting identity carried by the design.
 module weightStationaryMatrixMultiplier_testcase #(
-    parameter int N=5, WIDTH=8, LAYERS=3
+    parameter int N=5, WIDTH=8, LAYERS=3, ACTIVATION_WIDTH=19, FRACTION_BITS=0
 )(output logic done);
-    localparam int AW=WIDTH+LAYERS*(WIDTH+$clog2(N));
     localparam int D=N/2+1;
     localparam int LIMIT=512;
     localparam int REDUCTION_WEIGHT_WIDTH=8;
     typedef logic signed [WIDTH-1:0] data_t;
-    typedef logic signed [AW-1:0] result_t;
+    typedef logic signed [ACTIVATION_WIDTH-1:0] result_t;
+    // Every dense sum here fits 64 bits: at most 19+16+$clog2(9) bits.
+    typedef logic signed [63:0] wide_t;
     logic clk=0, rst_n, weightValid, weightReady, inputValid, inputReady;
     logic outputBlocked, weightsLoaded, reloadWeights, reloadReady, advance;
     logic passThrough, backward;
-    data_t weightData[N], inputData[N], matrix[LAYERS][N][N];
+    data_t weightData[N], matrix[LAYERS][N][N];
+    result_t inputData[N];
     wire signed [WIDTH-1:0] weights[LAYERS][N][N];
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N];
     logic activationGates[LAYERS][N];
@@ -24,13 +26,14 @@ module weightStationaryMatrixMultiplier_testcase #(
     wire resultValid[N];
     wire tapValid[LAYERS][N], tapGate[LAYERS][N];
     wire signed [1:0] tapSign[LAYERS][N], tapGradientSign[LAYERS][N];
-    wire signed [REDUCTION_WEIGHT_WIDTH+(LAYERS-1)*(WIDTH+$clog2(N))-1:0] laneGradient[LAYERS][N];
+    wire result_t laneGradient[LAYERS][N];
     result_t expected[LIMIT][N];
     int acceptedStep[LIMIT], acceptedCount, cycle, enabledStep;
     int laneArrivals[N];
     int unsigned randomState;
     always #5 clk=~clk;
-    weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS)) dut (
+    weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .ACTIVATION_WIDTH(ACTIVATION_WIDTH),
+        .FRACTION_BITS(FRACTION_BITS), .N(N), .LAYERS(LAYERS)) dut (
         .clk, .rst_n, .backward, .weightData, .weightValid, .weightReady,
         .inputData, .inputValid, .inputReady, .passThrough, .reductionWeight, .activationGates,
         .rowDirection, .columnDirection, .matrixUpdateValid,
@@ -40,14 +43,23 @@ module weightStationaryMatrixMultiplier_testcase #(
     );
     for (genvar l=0; l<LAYERS; l++) for (genvar j=0; j<N; j++)
         assign laneGradient[l][j]=dut.layers[l].lanes[j].gradient;
+    // An independent statement of the format rule: shift out the extra fraction
+    // bits, then cap at the activation limits.
+    function automatic result_t requantize(input wide_t value);
+        wide_t shifted, limit;
+        shifted=value>>>FRACTION_BITS;
+        limit=wide_t'(1)<<(ACTIVATION_WIDTH-1);
+        if (shifted>=limit) return result_t'(limit-1);
+        if (shifted<-limit) return result_t'(-limit);
+        return result_t'(shifted);
+    endfunction
     function automatic int unsigned random_word();
         randomState=1664525*randomState+1013904223;
         return randomState;
     endfunction
     always @(posedge clk) begin : check
-        // Match the conservative final mathematical bound, including profiles
-        // whose exact dense results exceed a native 64-bit scoreboard value.
-        result_t activation[N], nextActivation[N], sum;
+        result_t activation[N], nextActivation[N];
+        wide_t sum;
         result_t held[N];
         bit heldValid[N];
         bit blocked, stepped;
@@ -67,11 +79,11 @@ module weightStationaryMatrixMultiplier_testcase #(
                     for (int j=0; j<N; j++) begin
                         sum=0;
                         for (int i=0; i<N; i++) sum+=activation[i]*$signed(matrix[l][i][j]);
-                        nextActivation[j]=(passThrough || sum>=0)?sum:0;
+                        nextActivation[j]=requantize((passThrough || sum>=0)?sum:0);
                     end
                     for (int j=0; j<N; j++) activation[j]=nextActivation[j];
                 end
-                for (int j=0; j<N; j++) expected[acceptedCount][j]=result_t'(activation[j]);
+                for (int j=0; j<N; j++) expected[acceptedCount][j]=activation[j];
                 acceptedStep[acceptedCount]=enabledStep;
                 acceptedCount++;
             end
@@ -134,9 +146,9 @@ module weightStationaryMatrixMultiplier_testcase #(
             outputBlocked=(mode==2 && (random_word()>>16)%4!=0);
             inputValid=(mode!=1 || random_word()%3!=0);
             for (int i=0; i<N; i++) begin
-                if (mode==3) inputData[i]=data_t'((sent+i)%2 ? -(1<<(WIDTH-1)) : (1<<(WIDTH-1))-1);
-                else if (mode==4) inputData[i]=data_t'(i==sent%N);
-                else inputData[i]=data_t'(random_word());
+                if (mode==3) inputData[i]=result_t'((sent+i)%2 ? -(1<<(ACTIVATION_WIDTH-1)) : (1<<(ACTIVATION_WIDTH-1))-1);
+                else if (mode==4) inputData[i]=result_t'(i==sent%N);
+                else inputData[i]=result_t'(random_word());
             end
             @(posedge clk);
             if (inputValid && inputReady) sent++;
@@ -159,7 +171,8 @@ module weightStationaryMatrixMultiplier_testcase #(
     // count, because this bench reads the signs before they are captured, and
     // compare every layer's lanes with a dense calculation.
     task automatic check_backward();
-        logic signed [WIDTH+LAYERS*(WIDTH+$clog2(N))+REDUCTION_WEIGHT_WIDTH-1:0] gradient[N], next[N];
+        result_t gradient[N], next[N];
+        wide_t sum;
         @(negedge clk);
         backward=1;
         for (int j=0; j<N; j++) reductionWeight[j]=REDUCTION_WEIGHT_WIDTH'(random_word());
@@ -177,8 +190,9 @@ module weightStationaryMatrixMultiplier_testcase #(
             end
             if (l>0) begin
                 for (int i=0; i<N; i++) begin
-                    next[i]=0;
-                    if (activationGates[l-1][i]) for (int j=0; j<N; j++) next[i]+=$signed(matrix[l][i][j])*gradient[j];
+                    sum=0;
+                    for (int j=0; j<N; j++) sum+=$signed(matrix[l][i][j])*gradient[j];
+                    next[i]=activationGates[l-1][i]?requantize(sum):0;
                 end
                 gradient=next;
             end
@@ -215,13 +229,14 @@ module weightStationaryMatrixMultiplier_testcase #(
         @(negedge clk); inputValid=1;
         @(posedge clk); #1;
         reset_dut(); load_weights(0); stream(8,0);
-        $display("PASS: Fountain matrix N=%0d WIDTH=%0d LAYERS=%0d arithmetic, lane timing, II=1, stalls, reset/reload",N,WIDTH,LAYERS);
+        $display("PASS: Fountain matrix N=%0d WIDTH=%0d ACTIVATION_WIDTH=%0d F=%0d LAYERS=%0d arithmetic, lane timing, II=1, stalls, reset/reload",
+            N,WIDTH,ACTIVATION_WIDTH,FRACTION_BITS,LAYERS);
         done=1;
     end
 endmodule
 
 module weightStationaryMatrixMultiplier_tb;
-    wire [7:0] done;
+    wire [9:0] done;
     weightStationaryMatrixMultiplier_testcase #(.N(3),.LAYERS(1)) a(done[0]);
     weightStationaryMatrixMultiplier_testcase #(.N(5),.LAYERS(1)) b(done[1]);
     weightStationaryMatrixMultiplier_testcase #(.N(5),.LAYERS(3)) c(done[2]);
@@ -230,6 +245,9 @@ module weightStationaryMatrixMultiplier_tb;
     weightStationaryMatrixMultiplier_testcase #(.N(9),.LAYERS(1)) f(done[5]);
     weightStationaryMatrixMultiplier_testcase #(.N(3),.WIDTH(16),.LAYERS(3)) g(done[6]);
     weightStationaryMatrixMultiplier_testcase #(.N(3),.LAYERS(4)) h(done[7]);
+    // The Quartus format, and a narrow format that saturates often.
+    weightStationaryMatrixMultiplier_testcase #(.N(5),.WIDTH(16),.LAYERS(3),.FRACTION_BITS(8)) k(done[8]);
+    weightStationaryMatrixMultiplier_testcase #(.N(5),.LAYERS(3),.ACTIVATION_WIDTH(12),.FRACTION_BITS(2)) m(done[9]);
     initial begin wait(&done); $display("PASS: Fountain matrix regression"); $finish; end
     initial begin #1000000; $fatal(1,"Fountain matrix regression timeout"); end
 endmodule

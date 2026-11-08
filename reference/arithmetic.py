@@ -1,5 +1,5 @@
-"""Signed stored-integer helpers shared by the references, plus the original
-single-layer arithmetic kept as the LAYERS=1 compatibility oracle.
+"""Signed stored-integer helpers shared by the references, plus small
+independent oracles for one matrix layer and the readout.
 Golden calculations never use floating point."""
 
 from __future__ import annotations
@@ -39,6 +39,16 @@ def saturating_lsb_update(value: int, direction: int, width: int) -> int:
     return max(-limit, min(limit - 1, to_signed(value, width) + direction))
 
 
+def requantize(value: int, shift: int, width: int) -> int:
+    """Restore a binary point after a multiply by shifting right ``shift`` bits,
+    flooring like an arithmetic shift, then cap at the signed ``width`` limits."""
+
+    if shift < 0:
+        raise ValueError("shift must be non-negative")
+    limit = 1 << (width - 1)
+    return max(-limit, min(limit - 1, value >> shift))
+
+
 def matrix_multiply(
     input_vector: Sequence[int],
     weights: Sequence[Sequence[int]],
@@ -59,24 +69,18 @@ def matrix_multiply(
 
 
 def weighted_vector_reduction(
-    activated_result: Sequence[int],
+    activations: Sequence[int],
     reduction_weights: Sequence[int],
-    width: int,
     reduction_weight_width: int,
-    fraction_bits: int,
 ) -> int:
-    """Single-layer scalar readout: sum every full-width product, then shift the
-    complete sum once by FRACTION_BITS + REDUCTION_WEIGHT_WIDTH - 1."""
+    """Scalar readout: sum every full-width product, then shift the complete sum
+    once by REDUCTION_WEIGHT_WIDTH - 1, the readout weights' fraction bits."""
 
-    n = len(activated_result)
+    n = len(activations)
     if n < 1 or len(reduction_weights) != n:
-        raise ValueError("activated result and reduction weights must have size N")
-    if fraction_bits < 0:
-        raise ValueError("fraction_bits must be non-negative")
-    matrix_width = 2 * width + clog2(n)
+        raise ValueError("activations and reduction weights must have size N")
     accumulator = sum(
-        to_signed(value, matrix_width) * to_signed(coefficient, reduction_weight_width)
-        for value, coefficient in zip(activated_result, reduction_weights)
+        value * to_signed(coefficient, reduction_weight_width)
+        for value, coefficient in zip(activations, reduction_weights)
     )
-    accumulator = to_signed(accumulator, matrix_width + reduction_weight_width + clog2(n))
-    return to_signed(accumulator >> (fraction_bits + reduction_weight_width - 1), matrix_width + clog2(n))
+    return accumulator >> (reduction_weight_width - 1)

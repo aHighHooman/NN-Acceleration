@@ -3,7 +3,7 @@
 // runs the gradient vectors back through the arrays, and commits one-LSB updates
 // atomically.
 module nnAccelerator #(
-    parameter int WIDTH=16, N=3, LAYERS=3, FRACTION_BITS=4,
+    parameter int WIDTH=16, ACTIVATION_WIDTH=19, N=3, LAYERS=3, FRACTION_BITS=8,
     parameter int TARGET_WIDTH=WIDTH, REDUCTION_WEIGHT_WIDTH=8,
     parameter int OUTPUT_FIFO_DEPTH=2*N,
     parameter int IN_FLIGHT_DEPTH=LAYERS*(N+2)+OUTPUT_FIFO_DEPTH+2
@@ -12,13 +12,13 @@ module nnAccelerator #(
     input logic signed [WIDTH-1:0] weightData[N],
     input logic weightValid,
     output logic weightReady,
-    input logic signed [WIDTH-1:0] inputData[N],
+    input logic signed [ACTIVATION_WIDTH-1:0] inputData[N],
     input logic signed [TARGET_WIDTH-1:0] targetData,
     input logic trainingEnable, inputValid,
     output logic inputReady,
     input logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N],
     input logic loadReductionWeights, passThrough,
-    output logic signed [WIDTH+LAYERS*(WIDTH+$clog2(N))+$clog2(N)-1:0] resultData,
+    output logic signed [ACTIVATION_WIDTH+$clog2(N)-1:0] resultData,
     output logic resultValid,
     input logic resultReady,
     output logic weightsLoaded,
@@ -26,8 +26,7 @@ module nnAccelerator #(
     output logic reloadReady
 );
     localparam int LG=$clog2(N);
-    localparam int MATRIX_RESULT_WIDTH=WIDTH+LAYERS*(WIDTH+LG);
-    localparam int PREDICTION_WIDTH=MATRIX_RESULT_WIDTH+LG;
+    localparam int PREDICTION_WIDTH=ACTIVATION_WIDTH+LG;
     // The longest register path from the held readout weights to the last lane
     // is (LAYERS-1)*((N-1)/2+1)+(N-1)/2, and one more edge captures the signs.
     localparam int BACKWARD_CYCLES=LAYERS*((N-1)/2+1);
@@ -37,7 +36,7 @@ module nnAccelerator #(
     training_state_t trainingState;
     wire signed [REDUCTION_WEIGHT_WIDTH-1:0] residentReductionWeight[N];
     wire signed [WIDTH-1:0] residentWeights[LAYERS][N][N];
-    wire signed [MATRIX_RESULT_WIDTH-1:0] activatedMatrixResultData[N];
+    wire signed [ACTIVATION_WIDTH-1:0] activatedMatrixResultData[N];
     wire matrixResultValid[N];
     wire matrixInputReady, matrixReloadReady, arrayAdvance, predictionValid;
     logic matrixInputValid, matrixUpdateValid, samplePush;
@@ -59,7 +58,7 @@ module nnAccelerator #(
 
     initial begin
         if (WIDTH<1 || N<3 || N%2==0 || LAYERS<1 || FRACTION_BITS<0 ||
-            TARGET_WIDTH<1 || REDUCTION_WEIGHT_WIDTH<1 ||
+            TARGET_WIDTH<1 || REDUCTION_WEIGHT_WIDTH<1 || ACTIVATION_WIDTH<REDUCTION_WEIGHT_WIDTH ||
             IN_FLIGHT_DEPTH<1 || OUTPUT_FIFO_DEPTH<1)
             $fatal(1, "Fountain requires positive widths/depths and odd N>=3");
     end
@@ -85,7 +84,8 @@ module nnAccelerator #(
         end
     end
 
-    weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .N(N), .LAYERS(LAYERS),
+    weightStationaryMatrixMultiplier #(.WIDTH(WIDTH), .ACTIVATION_WIDTH(ACTIVATION_WIDTH),
+        .FRACTION_BITS(FRACTION_BITS), .N(N), .LAYERS(LAYERS),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH)) matrixEngine (
         .clk, .rst_n, .backward(trainingState==BACKWARD), .weightData, .weightValid, .weightReady,
         .inputData, .inputValid(matrixInputValid), .inputReady(matrixInputReady),
@@ -98,9 +98,9 @@ module nnAccelerator #(
         .tapValid, .tapGate, .tapSign, .tapGradientSign
     );
     // One scalar readout on the last stage's lanes; it advances with the array.
-    weightedVectorReduction #(.MATRIX_RESULT_WIDTH(MATRIX_RESULT_WIDTH),
+    weightedVectorReduction #(.MATRIX_RESULT_WIDTH(ACTIVATION_WIDTH),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH), .N(N),
-        .RESCALE_SHIFT(LAYERS*FRACTION_BITS+REDUCTION_WEIGHT_WIDTH-1)) reductionColumn (
+        .RESCALE_SHIFT(REDUCTION_WEIGHT_WIDTH-1)) reductionColumn (
         .clk, .rst_n, .advance(arrayAdvance),
         .cfg_we(loadReductionWeights && quiescent), .cfg_data(reductionWeight),
         .update_valid(matrixUpdateValid), .row_direction(finalSigns), .column_direction(learningDirection),
@@ -146,7 +146,7 @@ module nnAccelerator #(
                 trainingPending<=1;
                 savedTarget<=targetData;
                 for (int j=0; j<N; j++) inputSigns[0][j]<=(inputData[j]==0)?2'sd0:
-                    (inputData[j][WIDTH-1]?-2'sd1:2'sd1);
+                    (inputData[j][ACTIVATION_WIDTH-1]?-2'sd1:2'sd1);
             end
             // A pending training sample is the last one admitted, so the last
             // valid value at each tap is its own; earlier samples pass first.

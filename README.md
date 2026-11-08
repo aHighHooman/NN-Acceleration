@@ -23,8 +23,9 @@ re-skewing it. Each extra layer therefore adds only a small, fixed delay.
   FIFO and a single global stall signal handle downstream backpressure.
 - **On-chip training.** Runs the gradient vectors back through the matrix stages
   themselves and applies saturating one-LSB sign updates to all weights.
-- **Exact arithmetic.** Signed fixed-point with no rounding or saturation
-  between layers. Each stage widens just enough to stay exact.
+- **Uniform fixed point.** Every stage takes the same activation format and
+  requantizes its outputs back into it, so every multiplier is the same size
+  whatever the depth.
 - **Verified against a reference model.** Python functional and cycle-accurate
   models are compared edge-by-edge with the RTL in Questa.
 
@@ -34,9 +35,15 @@ Each matrix stage holds its weights `W[layer][input][output]` stationary in a
 grid of processing elements (PEs) and computes:
 
 ```text
-a[layer+1] = activation(a[layer] * W[layer])
+a[layer+1] = requantize(activation(a[layer] * W[layer]))
 prediction = sum(a[last][j] * r[j])          (scalar readout)
 ```
+
+Inputs, activations and weights all have `FRACTION_BITS` fraction bits, so a
+product has twice as many. Requantizing shifts the sum right by
+`FRACTION_BITS`, which restores the binary point and truncates toward minus
+infinity, then caps it at the `ACTIVATION_WIDTH` limits instead of wrapping.
+Shifting is free in hardware; the cap is a compare and a mux.
 
 Inside a stage:
 
@@ -45,7 +52,7 @@ Inside a stage:
 2. Partial sums start from two seed rows at the center and travel vertically
    outward, upward and downward.
 3. A combinational adder at the edge of each output column joins the upper and
-   lower sums into a complete output.
+   lower sums into a complete output, which is then activated and requantized.
 4. The output lanes keep the center-first timing and feed the next stage
    directly.
 
@@ -57,7 +64,7 @@ the prediction, so no lane is ever realigned into a vector.
 
 With `h = (N-1)/2`, each stage adds `D = h + 1` cycles. The column join has no
 register of its own: the upper and lower boundary PEs capture their sums, and
-the join, ReLU and the next stage's first multiply settle in the following
+the join, ReLU, requantization and the next stage's first multiply settle in the following
 cycle. For N=5, if a stage's first PE captures a product at edge 1, the
 boundary rows capture at edge 3 and the next stage's first PE captures at edge
 4. For K stages, assuming no stalls:
@@ -83,8 +90,8 @@ When a sample is submitted with `trainingEnable`, the accelerator:
    through the matrix stages, in `LAYERS*(h+1)` cycles. Each entry is 0 where the
    condition fails:
    ```text
-   grad[last] = r                  | output[last] > 0
-   grad[l]    = W[l+1] * grad[l+1] | output[l] > 0
+   grad[last] = r                              | output[last] > 0
+   grad[l]    = requantize(W[l+1] * grad[l+1]) | output[l] > 0
    ```
 4. Updates every weight by one LSB in a single cycle, saturating at its range
    limit:
@@ -112,11 +119,10 @@ feed-forward. The controller only has to wait for the longest path,
 `(LAYERS-1)*(h+1) + h` cycles, and capture the signs on one more edge. The pass
 needs no valid bits or lane skew, and stores only two sign bits per lane.
 
-Array 0 never runs backward, so synthesis removes its copies. Gradient vectors get wider going
-backward as activations get wider going forward, so with `LAYERS <= 3` and
-`REDUCTION_WEIGHT_WIDTH <= WIDTH` they fit the existing registers. Other
-configurations widen an array's registers and multipliers only where needed, which
-keeps the gradients exact.
+Array 0 never runs backward, so synthesis removes its copies. Gradient vectors
+use the activation lanes, so the readout weights must fit an activation
+(`REDUCTION_WEIGHT_WIDTH <= ACTIVATION_WIDTH`), and they are requantized like
+activations after each array.
 
 Inference stays fully pipelined. Training handles one sample at a time, and the
 stages can't run inference while they run backward.
@@ -159,7 +165,7 @@ quartus_sh --flow compile NN_Acceleration
 ```
 
 The Quartus project targets a Cyclone V `5CSEMA5F31C6` (DE1-SoC) at 100 MHz. It
-uses N=5, WIDTH=8, LAYERS=3, FRACTION_BITS=0. These overrides
+uses N=5, WIDTH=16, ACTIVATION_WIDTH=19, LAYERS=3, FRACTION_BITS=8. These overrides
 differ from the RTL defaults.
 
 ## Using the accelerator
@@ -169,9 +175,10 @@ differ from the RTL defaults.
 | Parameter | Default | Meaning |
 | --- | ---: | --- |
 | `N` | 3 | Layer size (odd, ≥ 3) |
-| `WIDTH` | 16 | Input and weight width in bits |
+| `WIDTH` | 16 | Weight width in bits |
+| `ACTIVATION_WIDTH` | 19 | Input, activation and gradient width in bits |
 | `LAYERS` | 3 | Number of matrix stages |
-| `FRACTION_BITS` | 4 | Fractional bits of inputs and weights |
+| `FRACTION_BITS` | 8 | Fractional bits of inputs, activations and weights |
 | `TARGET_WIDTH` | `WIDTH` | Training target width |
 | `REDUCTION_WEIGHT_WIDTH` | 8 | Readout coefficient width |
 | `OUTPUT_FIFO_DEPTH` | `2*N` | Result buffer depth |
@@ -198,9 +205,9 @@ all layers are in place. Computation waits for it.
 **Output format.** `resultData` is the scalar prediction, rescaled back to
 `FRACTION_BITS` fractional bits. The accelerator has no vector output.
 
-**Result width.** Results grow with depth so that no precision is lost. Stage k
-has `WIDTH + k*(WIDTH + ceil(log2 N))` bits, and the output port adds another
-`ceil(log2 N)` bits. For example, WIDTH=8 and N=5 give a 44-bit output port.
+**Result width.** The prediction has `ACTIVATION_WIDTH + ceil(log2 N)` bits
+and `FRACTION_BITS` fraction bits, whatever the depth. For example,
+ACTIVATION_WIDTH=19 and N=5 give a 22-bit output port.
 
 **Configuration.** Change `passThrough` and load readout weights only while the
 accelerator is idle. Busy configuration attempts are rejected.
@@ -214,33 +221,36 @@ stall, reset and timing rules that the RTL is compared against.
 
 All tests pass in Questa:
 
-- 28 Python tests of the reference models: fixed-point arithmetic, timing,
-  stalls, reset, the backward pass settling on the exact gradients, and
-  finite-difference checks of the training update signs.
+- 30 Python tests of the reference models: fixed-point arithmetic and
+  requantization, timing, stalls, reset, the backward pass settling on the
+  model's gradients, and finite-difference checks of the training update signs.
 - Matrix-stage testbenches covering N=3/5/9, one, three and four layers,
-  WIDTH=8/16, including results wider than 64 bits and exact backward gradients
-  against a dense calculation.
-- Readout-column testbenches covering N=3/5/9 and the 41-bit lanes of the Quartus
+  WIDTH=8/16 and FRACTION_BITS=0/2/8, including a narrow activation format that
+  saturates often, and backward gradients against a dense calculation.
+- Readout-column testbenches covering N=3/5/9 and the 19-bit lanes of the Quartus
   build: results against a dense sum, lane timing, stalls, loads and updates.
-- 3,580 cycle-by-cycle RTL/reference comparisons across five configurations.
+- 3,824 cycle-by-cycle RTL/reference comparisons across five configurations,
+  hitting both caps in the forward and gradient lanes.
   Each one checks handshakes, results, every weight, every lane of every stage,
   and the readout output.
 
-### FPGA (Cyclone V, N=5, WIDTH=8, three layers)
+### FPGA (Cyclone V, N=5, WIDTH=16, ACTIVATION_WIDTH=19, FRACTION_BITS=8, three layers)
 
 | Metric | Value |
 | --- | --- |
-| Logic | 6,586 ALMs |
-| Registers | 5,318 |
-| DSP blocks | 82 / 87 |
-| Memory | 440 bits (2 RAM blocks) |
-| Fmax | 71.4 MHz (100 MHz target not met) |
+| Logic | 7,444 ALMs |
+| Registers | 7,436 |
+| DSP blocks | 80 / 87 |
+| Memory | 220 bits (1 RAM block) |
+| Fmax | 75.3 MHz (100 MHz target not met) |
 
-The critical path runs from the last stage's boundary sums through the column
-join and ReLU into the readout column's multiplier and sum register, all in one
-cycle. Across seeds 1 to 3 Fmax is 70.4 to 71.4 MHz. These numbers come from the
-default seed unless noted. I/O pins are virtual, so they describe the core and are
-not a board-level sign-off.
+Every multiplier maps to one 18x19 DSP slot; 77 of the 80 pack two to a block,
+so about 42 blocks would suffice even though the fitter spreads them over 80.
+The critical path runs from a stage's boundary sums through the column join,
+ReLU and requantization into the next stage's or the readout column's multiplier
+and sum register, all in one cycle. Across seeds 1 to 3 Fmax is 71.1 to 75.3 MHz.
+These numbers come from the default seed unless noted. I/O pins are virtual, so
+they describe the core and are not a board-level sign-off.
 
 ## Repository layout
 
@@ -262,15 +272,16 @@ presentation/figures/                    Architecture diagrams
 ## Limitations and future work
 
 - The 100 MHz timing target is not met on Cyclone V; the latest fit reaches
-  71.4 MHz.
+  75.3 MHz.
 - The output is one scalar, so multi-output networks are not supported.
 - Only square matrix stages with odd N are supported.
 - Training handles one sample at a time; only inference is fully pipelined.
 - It hasn't been shown yet how well training converges on a real workload. Do
   not start ReLU networks from all-zero weights, because closed gates cannot
   start learning.
-- Possible extensions include rectangular layers, requantization between
-  layers, per-lane backpressure, and tiling large layers onto fixed hardware.
+- Requantization truncates and uses one format for every layer; rounding or a
+  per-layer shift could recover precision.
+- Possible extensions include rectangular layers, per-lane backpressure, and tiling large layers onto fixed hardware.
 
 An earlier "inward" design, with data entering at two corners and meeting at
 the anti-diagonal, is preserved at commit `219a081`.

@@ -45,9 +45,10 @@ set_global_assignment -name TOP_LEVEL_ENTITY nnAccelerator
 # RTL defaults remain independently parameterized; this project is the 8-bit
 # integer prototype. Boundary-to-join wire delay must meet timing.
 set_parameter -name N 5
-set_parameter -name WIDTH 8
+set_parameter -name WIDTH 16
+set_parameter -name ACTIVATION_WIDTH 19
 set_parameter -name LAYERS 3
-set_parameter -name FRACTION_BITS 0
+set_parameter -name FRACTION_BITS 8
 set_global_assignment -name ORIGINAL_QUARTUS_VERSION 19.1.0
 set_global_assignment -name PROJECT_CREATION_TIME_DATE "22:57:18  NOVEMBER 08, 2025"
 set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"

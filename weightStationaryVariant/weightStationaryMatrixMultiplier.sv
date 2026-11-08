@@ -1,17 +1,18 @@
 // Fountain source, dedicated layer chain and row loader. Every layer's lanes,
-// including the outputs, stay on the staggered center-first front. While
+// including the outputs, stay on the staggered center-first front and in one
+// ACTIVATION_WIDTH format with FRACTION_BITS fraction bits. While
 // backward is held, arrays LAYERS-1..1 switch to their transposed weights, each
 // takes its input from the next array's output, and the readout weights settle
 // into every layer's gradient vector.
 module weightStationaryMatrixMultiplier #(
-    parameter int WIDTH=16, N=3, LAYERS=1, REDUCTION_WEIGHT_WIDTH=8,
-    parameter int RESULT_WIDTH=WIDTH+LAYERS*(WIDTH+$clog2(N))
+    parameter int WIDTH=16, ACTIVATION_WIDTH=19, FRACTION_BITS=8,
+    parameter int N=3, LAYERS=1, REDUCTION_WEIGHT_WIDTH=8
 )(
     input logic clk, rst_n, backward,
     input logic signed [WIDTH-1:0] weightData[N],
     input logic weightValid,
     output logic weightReady,
-    input logic signed [WIDTH-1:0] inputData[N],
+    input logic signed [ACTIVATION_WIDTH-1:0] inputData[N],
     input logic inputValid,
     output logic inputReady,
     input logic passThrough,
@@ -19,7 +20,7 @@ module weightStationaryMatrixMultiplier #(
     input logic activationGates[LAYERS][N],
     input logic signed [1:0] rowDirection[LAYERS][N], columnDirection[LAYERS][N],
     input logic matrixUpdateValid,
-    output logic signed [RESULT_WIDTH-1:0] resultData[N],
+    output logic signed [ACTIVATION_WIDTH-1:0] resultData[N],
     output logic resultValid[N],
     input logic outputBlocked,
     output logic weightsLoaded,
@@ -30,29 +31,39 @@ module weightStationaryMatrixMultiplier #(
     output logic signed [1:0] tapSign[LAYERS][N], tapGradientSign[LAYERS][N]
 );
     localparam int H=(N-1)/2;
-    localparam int STEP=WIDTH+$clog2(N);
     localparam int INDEX_WIDTH=(N>1)?$clog2(N):1;
-    localparam int GRADIENT_WIDTH=REDUCTION_WEIGHT_WIDTH+(LAYERS-1)*STEP;
+    localparam int SUM_WIDTH=ACTIVATION_WIDTH+WIDTH+$clog2(N);
+    localparam logic signed [ACTIVATION_WIDTH-1:0] MAX_ACTIVATION={1'b0,{(ACTIVATION_WIDTH-1){1'b1}}};
+    localparam logic signed [ACTIVATION_WIDTH-1:0] MIN_ACTIVATION={1'b1,{(ACTIVATION_WIDTH-1){1'b0}}};
     logic signed [WIDTH-1:0] weightBuffer[LAYERS][N][N];
     integer hostLayer, loadedWeightRows, loadLayer, loadStep;
     logic loadingWeights, captureWeights, weightPush;
-    logic signed [WIDTH-1:0] inputVectorData[N];
+    logic signed [ACTIVATION_WIDTH-1:0] inputVectorData[N];
     logic inputVectorValid;
     logic inputPush, inputPop;
     logic cfgWe[LAYERS];
     logic signed [WIDTH-1:0] cfgData[N];
-    wire signed [RESULT_WIDTH-1:0] chainData[LAYERS+1][N];
+    wire signed [ACTIVATION_WIDTH-1:0] chainData[LAYERS+1][N];
     wire chainValid[LAYERS+1][N];
     // Array l's output during the backward pass, before layer l-1's zeroed lanes
     // are applied. Index LAYERS holds the readout weights, which start the pass.
-    wire signed [GRADIENT_WIDTH-1:0] gradientChain[LAYERS+1][N];
+    wire signed [ACTIVATION_WIDTH-1:0] gradientChain[LAYERS+1][N];
     wire sourceBusy[N], arrayBusy[LAYERS], arrayLoaded[LAYERS];
     logic skewBusy, pipelineBusy, allLoaded;
     initial begin
-        if (WIDTH<1 || N<3 || N%2==0 || LAYERS<1 || REDUCTION_WEIGHT_WIDTH<1 ||
-            RESULT_WIDTH!=WIDTH+LAYERS*STEP)
-            $fatal(1, "Fountain requires WIDTH>=1, odd N>=3, LAYERS>=1 and exact widths");
+        if (WIDTH<1 || N<3 || N%2==0 || LAYERS<1 || FRACTION_BITS<0 ||
+            REDUCTION_WEIGHT_WIDTH<1 || ACTIVATION_WIDTH<REDUCTION_WEIGHT_WIDTH)
+            $fatal(1, "Fountain requires WIDTH>=1, odd N>=3, LAYERS>=1 and readout weights that fit an activation");
     end
+    // A product has twice the shared fraction bits. Shift once to restore the
+    // activation format, then cap instead of wrapping.
+    function automatic logic signed [ACTIVATION_WIDTH-1:0] requantize(input logic signed [SUM_WIDTH-1:0] value);
+        logic signed [SUM_WIDTH-1:0] shifted;
+        shifted=value>>>FRACTION_BITS;
+        if (shifted>MAX_ACTIVATION) return MAX_ACTIVATION;
+        if (shifted<MIN_ACTIVATION) return MIN_ACTIVATION;
+        return shifted[ACTIVATION_WIDTH-1:0];
+    endfunction
     assign weightReady=rst_n && !weightsLoaded && !loadingWeights && !captureWeights;
     assign weightPush=weightValid && weightReady;
     assign inputReady=weightsLoaded && !(reloadWeights && reloadReady) &&
@@ -82,43 +93,33 @@ module weightStationaryMatrixMultiplier #(
     generate
     for (i=0; i<N; i++) begin : source
         localparam int A=(i<H)?H-i:i-H;
-        wire signed [WIDTH-1:0] laneData;
-        weightStationaryLaneDelay #(.WIDTH(WIDTH), .DEPTH(A)) skew (
+        weightStationaryLaneDelay #(.WIDTH(ACTIVATION_WIDTH), .DEPTH(A)) skew (
             .clk, .rst_n, .advance(arrayAdvance),
             .in_data(inputVectorData[i]), .in_valid(inputVectorValid),
-            .out_data(laneData), .out_valid(chainValid[0][i]), .busy(sourceBusy[i])
+            .out_data(chainData[0][i]), .out_valid(chainValid[0][i]), .busy(sourceBusy[i])
         );
-        assign chainData[0][i]={{(RESULT_WIDTH-WIDTH){laneData[WIDTH-1]}},laneData};
         assign gradientChain[LAYERS][i]=reductionWeight[i];
     end
     for (l=0; l<LAYERS; l++) begin : layers
-        localparam int XW=WIDTH+l*STEP;
-        localparam int AW=XW+STEP;
-        // The gradient vector shrinks going forward as activations grow. Array 0
-        // never runs backward; the others hold whichever vector is wider.
-        localparam int GW=REDUCTION_WEIGHT_WIDTH+(LAYERS-1-l)*STEP;
-        localparam int PE_INPUT_WIDTH=(l==0 || XW>GW)?XW:GW;
-        wire signed [PE_INPUT_WIDTH-1:0] laneInput[N];
-        wire signed [PE_INPUT_WIDTH+STEP-1:0] raw[N];
+        wire signed [ACTIVATION_WIDTH-1:0] laneInput[N];
+        wire signed [SUM_WIDTH-1:0] raw[N];
         wire rawValid[N];
         wire arrayBackward=l>0 && backward;
         for (j=0; j<N; j++) begin : lanes
-            wire signed [AW-1:0] activated;
-            wire signed [GRADIENT_WIDTH-1:0] gradient;
+            wire signed [ACTIVATION_WIDTH-1:0] gradient;
             assign laneInput[j]=arrayBackward?gradient:chainData[l][j];
-            assign activated=(passThrough || !raw[j][AW-1])?raw[j]:AW'('0);
-            assign chainData[l+1][j]={{(RESULT_WIDTH-AW){activated[AW-1]}},activated};
+            assign chainData[l+1][j]=requantize((passThrough || !raw[j][SUM_WIDTH-1])?raw[j]:0);
             assign chainValid[l+1][j]=rawValid[j];
             assign tapValid[l][j]=rawValid[j];
             assign tapGate[l][j]=passThrough || raw[j]>0;
-            assign tapSign[l][j]=(activated==0)?2'sd0:(activated[AW-1]?-2'sd1:2'sd1);
+            assign tapSign[l][j]=(chainData[l+1][j]==0)?2'sd0:(chainData[l+1][j][ACTIVATION_WIDTH-1]?-2'sd1:2'sd1);
             // The gradient vector at this layer's output has 0 wherever ReLU zeroed the output.
             assign gradient=activationGates[l][j]?gradientChain[l+1][j]:0;
-            assign gradientChain[l][j]=raw[j];
-            assign tapGradientSign[l][j]=(gradient==0)?2'sd0:(gradient[GRADIENT_WIDTH-1]?-2'sd1:2'sd1);
+            assign gradientChain[l][j]=requantize(raw[j]);
+            assign tapGradientSign[l][j]=(gradient==0)?2'sd0:(gradient[ACTIVATION_WIDTH-1]?-2'sd1:2'sd1);
         end
-        weightStationarySystolicArray #(.N(N), .WIDTH(WIDTH), .INPUT_WIDTH(PE_INPUT_WIDTH),
-            .RESULT_WIDTH(PE_INPUT_WIDTH+STEP)) systolicArray (
+        weightStationarySystolicArray #(.N(N), .WIDTH(WIDTH), .INPUT_WIDTH(ACTIVATION_WIDTH),
+            .RESULT_WIDTH(SUM_WIDTH)) systolicArray (
             .clk, .rst_n, .advance(arrayAdvance), .backward(arrayBackward), .cfg_we(cfgWe[l]),
             .cfg_row(INDEX_WIDTH'(loadStep)), .cfg_data(cfgData),
             .update_valid(matrixUpdateValid), .row_direction(rowDirection[l]),

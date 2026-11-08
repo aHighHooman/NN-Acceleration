@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="f04" viewBox="0 0 840 490" width="840" height="490" role="img" aria-labelledby="f04-title f04-description">
-<title id="f04-title">Exact widths in the three-layer Fountain project</title>
-<desc id="f04-description">The Quartus profile is N=5, WIDTH=8, LAYERS=3, FRACTION_BITS=0. Layer products are 16, 27 and 38 bits; full sums and activations are 19, 30 and 41 bits. Five final 41 by 8 bit readout products are accumulated in 52 bits, shifted right by seven, and returned on the 44-bit resultData port. Separate RTL defaults use 16-bit weights and three layers, with 34, 52 and 70-bit layer outputs and a 72-bit public prediction.</desc>
+<title id="f04-title">Uniform widths in the three-layer Fountain project</title>
+<desc id="f04-description">The Quartus profile is N=5, WIDTH=16, ACTIVATION_WIDTH=19, LAYERS=3, FRACTION_BITS=8. Every layer takes 19-bit inputs with 8 fraction bits and 16-bit weights with 8 fraction bits, forms 35-bit products and 38-bit sums with 16 fraction bits, then applies ReLU, shifts right by 8 and caps the result to a 19-bit activation with 8 fraction bits. Gradient vectors use the same shift and cap. Five final 19 by 8 bit readout products are accumulated in 30 bits, shifted right by seven, and returned on the 22-bit resultData port with 8 fraction bits.</desc>
 <style>
 .f04{--panel:#FFFFFF;--ink:#15191C;--muted:#48525A;--rule:#D5DBD8;--data:#2350C8;--data-soft:#DDE5FB;--learn:#CF4F16;--learn-soft:#FCE4D7}
 @media(prefers-color-scheme:dark){.f04{--panel:#171B1E;--ink:#E6E9EB;--muted:#AEB7BD;--rule:#2C3337;--data:#86A6FF;--data-soft:#1B2847;--learn:#FF8F57;--learn-soft:#3A2116}}
@@ -17,32 +17,33 @@
 </style>
 <defs><marker id="f04-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 Z" style="fill:var(--muted)"/></marker></defs>
 <rect width="840" height="490" style="fill:var(--panel)"/>
-<text x="20" y="32" class="title">Exact widths · three-layer Fountain project</text>
-<text x="20" y="62" class="mono">N=5 · WIDTH=8 · LAYERS=3 · FRACTION_BITS=0</text>
-<text x="20" y="86" class="small">Signed integers; readout coefficients are signed 8-bit values with 7 fractional bits.</text>
+<text x="20" y="32" class="title">Uniform widths · three-layer Fountain project</text>
+<text x="20" y="62" class="mono">N=5 · WIDTH=16 · ACTIVATION_WIDTH=19 · LAYERS=3 · FRACTION_BITS=8</text>
+<text x="20" y="86" class="small">Inputs, activations and weights share 8 fraction bits; readout coefficients are 8-bit with 7.</text>
 <text x="20" y="122" class="head">Layer</text>
-<text x="148" y="122" class="head">Input</text>
-<text x="280" y="122" class="head">Weight</text>
-<text x="410" y="122" class="head">Product</text>
-<text x="540" y="122" class="head">Sum / activation</text>
-<text x="740" y="122" class="head">Frac. bits</text>
+<text x="110" y="122" class="head">Input</text>
+<text x="220" y="122" class="head">Weight</text>
+<text x="330" y="122" class="head">Product</text>
+<text x="450" y="122" class="head">Sum</text>
+<text x="560" y="122" class="head">Requantize → next input</text>
 <line x1="20" x2="820" y1="134" y2="134" class="line"/>
-<text x="20" y="164">0</text><text x="148" y="164">8 bits</text><text x="280" y="164">8 bits</text><text x="410" y="164">16 bits</text><text x="540" y="164">19 bits</text><text x="740" y="164">0</text>
-<text x="20" y="202">1</text><text x="148" y="202">19 bits</text><text x="280" y="202">8 bits</text><text x="410" y="202">27 bits</text><text x="540" y="202">30 bits</text><text x="740" y="202">0</text>
-<text x="20" y="240">2</text><text x="148" y="240">30 bits</text><text x="280" y="240">8 bits</text><text x="410" y="240">38 bits</text><text x="540" y="240">41 bits</text><text x="740" y="240">0</text>
-<text x="20" y="278" class="head">One final scalar readout</text>
-<rect x="20" y="295" width="220" height="62" rx="6" class="box"/>
-<text x="130" y="320" class="center mono">41 × 8 → 49 bits</text><text x="130" y="343" class="center small">five full-width products</text>
-<rect x="270" y="295" width="150" height="62" rx="6" class="box"/>
-<text x="345" y="320" class="center">52-bit sum</text><text x="345" y="343" class="center small">no partial rescaling</text>
-<rect x="450" y="295" width="140" height="62" rx="6" class="box"/>
-<text x="520" y="320" class="center mono">&gt;&gt;&gt; 7</text><text x="520" y="343" class="center small">arithmetic shift</text>
-<rect x="620" y="295" width="200" height="62" rx="6" class="box"/>
-<text x="720" y="320" class="center">44-bit prediction</text><text x="720" y="343" class="center small">resultData</text>
-<path d="M240 326 H268" class="arrow"/><path d="M420 326 H448" class="arrow"/><path d="M590 326 H618" class="arrow"/>
-<text x="20" y="388" class="small">An N×1 PE column accumulates the products as the lanes arrive; only the complete sum is shifted.</text>
-<text x="20" y="412" class="small">Each layer joins its full column sum, then applies ReLU or stream-wide passThrough.</text>
-<line x1="20" x2="820" y1="430" y2="430" class="line"/>
-<text x="20" y="454" class="small">RTL defaults: N=3, WIDTH=16, F=4, LAYERS=3; layer sums are 34 → 52 → 70 bits.</text>
-<text x="20" y="478" class="small">Default readout: 80-bit sum &gt;&gt;&gt; 19 → 72-bit public prediction, with 4 fractional bits.</text>
+<text x="20" y="164">0, 1, 2</text><text x="110" y="164">19 bits</text><text x="220" y="164">16 bits</text><text x="330" y="164">35 bits</text><text x="450" y="164">38 bits</text><text x="560" y="164" class="mono">ReLU, &gt;&gt;&gt; 8, cap → 19 bits</text>
+<text x="20" y="190" class="small">frac. bits</text><text x="110" y="190" class="small">8</text><text x="220" y="190" class="small">8</text><text x="330" y="190" class="small">16</text><text x="450" y="190" class="small">16</text><text x="560" y="190" class="small">8</text>
+<text x="20" y="226" class="small">The shift restores the binary point and truncates toward −∞; the cap saturates instead of wrapping.</text>
+<text x="20" y="250" class="small">Gradient vectors take the same shift and cap after each array's backward multiply.</text>
+<text x="20" y="288" class="head">One final scalar readout</text>
+<rect x="20" y="305" width="220" height="62" rx="6" class="box"/>
+<text x="130" y="330" class="center mono">19 × 8 → 27 bits</text><text x="130" y="353" class="center small">five full-width products</text>
+<rect x="270" y="305" width="150" height="62" rx="6" class="box"/>
+<text x="345" y="330" class="center">30-bit sum</text><text x="345" y="353" class="center small">no partial rescaling</text>
+<rect x="450" y="305" width="140" height="62" rx="6" class="box"/>
+<text x="520" y="330" class="center mono">&gt;&gt;&gt; 7</text><text x="520" y="353" class="center small">arithmetic shift</text>
+<rect x="620" y="305" width="200" height="62" rx="6" class="box"/>
+<text x="720" y="330" class="center">22-bit prediction</text><text x="720" y="353" class="center small">resultData, 8 frac. bits</text>
+<path d="M240 336 H268" class="arrow"/><path d="M420 336 H448" class="arrow"/><path d="M590 336 H618" class="arrow"/>
+<text x="20" y="398" class="small">An N×1 PE column accumulates the products as the lanes arrive; only the complete sum is shifted.</text>
+<text x="20" y="422" class="small">Every multiply fits one 18×19 DSP slot, whatever the depth.</text>
+<line x1="20" x2="820" y1="440" y2="440" class="line"/>
+<text x="20" y="464" class="small">RTL defaults: N=3, WIDTH=16, ACTIVATION_WIDTH=19, F=8, LAYERS=3; layer sums are 37 bits.</text>
+<text x="20" y="488" class="small">Default readout: 29-bit sum &gt;&gt;&gt; 7 → 21-bit public prediction, with 8 fractional bits.</text>
 </svg>

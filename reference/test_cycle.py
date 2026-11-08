@@ -119,7 +119,8 @@ class CycleTests(unittest.TestCase):
     def test_stopping_the_backward_pass_one_edge_early_fails_the_oracle(self):
         cfg=CycleConfig(n=5,width=8,layers=3,pass_through=False)
         rng=random.Random(9)
-        w=[[[rng.randint(1,127) for _ in range(5)] for _ in range(5)] for _ in range(3)]
+        # Small weights keep the lanes below the cap, where poison and the answer differ.
+        w=[[[rng.randint(1,9) for _ in range(5)] for _ in range(5)] for _ in range(3)]
         model=CycleReference(cfg,w,[64]*5)
         expected=FunctionalReference(cfg,w,[64]*5).step(Sample((1,1,1,1,1),-128,True))
         model.step(CycleInputs(input_valid=True,input_data=(1,1,1,1,1),target_data=-128,training_enable=True,pass_through=False))

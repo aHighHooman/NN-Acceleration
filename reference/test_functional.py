@@ -1,7 +1,7 @@
 """Independent numbers and gradient signs for the implemented Fountain network."""
 import random
 import unittest
-from reference.arithmetic import matrix_multiply, weighted_vector_reduction
+from reference.arithmetic import matrix_multiply, requantize, weighted_vector_reduction
 from reference.functional import ReferenceConfig, FunctionalReference, Sample, analyze
 
 
@@ -10,18 +10,18 @@ def identity(n):
 
 
 class FunctionalTests(unittest.TestCase):
-    def test_worked_example_and_exact_widths(self):
+    def test_worked_example_and_uniform_widths(self):
         w=[[5*i+j+1 for j in range(5)] for i in range(5)]
         cfg=ReferenceConfig(n=5,width=8,layers=3)
         model=FunctionalReference(cfg,[w,identity(5),identity(5)],[64]*5)
         record=model.step(Sample((1,2,3,4,5)))
         self.assertEqual(record.activated_result,(215,230,245,260,275))
         self.assertEqual(record.prediction,612)
-        self.assertEqual(cfg.matrix_result_width,41)
-        self.assertEqual(cfg.prediction_width,44)
+        self.assertEqual(cfg.sum_width,30)
+        self.assertEqual(cfg.prediction_width,22)
         self.assertEqual(model.W,[w,identity(5),identity(5)])
 
-    def test_single_layer_matches_existing_fixed_point_arithmetic(self):
+    def test_single_layer_matches_independent_oracles(self):
         rng=random.Random(123)
         for n in (3,5,9):
             for fraction in (0,4):
@@ -31,10 +31,11 @@ class FunctionalTests(unittest.TestCase):
                     x=[rng.randint(-128,127) for _ in range(n)]
                     r=[rng.randint(-128,127) for _ in range(n)]
                     record=analyze(cfg,w,r,Sample(tuple(x)))
-                    self.assertEqual(list(record.activated_result),matrix_multiply(x,w,8))
-                    self.assertEqual(record.prediction,weighted_vector_reduction(record.activated_result,r,8,8,fraction))
+                    self.assertEqual(list(record.activated_result),
+                                     [requantize(v,fraction,19) for v in matrix_multiply(x,w,8)])
+                    self.assertEqual(record.prediction,weighted_vector_reduction(record.activated_result,r,8))
 
-    def test_every_layer_activates_once_and_keeps_fractional_bits(self):
+    def test_every_layer_activates_once_and_keeps_the_binary_point(self):
         w=[identity(3),identity(3),identity(3)]
         record=analyze(ReferenceConfig(n=3,layers=3,pass_through=False),w,[64]*3,Sample((-3,0,7)))
         self.assertEqual(record.activations,((-3,0,7),(0,0,7),(0,0,7),(0,0,7)))
@@ -42,8 +43,15 @@ class FunctionalTests(unittest.TestCase):
         cfg=ReferenceConfig(n=3,layers=3,fraction_bits=2)
         scaled=[[[4*int(i==j) for j in range(3)] for i in range(3)] for _ in range(3)]
         record=analyze(cfg,scaled,[64]*3,Sample((4,8,12)))
-        self.assertEqual(record.activated_result,(256,512,768))
+        self.assertEqual(record.activations,((4,8,12),)*4)
         self.assertEqual(record.prediction,12)
+
+    def test_forward_and_gradient_lanes_cap_at_the_activation_limits(self):
+        cfg=ReferenceConfig(n=3,width=8,activation_width=8,layers=2,pass_through=True)
+        w=[[[100,0,0],[0,-100,0],[0,0,1]]]*2
+        record=analyze(cfg,w,[127,127,127],Sample((100,100,-3),1,True))
+        self.assertEqual(record.activations[1],(127,-128,-3))
+        self.assertEqual(record.gradients[0],(127,-128,127))
 
     def test_hidden_sign_cancellation_and_ternary_counterexample(self):
         cfg=ReferenceConfig(n=3,layers=3,pass_through=False)

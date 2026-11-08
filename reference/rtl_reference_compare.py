@@ -172,6 +172,15 @@ def build(config):
     else:
         while not driver.model.fifo: driver.tick()
     driver.tick(reset_n=False)
+    driver.mark('hidden lane truncated to zero by requantization')
+    # With F>0, lane 0's raw sum of 1 is positive but requantizes to 0, so its
+    # input sign must be 0 while the other lanes keep the gradients nonzero.
+    matrices=[[[4*int(i==j) - 3*int(i==j==0) for j in range(n)] for i in range(n)]]
+    matrices+=[[[4]*n for _ in range(n)] for _ in range(config.layers-1)]
+    driver.pass_through=False
+    driver.load(matrices,[64]*n)
+    driver.offer((1,)+(8,)*(n-1),target=127,training=True)
+    driver.drain()
     driver.pass_through=True
     driver.mark('negative extrema and saturation')
     matrices=[[[(-128 if (i+j+l)%2 else 127) for j in range(n)] for i in range(n)] for l in range(config.layers)]

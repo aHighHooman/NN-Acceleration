@@ -8,6 +8,7 @@ import unittest
 from reference.arithmetic import (
     clog2,
     matrix_multiply,
+    requantize,
     saturating_lsb_update,
     ternary_sign,
     to_signed,
@@ -39,6 +40,16 @@ class TestPrimitives(unittest.TestCase):
             saturating_lsb_update(0, 2, 4)
 
 
+    def test_requantize_shifts_floors_and_caps(self) -> None:
+        # 3.0 with 16 fraction bits back to 8: 196608 >> 8 == 768.
+        self.assertEqual(requantize(196608, 8, 19), 768)
+        self.assertEqual([requantize(v, 2, 8) for v in (511, 508, 507, 4, 3, 0, -1, -4, -5)],
+                         [127, 127, 126, 1, 0, 0, -1, -1, -2])
+        self.assertEqual([requantize(v, 0, 8) for v in (128, 1000, -129, -1000)], [127, 127, -128, -128])
+        with self.assertRaises(ValueError):
+            requantize(1, -1, 8)
+
+
 class TestSingleLayerOracle(unittest.TestCase):
     def test_orientation_is_row_indexed_by_input_lane(self) -> None:
         self.assertEqual(matrix_multiply((1, 2, 3), ((1, 2, 3), (4, 5, 6), (7, 8, 9)), 8), [30, 36, 42])
@@ -50,18 +61,17 @@ class TestSingleLayerOracle(unittest.TestCase):
         self.assertEqual(matrix_multiply((255,), ((7,),), 8), [-7])
 
     def test_readout_shifts_the_complete_sum_once(self) -> None:
-        self.assertEqual(weighted_vector_reduction((30, 36, 42), (16, 24, 32), 8, 8, 0), 21)
-        self.assertEqual(weighted_vector_reduction((30, 36, 42), (16, 24, 32), 8, 8, 4), 1)
+        self.assertEqual(weighted_vector_reduction((30, 36, 42), (16, 24, 32), 8), 21)
         # Per-term rescaling would give 0; one final shift of 192 gives 1.
-        self.assertEqual(weighted_vector_reduction((1, 1, 1), (64, 64, 64), 8, 8, 0), 1)
+        self.assertEqual(weighted_vector_reduction((1, 1, 1), (64, 64, 64), 8), 1)
         # The arithmetic shift floors negative sums: -480 >> 7 == -4.
-        self.assertEqual(weighted_vector_reduction((30, 0, 0), (-16, 0, 0), 8, 8, 0), -4)
+        self.assertEqual(weighted_vector_reduction((30, 0, 0), (-16, 0, 0), 8), -4)
 
     def test_rejects_size_mismatch(self) -> None:
         with self.assertRaises(ValueError):
             matrix_multiply((1, 2), ((1, 2, 3), (4, 5, 6), (7, 8, 9)), 8)
         with self.assertRaises(ValueError):
-            weighted_vector_reduction((1, 2), (1, 2, 3), 8, 8, 0)
+            weighted_vector_reduction((1, 2), (1, 2, 3), 8)
 
 
 if __name__ == "__main__":

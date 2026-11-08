@@ -4,18 +4,19 @@ module nnAcceleratorStateTrace_tb #(
     parameter int N=3, LAYERS=3, FRACTION_BITS=0
 );
     localparam int WIDTH=8;
-    localparam int RAW_WIDTH=WIDTH+LAYERS*(WIDTH+$clog2(N));
-    localparam int RESULT_WIDTH=RAW_WIDTH+$clog2(N);
+    localparam int ACTIVATION_WIDTH=19;
+    localparam int RESULT_WIDTH=ACTIVATION_WIDTH+$clog2(N);
     logic clk=0, rst_n=0, weightValid=0, inputValid=0, trainingEnable=0, resultReady=1;
     logic loadReductionWeights=0, reloadWeights=0, passThrough=1;
-    logic signed [7:0] weightData[N], inputData[N], targetData, reductionWeight[N];
+    logic signed [7:0] weightData[N], targetData, reductionWeight[N];
+    logic signed [ACTIVATION_WIDTH-1:0] inputData[N];
     wire weightReady, inputReady, resultValid, weightsLoaded, reloadReady;
     wire signed [RESULT_WIDTH-1:0] resultData;
     integer stimulus_fd, trace_fd, status, cycle_count, accepted, retired;
     integer fields[10+3*N];
     string stimulus_path,trace_path;
     always #5 clk=~clk;
-    nnAccelerator #(.WIDTH(WIDTH),.N(N),.LAYERS(LAYERS),.FRACTION_BITS(FRACTION_BITS),
+    nnAccelerator #(.WIDTH(WIDTH),.ACTIVATION_WIDTH(ACTIVATION_WIDTH),.N(N),.LAYERS(LAYERS),.FRACTION_BITS(FRACTION_BITS),
         .IN_FLIGHT_DEPTH(16),.OUTPUT_FIFO_DEPTH(2)) dut(.*);
 
     for (genvar l=0; l<LAYERS; l++) begin : freeze_layer
@@ -102,7 +103,7 @@ module nnAcceleratorStateTrace_tb #(
                 end
                 cycle_count=fields[0]; rst_n=fields[1]; weightValid=fields[2]; inputValid=fields[3+N];
                 for (int j=0; j<N; j++) begin
-                    weightData[j]=8'(fields[3+j]); inputData[j]=8'(fields[4+N+j]);
+                    weightData[j]=8'(fields[3+j]); inputData[j]=ACTIVATION_WIDTH'(fields[4+N+j]);
                     reductionWeight[j]=8'(fields[7+2*N+j]);
                 end
                 targetData=8'(fields[4+2*N]); trainingEnable=fields[5+2*N]; resultReady=fields[6+2*N];

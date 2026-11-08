@@ -89,7 +89,7 @@ class _Layer:
     def __init__(self, config, index, weights):
         self.config=config
         self.weights=weights
-        self.aw=config.width+(index+1)*(config.width+(config.n-1).bit_length())
+        self.aw=config.sum_width
         n=config.n
         self.act=[[None]*n for _ in range(n)]
         self.sums=[[None]*n for _ in range(n)]
@@ -256,14 +256,15 @@ class CycleReference:
         return self._R[:]
 
     def lane_outputs(self):
-        return [[None if lane is None else Lane(lane.value if self.mode_pass or lane.value>=0 else 0,lane.sample)
+        """Each layer's lanes after ReLU and requantization, as the next layer sees them."""
+        return [[None if lane is None else Lane(self.config.requantize(lane.value if self.mode_pass or lane.value>=0 else 0),lane.sample)
                  for lane in layer.outputs()] for layer in self.layers]
 
     def gradient_lanes(self,readout):
         """The gradient vector at each layer's output, as the wires show it now."""
         lanes=[None]*self.config.layers
         for l in range(self.config.layers):
-            source=readout if l==self.config.layers-1 else self.layers[l+1].gradient_outputs()
+            source=readout if l==self.config.layers-1 else [self.config.requantize(value) for value in self.layers[l+1].gradient_outputs()]
             lanes[l]=[value if gate else 0 for value,gate in zip(source,self.gates[l])]
         return lanes
 
@@ -347,7 +348,7 @@ class CycleReference:
                 self.fifo.append(ResultEntry(prediction,sample))
                 self.timings[sample].enqueued_at=self.cycle
             if accepted:
-                values=tuple(to_signed(value,cfg.width) for value in inputs.input_data)
+                values=tuple(to_signed(value,cfg.activation_width) for value in inputs.input_data)
                 if len(values)!=cfg.n: raise ValueError('input length')
                 sample=self.next_sample
                 self.expected[sample]=analyze(replace(cfg,pass_through=self.mode_pass),self._W,old_r,
@@ -374,12 +375,7 @@ class CycleReference:
                 self.gradient=self.gradient_lanes(old_r)
                 for l in range(1,cfg.layers): self.layers[l].tick_backward(self.gradient[l])
                 self.back_count+=1
-                if self.back_count==cfg.backward_cycles:
-                    self.training_state=2
-                    step_width=cfg.width+(cfg.n-1).bit_length()
-                    for l,lanes in enumerate(self.gradient):
-                        width=cfg.reduction_weight_width+(cfg.layers-1-l)*step_width
-                        assert all(to_signed(value,width)==value for value in lanes), 'gradient overflow'
+                if self.back_count==cfg.backward_cycles: self.training_state=2
             elif old_state==2 and sig['advance']:
                 record=self.expected[self.training_sample]
                 for l in range(cfg.layers):

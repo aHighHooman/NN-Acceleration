@@ -202,8 +202,8 @@ module weightedVectorReduction_tb;
     weightedVectorReduction_testcase #(.N(5)) b(done[1]);
     weightedVectorReduction_testcase #(.N(9)) c(done[2]);
     weightedVectorReduction_testcase #(.N(3), .RESCALE_SHIFT(9)) d(done[3]);
-    // Exact Quartus-profile widths: a 41-bit lane, 52-bit sum and 44-bit prediction.
-    weightedVectorReduction_testcase #(.N(5), .MATRIX_RESULT_WIDTH(41)) e(done[4]);
+    // Quartus-profile widths: a 19-bit lane, 30-bit sum and 22-bit prediction.
+    weightedVectorReduction_testcase #(.N(5), .MATRIX_RESULT_WIDTH(19)) e(done[4]);
     initial begin wait(&done); $display("PASS: Reduction column regression"); $finish; end
     initial begin #1000000; $fatal(1, "Reduction column regression timeout"); end
 endmodule
