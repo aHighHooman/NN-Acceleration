@@ -1,7 +1,8 @@
 // Fountain source, dedicated layer chain and row loader. Every layer's lanes,
 // including the outputs, stay on the staggered center-first front. While
-// backward is held, the readout weights run through arrays LAYERS-1..1 in reverse
-// and each layer's gradient vector settles on its lanes.
+// backward is held, arrays LAYERS-1..1 switch to their transposed weights, each
+// takes its input from the next array's output, and the readout weights settle
+// into every layer's gradient vector.
 module weightStationaryMatrixMultiplier #(
     parameter int WIDTH=16, N=3, LAYERS=1, REDUCTION_WEIGHT_WIDTH=8,
     parameter int RESULT_WIDTH=WIDTH+LAYERS*(WIDTH+$clog2(N))
@@ -42,8 +43,8 @@ module weightStationaryMatrixMultiplier #(
     logic signed [WIDTH-1:0] cfgData[N];
     wire signed [RESULT_WIDTH-1:0] chainData[LAYERS+1][N];
     wire chainValid[LAYERS+1][N];
-    // Array l's backward output, before layer l-1's zeroed lanes are applied.
-    // Index LAYERS holds the readout weights, which start the pass.
+    // Array l's output during the backward pass, before layer l-1's zeroed lanes
+    // are applied. Index LAYERS holds the readout weights, which start the pass.
     wire signed [GRADIENT_WIDTH-1:0] gradientChain[LAYERS+1][N];
     wire sourceBusy[N], arrayBusy[LAYERS], arrayLoaded[LAYERS];
     logic skewBusy, pipelineBusy, allLoaded;
@@ -97,13 +98,14 @@ module weightStationaryMatrixMultiplier #(
         // never runs backward; the others hold whichever vector is wider.
         localparam int GW=REDUCTION_WEIGHT_WIDTH+(LAYERS-1-l)*STEP;
         localparam int PE_INPUT_WIDTH=(l==0 || XW>GW)?XW:GW;
-        wire signed [PE_INPUT_WIDTH-1:0] laneInput[N], gradientInput[N];
-        wire signed [PE_INPUT_WIDTH+STEP-1:0] raw[N], gradientOutput[N];
+        wire signed [PE_INPUT_WIDTH-1:0] laneInput[N];
+        wire signed [PE_INPUT_WIDTH+STEP-1:0] raw[N];
         wire rawValid[N];
+        wire arrayBackward=l>0 && backward;
         for (j=0; j<N; j++) begin : lanes
             wire signed [AW-1:0] activated;
             wire signed [GRADIENT_WIDTH-1:0] gradient;
-            assign laneInput[j]=chainData[l][j];
+            assign laneInput[j]=arrayBackward?gradient:chainData[l][j];
             assign activated=(passThrough || !raw[j][AW-1])?raw[j]:AW'('0);
             assign chainData[l+1][j]={{(RESULT_WIDTH-AW){activated[AW-1]}},activated};
             assign chainValid[l+1][j]=rawValid[j];
@@ -112,18 +114,17 @@ module weightStationaryMatrixMultiplier #(
             assign tapSign[l][j]=(activated==0)?2'sd0:(activated[AW-1]?-2'sd1:2'sd1);
             // The gradient vector at this layer's output has 0 wherever ReLU zeroed the output.
             assign gradient=activationGates[l][j]?gradientChain[l+1][j]:0;
-            assign gradientInput[j]=gradient;
-            assign gradientChain[l][j]=gradientOutput[j];
+            assign gradientChain[l][j]=raw[j];
             assign tapGradientSign[l][j]=(gradient==0)?2'sd0:(gradient[GRADIENT_WIDTH-1]?-2'sd1:2'sd1);
         end
         weightStationarySystolicArray #(.N(N), .WIDTH(WIDTH), .INPUT_WIDTH(PE_INPUT_WIDTH),
             .RESULT_WIDTH(PE_INPUT_WIDTH+STEP)) systolicArray (
-            .clk, .rst_n, .advance(arrayAdvance), .backward(l>0 && backward), .cfg_we(cfgWe[l]),
+            .clk, .rst_n, .advance(arrayAdvance), .backward(arrayBackward), .cfg_we(cfgWe[l]),
             .cfg_row(INDEX_WIDTH'(loadStep)), .cfg_data(cfgData),
             .update_valid(matrixUpdateValid), .row_direction(rowDirection[l]),
             .column_direction(columnDirection[l]),
-            .in_data(laneInput), .gradient_in(gradientInput), .in_valid(chainValid[l]),
-            .result(raw), .gradient_out(gradientOutput), .resultValid(rawValid),
+            .in_data(laneInput), .in_valid(chainValid[l]),
+            .result(raw), .resultValid(rawValid),
             .weights(weights[l]), .loaded(arrayLoaded[l]), .busy(arrayBusy[l])
         );
     end

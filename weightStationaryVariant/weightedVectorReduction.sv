@@ -48,9 +48,9 @@ module weightedVectorReduction #(
     for (i=0; i<N; i++) begin : rows
         weightStationaryProcessingElement #(.INPUT_WIDTH(MATRIX_RESULT_WIDTH),
             .WIDTH(REDUCTION_WEIGHT_WIDTH), .RESULT_WIDTH(SUM_WIDTH)) pe (
-            .clk, .rst_n, .advance,
-            .cfg_we, .cfg_data(cfg_data[i]),
-            .update_valid, .update_direction(updateDirection[i]),
+            .clk, .rst_n, .advance, .backward(1'b0),
+            .cfg_we, .cfg_data(cfg_data[i]), .cfg_transposed_we(1'b0), .cfg_transposed_data('0),
+            .update_valid, .update_direction(updateDirection[i]), .transposed_update_direction(2'sd0),
             .activation_in(in_data[i]), .activation_valid(in_valid[i]),
             .sum_in(sumIn[i]), .sum_out(sumOut[i]),
             .activation_out(), .activation_out_valid(activationValid[i]),

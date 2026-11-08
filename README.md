@@ -97,18 +97,22 @@ When a sample is submitted with `trainingEnable`, the accelerator:
 ![Backpropagation path](presentation/figures/12-backprop-architecture.svg)
 
 The backward pass multiplies on the other side of each matrix, `W * vector`
-instead of `vector * W`. Each PE therefore has two muxes that exchange the row
-and column routes: the vector runs along the columns from the center row, and the
-sums run along the rows from the two center columns. A PE fires at
-`|i-C| + |j-C|` in both directions, so the same center-first timing carries one
-array's outputs straight into the previous array.
+instead of `vector * W`. That equals `vector * W'`, so PE `(i,j)` also holds a
+copy of `W[j][i]` and multiplies by it during the backward pass. The routes,
+seeds and column joins stay exactly as they are; each array only takes its input
+from the next array's output instead of the previous one's, so the same
+center-first timing carries one array's outputs straight into the previous array.
+
+Loading row `r` writes the forward weights of row `r` and the copies in column
+`r`. Each copy takes the same one-LSB step as the weight it mirrors, so both
+always hold the same matrix, and simulation asserts that they do.
 
 The readout weights are held still, and the path from them to every lane is
 feed-forward. The controller only has to wait for the longest path,
 `(LAYERS-1)*(h+1) + h` cycles, and capture the signs on one more edge. The pass
 needs no valid bits or lane skew, and stores only two sign bits per lane.
 
-Array 0 never runs backward, so it has no muxes. Gradient vectors get wider going
+Array 0 never runs backward, so synthesis removes its copies. Gradient vectors get wider going
 backward as activations get wider going forward, so with `LAYERS <= 3` and
 `REDUCTION_WEIGHT_WIDTH <= WIDTH` they fit the existing registers. Other
 configurations widen an array's registers and multipliers only where needed, which
@@ -226,21 +230,17 @@ All tests pass in Questa:
 
 | Metric | Value |
 | --- | --- |
-| Logic | 6,875 ALMs |
-| Registers | 5,328 |
-| DSP blocks | 87 / 87 |
+| Logic | 6,586 ALMs |
+| Registers | 5,318 |
+| DSP blocks | 82 / 87 |
 | Memory | 440 bits (2 RAM blocks) |
-| Fmax | 69.4 MHz (100 MHz target not met) |
+| Fmax | 71.4 MHz (100 MHz target not met) |
 
-The critical path runs from one stage's boundary sums through the column join,
-ReLU and the backward mux into the next stage's multiplier and sum register, all in
-one cycle. Across seeds 1 to 3 Fmax is 68.8 to 70.5 MHz. These numbers come from the
+The critical path runs from the last stage's boundary sums through the column
+join and ReLU into the readout column's multiplier and sum register, all in one
+cycle. Across seeds 1 to 3 Fmax is 70.4 to 71.4 MHz. These numbers come from the
 default seed unless noted. I/O pins are virtual, so they describe the core and are
 not a board-level sign-off.
-
-The PEs need 90 DSP blocks when all their multipliers use DSPs, because a PE that
-adds an incoming sum merges that adder into its DSP and takes a whole block. The
-Quartus project therefore builds the five multipliers in array 0's row 0 from logic.
 
 ## Repository layout
 
@@ -262,7 +262,7 @@ presentation/figures/                    Architecture diagrams
 ## Limitations and future work
 
 - The 100 MHz timing target is not met on Cyclone V; the latest fit reaches
-  69.4 MHz.
+  71.4 MHz.
 - The output is one scalar, so multi-output networks are not supported.
 - Only square matrix stages with odd N are supported.
 - Training handles one sample at a time; only inference is fully pipelined.

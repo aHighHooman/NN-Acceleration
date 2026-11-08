@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1195" width="1600" height="1195" role="img" aria-labelledby="title desc">
 <title id="title">Fountain backpropagation path — capture, arrays run backward, atomic sign update</title>
-<desc id="desc">A training sample runs through the normal forward pipeline while taps after each matrix stage record the ReLU gate and the sign of each activated output; the input signs are latched at admission. When the training result is popped from the result FIFO, the training engine compares the saved target with the prediction to form sign(e) and holds the gated readout coefficients on the last array. In the BACKWARD state the arrays exchange their row and column routes and run in reverse, so each computes W times the gradient vector on its own PEs, for LAYERS*(N+1)/2 cycles, and the sign of each gradient vector is captured. In the one-cycle APPLY state each layer receives N row-direction lanes equal to sign(a[l][i]) and N column-direction lanes equal to sign(e)*sign(grad[l][j]); each PE combines its row and column sign with a comparator and steps its weight by one saturating LSB. The readout coefficients update in the same cycle by sign(e)*sign(a[L][j]).</desc>
+<desc id="desc">A training sample runs through the normal forward pipeline while taps after each matrix stage record the ReLU gate and the sign of each activated output; the input signs are latched at admission. When the training result is popped from the result FIFO, the training engine compares the saved target with the prediction to form sign(e) and holds the gated readout coefficients on the last array. In the BACKWARD state each PE multiplies by its stored transposed weight and each array takes its input from the next array's output, so each computes W times the gradient vector on its own PEs, for LAYERS*(N+1)/2 cycles, and the sign of each gradient vector is captured. In the one-cycle APPLY state each layer receives N row-direction lanes equal to sign(a[l][i]) and N column-direction lanes equal to sign(e)*sign(grad[l][j]); each PE combines its row and column sign with a comparator and steps its weight by one saturating LSB. The readout coefficients update in the same cycle by sign(e)*sign(a[L][j]).</desc>
 <style>
 svg{--paper:#F3F5F3; --panel:#FFFFFF; --ink:#15191C; --ink-2:#48525A; --ink-3:#7A848B;
   --rule:#D5DBD8; --grid:#E5E9E6;
@@ -175,19 +175,19 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 
 <!-- routes -->
 <rect x="460" y="610" width="700" height="174" rx="6" class="bx2"/>
-<text x="476" y="636" class="b">Same PEs and multipliers, row and column routes exchanged</text>
+<text x="476" y="636" class="b">Same PEs, routes and joins · each PE also holds the transposed weight</text>
 <text x="620" y="664" class="ms">forward: vector × W</text>
-<text x="890" y="664" class="ms">backward: W × vector</text>
-<text x="476" y="690" class="s">vector</text>
-<text x="620" y="690" class="ms">along rows, from column C</text>
-<text x="890" y="690" class="ms">along columns, from row C</text>
-<text x="476" y="716" class="s">sums</text>
-<text x="620" y="716" class="ms">along columns, seeds at rows C−1, C</text>
-<text x="890" y="716" class="ms">along rows, seeds at columns C−1, C</text>
-<text x="476" y="742" class="s">join</text>
-<text x="620" y="742" class="ms">top + bottom of each column</text>
-<text x="890" y="742" class="ms">left + right of each row</text>
-<text x="476" y="768" class="s">PE fires at |i−C| + |j−C| either way, so the center-first timing carries over.</text>
+<text x="890" y="664" class="ms">backward: vector × Wᵀ = W × vector</text>
+<text x="476" y="690" class="s">weight</text>
+<text x="620" y="690" class="ms">PE (i, j) uses W[i][j]</text>
+<text x="890" y="690" class="ms">PE (i, j) uses W[j][i]</text>
+<text x="476" y="716" class="s">input</text>
+<text x="620" y="716" class="ms">previous array's output</text>
+<text x="890" y="716" class="ms">next array's output</text>
+<text x="476" y="742" class="s">update</text>
+<text x="620" y="742" class="ms">W[i][j] takes its step</text>
+<text x="890" y="742" class="ms">the copy takes the same step</text>
+<text x="476" y="768" class="s">Loading row r also writes column r of the copies, so both always hold the same matrix.</text>
 
 <!-- error sign -->
 <rect x="1190" y="420" width="370" height="120" rx="6" class="bxl"/>

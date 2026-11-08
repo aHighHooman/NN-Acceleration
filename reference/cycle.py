@@ -131,20 +131,20 @@ class _Layer:
         self.back_sums=[[1<<self.aw]*n for _ in range(n)]
 
     def gradient_outputs(self):
-        return [self.back_sums[i][0]+self.back_sums[i][-1] for i in range(self.config.n)]
+        return [self.back_sums[0][j]+self.back_sums[-1][j] for j in range(self.config.n)]
 
     def tick_backward(self, incoming):
-        # Forward's routes with rows and columns exchanged.
+        # Forward's routes, with each PE (i,j) multiplying by its transposed copy W[j][i].
         n=self.config.n
         c=n//2
         next_act=[[0]*n for _ in range(n)]
         next_sums=[[0]*n for _ in range(n)]
         for i in range(n):
             for j in range(n):
-                gradient=incoming[j] if i==c else self.back_act[i+1 if i<c else i-1][j]
-                partial=0 if j in (c,c-1) else self.back_sums[i][j+1 if j<c else j-1]
+                gradient=incoming[i] if j==c else self.back_act[i][j+1 if j<c else j-1]
+                partial=0 if i in (c,c-1) else self.back_sums[i+1 if i<c else i-1][j]
                 next_act[i][j]=gradient
-                next_sums[i][j]=gradient*self.weights[i][j]+partial
+                next_sums[i][j]=gradient*self.weights[j][i]+partial
         self.back_act,self.back_sums=next_act,next_sums
 
 

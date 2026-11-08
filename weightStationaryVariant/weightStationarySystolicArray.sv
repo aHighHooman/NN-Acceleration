@@ -1,6 +1,6 @@
 // Center-out PE network with combinational joins of registered boundary sums.
-// Forward it computes in_data * W. Backward it computes W * gradient_in on the
-// same PEs by exchanging the row and column routes.
+// Forward it computes in_data * W. Backward each PE uses its copy of the
+// transposed weight, so the same routes compute in_data * W' = W * in_data.
 module weightStationarySystolicArray #(
     parameter int N = 5,
     parameter int INPUT_WIDTH = 8,
@@ -13,9 +13,9 @@ module weightStationarySystolicArray #(
     input logic signed [WIDTH-1:0] cfg_data[N],
     input logic update_valid,
     input logic signed [1:0] row_direction[N], column_direction[N],
-    input logic signed [INPUT_WIDTH-1:0] in_data[N], gradient_in[N],
+    input logic signed [INPUT_WIDTH-1:0] in_data[N],
     input logic in_valid[N],
-    output logic signed [RESULT_WIDTH-1:0] result[N], gradient_out[N],
+    output logic signed [RESULT_WIDTH-1:0] result[N],
     output logic resultValid[N],
     output logic signed [WIDTH-1:0] weights[N][N],
     output logic loaded, busy
@@ -31,6 +31,11 @@ module weightStationarySystolicArray #(
         if (N<3 || N%2==0 || RESULT_WIDTH<INPUT_WIDTH+WIDTH+$clog2(N))
             $fatal(1, "Fountain requires odd N>=3 and a full-width accumulator");
     end
+    // Ternary signs need comparisons, not a DSP multiplier per PE.
+    function automatic logic signed [1:0] combined(input logic signed [1:0] row, column);
+        if (row==0 || column==0) return 0;
+        return (row==column) ? 2'sd1 : -2'sd1;
+    endfunction
     assign loaded = &loaded_rows;
     assign accepted_cfg = cfg_we && !busy && cfg_row<N;
     always_ff @(posedge clk) begin
@@ -51,43 +56,42 @@ module weightStationarySystolicArray #(
         end
         // synthesis translate_on
     end
-    // Forward: the vector leaves column C along the rows, and sums start at rows
-    // C-1 and C and run along the columns. Backward exchanges rows and columns.
-    // A PE fires at |i-C|+|j-C| either way, so the center-first timing holds.
-    // Only forward vectors carry valid bits, so a backward pass never reads as busy.
+    // The vector leaves column C along the rows, and sums start at rows C-1 and
+    // C and run along the columns. Only forward vectors carry valid bits, so a
+    // backward pass never reads as busy.
     always_comb begin
         for (int i=0; i<N; i++) for (int j=0; j<N; j++) begin
+            activation_in[i][j] = (j==C) ? in_data[i] : activations[i][(j<C)?j+1:j-1];
             activation_valid_in[i][j] = (j==C) ? in_valid[i] : activation_valids[i][(j<C)?j+1:j-1];
-            if (backward) begin
-                activation_in[i][j] = (i==C) ? gradient_in[j] : activations[(i<C)?i+1:i-1][j];
-                sum_in[i][j] = (j==C || j==C-1) ? '0 : sums[i][(j<C)?j+1:j-1];
-            end else begin
-                activation_in[i][j] = (j==C) ? in_data[i] : activations[i][(j<C)?j+1:j-1];
-                sum_in[i][j] = (i==C || i==C-1) ? '0 : sums[(i<C)?i+1:i-1][j];
-            end
+            sum_in[i][j] = (i==C || i==C-1) ? '0 : sums[(i<C)?i+1:i-1][j];
         end
     end
+    // Writing row r loads the forward weights of row r and the transposed weights
+    // of column r. The transposed copy of W[j][i] takes W[j][i]'s update.
     genvar i,j;
     generate
     for (i=0; i<N; i++) begin : rows
         for (j=0; j<N; j++) begin : columns
-            logic signed [1:0] direction;
-            always_comb begin
-                if (row_direction[i]==0 || column_direction[j]==0) direction = 0;
-                else if (row_direction[i]==column_direction[j]) direction = 2'sd1;
-                else direction = -2'sd1;
-            end
             weightStationaryProcessingElement #(.INPUT_WIDTH(INPUT_WIDTH), .WIDTH(WIDTH),
                           .RESULT_WIDTH(RESULT_WIDTH)) pe (
-                .clk, .rst_n, .advance,
+                .clk, .rst_n, .advance, .backward,
                 .cfg_we(accepted_cfg && cfg_row==INDEX_WIDTH'(i)), .cfg_data(cfg_data[j]),
-                .update_valid(update_valid && !busy && loaded), .update_direction(direction),
+                .cfg_transposed_we(accepted_cfg && cfg_row==INDEX_WIDTH'(j)), .cfg_transposed_data(cfg_data[i]),
+                .update_valid(update_valid && !busy && loaded),
+                .update_direction(combined(row_direction[i], column_direction[j])),
+                .transposed_update_direction(combined(row_direction[j], column_direction[i])),
                 .activation_in(activation_in[i][j]), .activation_valid(activation_valid_in[i][j]),
                 .sum_in(sum_in[i][j]),
                 .activation_out(activations[i][j]),
                 .activation_out_valid(activation_valids[i][j]),
                 .sum_out(sums[i][j]), .weight(weights[i][j])
             );
+            // synthesis translate_off
+            always_ff @(posedge clk) begin
+                if (rst_n && loaded) assert (pe.transposed_weight==weights[j][i])
+                    else $fatal(1, "Transposed weight %0d,%0d differs from W[%0d][%0d]", i, j, j, i);
+            end
+            // synthesis translate_on
         end
     end
     endgenerate
@@ -99,7 +103,6 @@ module weightStationarySystolicArray #(
     generate
     for (j=0; j<N; j++) begin : columns
         assign result[j] = sums[0][j] + sums[N-1][j];
-        assign gradient_out[j] = sums[j][0] + sums[j][N-1];
         assign resultValid[j] = activation_valids[0][j];
         // The join and activation settle between boundary capture and the
         // next layer's PE capture; there is no separate join register.
