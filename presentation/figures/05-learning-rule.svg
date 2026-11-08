@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="f05" viewBox="0 0 840 535" width="840" height="535" role="img" aria-labelledby="f05-title f05-description">
 <title id="f05-title">Fountain full-gradient learning and atomic commit</title>
-<desc id="f05-description">A training admission blocks later samples. After the pipeline drains and the training result retires, the gradient vectors run back through the matrix arrays. All matrix weights and readout coefficients commit saturated one-LSB updates together. At N=5 and three layers, a nonzero error requires 50 advancing backward clocks and one commit clock. Hidden update signs use weighted downstream sensitivities, not just readout coefficient signs.</desc>
+<desc id="f05-description">A training admission blocks later samples. After the pipeline drains and the training result retires, the gradient vectors run back through the matrix arrays. All matrix weights and readout coefficients commit saturated one-LSB updates together. At N=5 and three layers, a nonzero error requires 9 advancing backward clocks and one commit clock. Hidden update signs use weighted downstream gradients, not just readout coefficient signs.</desc>
 <style>
 .f05{--panel:#FFFFFF;--ink:#15191C;--muted:#48525A;--rule:#D5DBD8;--data:#2350C8;--data-soft:#DDE5FB;--learn:#CF4F16;--learn-soft:#FCE4D7}
 @media(prefers-color-scheme:dark){.f05{--panel:#171B1E;--ink:#E6E9EB;--muted:#AEB7BD;--rule:#2C3337;--data:#86A6FF;--data-soft:#1B2847;--learn:#FF8F57;--learn-soft:#3A2116}}

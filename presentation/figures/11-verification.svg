@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="f11" viewBox="0 0 840 590" width="840" height="590" role="img" aria-labelledby="f11-title f11-description">
 <title id="f11-title">Current Fountain verification workflow</title>
-<desc id="f11-description">run_modelsim.ps1 runs 28 Python tests, eight directed matrix profiles, PE and readout benches, invalid-parameter checks, and five integrated RTL/reference comparisons. Each integrated profile has 13 directed scenarios; all four total 3270 checked edges. Comparisons cover public handshakes, raw lane fronts, resident weights, readout coefficients and the training barrier. No UVM suite or delayed update-wave bench is part of the current workflow.</desc>
+<desc id="f11-description">run_modelsim.ps1 runs 28 Python tests, eight directed matrix profiles, PE and readout benches, invalid-parameter checks, and five integrated RTL/reference comparisons. Each integrated profile has 13 directed scenarios; all five total 3,580 checked edges. Comparisons cover public handshakes, raw lane fronts, resident weights, readout coefficients and the training barrier. No UVM suite or delayed update-wave bench is part of the current workflow.</desc>
 <style>
 .f11{--panel:#FFFFFF;--ink:#15191C;--muted:#48525A;--rule:#D5DBD8;--data:#2350C8;--data-soft:#DDE5FB;--learn:#CF4F16;--learn-soft:#FCE4D7}
 @media(prefers-color-scheme:dark){.f11{--panel:#171B1E;--ink:#E6E9EB;--muted:#AEB7BD;--rule:#2C3337;--data:#86A6FF;--data-soft:#1B2847;--learn:#FF8F57;--learn-soft:#3A2116}}
