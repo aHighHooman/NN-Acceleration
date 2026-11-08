@@ -238,17 +238,18 @@ All tests pass in Questa:
 
 | Metric | Value |
 | --- | --- |
-| Logic | 7,444 ALMs |
+| Logic | 7,576 ALMs |
 | Registers | 7,436 |
 | DSP blocks | 80 / 87 |
 | Memory | 220 bits (1 RAM block) |
-| Fmax | 75.3 MHz (100 MHz target not met) |
+| Fmax | 72.0 MHz (100 MHz target not met) |
 
 Every multiplier maps to one 18x19 DSP slot; 77 of the 80 pack two to a block,
 so about 42 blocks would suffice even though the fitter spreads them over 80.
 The critical path runs from a stage's boundary sums through the column join,
 ReLU and requantization into the next stage's or the readout column's multiplier
-and sum register, all in one cycle. Across seeds 1 to 3 Fmax is 71.1 to 75.3 MHz.
+and sum register, all in one cycle. Across seeds 1 to 3 Fmax is 72.0 to 77.6 MHz,
+averaging 75.7 MHz; placement alone moves it by several MHz.
 These numbers come from the default seed unless noted. I/O pins are virtual, so
 they describe the core and are not a board-level sign-off.
 
@@ -272,7 +273,7 @@ presentation/figures/                    Architecture diagrams
 ## Limitations and future work
 
 - The 100 MHz timing target is not met on Cyclone V; the latest fit reaches
-  75.3 MHz.
+  72.0 MHz with the default seed and 75.7 MHz averaged over three seeds.
 - The output is one scalar, so multi-output networks are not supported.
 - Only square matrix stages with odd N are supported.
 - Training handles one sample at a time; only inference is fully pipelined.

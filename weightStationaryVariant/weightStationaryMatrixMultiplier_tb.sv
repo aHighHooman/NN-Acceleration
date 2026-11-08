@@ -9,25 +9,25 @@ module weightStationaryMatrixMultiplier_testcase #(
     localparam int LIMIT=512;
     localparam int REDUCTION_WEIGHT_WIDTH=8;
     typedef logic signed [WIDTH-1:0] data_t;
-    typedef logic signed [ACTIVATION_WIDTH-1:0] result_t;
+    typedef logic signed [ACTIVATION_WIDTH-1:0] activation_t;
     // Every dense sum here fits 64 bits: at most 19+16+$clog2(9) bits.
     typedef logic signed [63:0] wide_t;
     logic clk=0, rst_n, weightValid, weightReady, inputValid, inputReady;
     logic outputBlocked, weightsLoaded, reloadWeights, reloadReady, advance;
     logic passThrough, backward;
     data_t weightData[N], matrix[LAYERS][N][N];
-    result_t inputData[N];
+    activation_t inputData[N];
     wire signed [WIDTH-1:0] weights[LAYERS][N][N];
     logic signed [REDUCTION_WEIGHT_WIDTH-1:0] reductionWeight[N];
     logic activationGates[LAYERS][N];
     logic signed [1:0] rowDirection[LAYERS][N], columnDirection[LAYERS][N];
     logic matrixUpdateValid;
-    result_t resultData[N];
+    activation_t resultData[N];
     wire resultValid[N];
     wire tapValid[LAYERS][N], tapGate[LAYERS][N];
     wire signed [1:0] tapSign[LAYERS][N], tapGradientSign[LAYERS][N];
-    wire result_t laneGradient[LAYERS][N];
-    result_t expected[LIMIT][N];
+    wire activation_t laneGradient[LAYERS][N];
+    activation_t expected[LIMIT][N];
     int acceptedStep[LIMIT], acceptedCount, cycle, enabledStep;
     int laneArrivals[N];
     int unsigned randomState;
@@ -45,22 +45,22 @@ module weightStationaryMatrixMultiplier_testcase #(
         assign laneGradient[l][j]=dut.layers[l].lanes[j].gradient;
     // An independent statement of the format rule: shift out the extra fraction
     // bits, then cap at the activation limits.
-    function automatic result_t requantize(input wide_t value);
+    function automatic activation_t requantize(input wide_t value);
         wide_t shifted, limit;
         shifted=value>>>FRACTION_BITS;
         limit=wide_t'(1)<<(ACTIVATION_WIDTH-1);
-        if (shifted>=limit) return result_t'(limit-1);
-        if (shifted<-limit) return result_t'(-limit);
-        return result_t'(shifted);
+        if (shifted>=limit) return activation_t'(limit-1);
+        if (shifted<-limit) return activation_t'(-limit);
+        return activation_t'(shifted);
     endfunction
     function automatic int unsigned random_word();
         randomState=1664525*randomState+1013904223;
         return randomState;
     endfunction
     always @(posedge clk) begin : check
-        result_t activation[N], nextActivation[N];
+        activation_t activation[N], nextActivation[N];
         wide_t sum;
-        result_t held[N];
+        activation_t held[N];
         bit heldValid[N];
         bit blocked, stepped;
         cycle++;
@@ -146,9 +146,9 @@ module weightStationaryMatrixMultiplier_testcase #(
             outputBlocked=(mode==2 && (random_word()>>16)%4!=0);
             inputValid=(mode!=1 || random_word()%3!=0);
             for (int i=0; i<N; i++) begin
-                if (mode==3) inputData[i]=result_t'((sent+i)%2 ? -(1<<(ACTIVATION_WIDTH-1)) : (1<<(ACTIVATION_WIDTH-1))-1);
-                else if (mode==4) inputData[i]=result_t'(i==sent%N);
-                else inputData[i]=result_t'(random_word());
+                if (mode==3) inputData[i]=activation_t'((sent+i)%2 ? -(1<<(ACTIVATION_WIDTH-1)) : (1<<(ACTIVATION_WIDTH-1))-1);
+                else if (mode==4) inputData[i]=activation_t'(i==sent%N);
+                else inputData[i]=activation_t'(random_word());
             end
             @(posedge clk);
             if (inputValid && inputReady) sent++;
@@ -171,7 +171,7 @@ module weightStationaryMatrixMultiplier_testcase #(
     // count, because this bench reads the signs before they are captured, and
     // compare every layer's lanes with a dense calculation.
     task automatic check_backward();
-        result_t gradient[N], next[N];
+        activation_t gradient[N], next[N];
         wide_t sum;
         @(negedge clk);
         backward=1;

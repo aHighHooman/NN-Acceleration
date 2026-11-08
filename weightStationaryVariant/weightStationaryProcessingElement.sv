@@ -21,12 +21,10 @@ module weightStationaryProcessingElement #(
     localparam int PW = INPUT_WIDTH+WIDTH;
     localparam logic signed [WIDTH-1:0] MIN_WEIGHT = {1'b1, {(WIDTH-1){1'b0}}};
     localparam logic signed [WIDTH-1:0] MAX_WEIGHT = {1'b0, {(WIDTH-1){1'b1}}};
-    localparam logic signed [WIDTH-1:0] ONE = {{(WIDTH-1){1'b0}}, 1'b1};
     logic signed [WIDTH-1:0] transposed_weight;
     // Kept so Quartus can't push the mux past the multiply and build two of them.
     (* keep *) logic signed [WIDTH-1:0] selected_weight;
     logic signed [PW-1:0] product;
-    logic signed [RESULT_WIDTH-1:0] extended_product;
     initial begin
         if (INPUT_WIDTH<1 || WIDTH<1 || RESULT_WIDTH<PW)
             $fatal(1, "Invalid Fountain PE widths");
@@ -35,15 +33,12 @@ module weightStationaryProcessingElement #(
     // activation path.
     assign selected_weight = backward ? transposed_weight : weight;
     assign product = activation_in * selected_weight;
-    assign extended_product = {{(RESULT_WIDTH-PW){product[PW-1]}}, product};
 
-    // A saturating one-LSB step. Both copies of a weight take the same step, so
-    // they stay equal.
+    // A saturating one-LSB step. A weight already at the limit it is moving
+    // toward holds. Both copies of a weight take the same step, so they stay equal.
     function automatic logic signed [WIDTH-1:0] stepped(input logic signed [WIDTH-1:0] value,
                                                         input logic signed [1:0] direction);
-        if (direction == 2'sd1 && value != MAX_WEIGHT) return value + ONE;
-        if (direction == -2'sd1 && value != MIN_WEIGHT) return value - ONE;
-        return value;
+        return (value == ((direction > 0) ? MAX_WEIGHT : MIN_WEIGHT)) ? value : value + direction;
     endfunction
 
     // Configuration is independent of compute advance and is legal only while
@@ -69,7 +64,7 @@ module weightStationaryProcessingElement #(
         end else if (advance) begin
             activation_out <= activation_in;
             activation_out_valid <= activation_valid;
-            sum_out <= sum_in + extended_product;
+            sum_out <= sum_in + product;
         end
     end
 endmodule

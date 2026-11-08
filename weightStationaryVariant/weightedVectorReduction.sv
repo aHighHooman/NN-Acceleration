@@ -3,7 +3,7 @@
 // realigned. Sums run in two chains, rows C-1..0 upward and rows C..N-1
 // downward; a combinational join adds the chain ends.
 module weightedVectorReduction #(
-    parameter int MATRIX_RESULT_WIDTH = 16,
+    parameter int ACTIVATION_WIDTH = 16,
     parameter int REDUCTION_WEIGHT_WIDTH = 8,
     parameter int N = 3,
     parameter int RESCALE_SHIFT = REDUCTION_WEIGHT_WIDTH-1
@@ -13,14 +13,14 @@ module weightedVectorReduction #(
     input logic signed [REDUCTION_WEIGHT_WIDTH-1:0] cfg_data[N],
     input logic update_valid,
     input logic signed [1:0] row_direction[N], column_direction,
-    input logic signed [MATRIX_RESULT_WIDTH-1:0] in_data[N],
+    input logic signed [ACTIVATION_WIDTH-1:0] in_data[N],
     input logic in_valid[N],
-    output logic signed [MATRIX_RESULT_WIDTH+$clog2(N)-1:0] prediction,
+    output logic signed [ACTIVATION_WIDTH+$clog2(N)-1:0] prediction,
     output logic predictionValid,
     output logic signed [REDUCTION_WEIGHT_WIDTH-1:0] weights[N]
 );
     localparam int C = (N-1)/2;
-    localparam int SUM_WIDTH = MATRIX_RESULT_WIDTH+REDUCTION_WEIGHT_WIDTH+$clog2(N);
+    localparam int SUM_WIDTH = ACTIVATION_WIDTH+REDUCTION_WEIGHT_WIDTH+$clog2(N);
 
     logic signed [SUM_WIDTH-1:0] sumIn[N], sumOut[N];
     logic signed [1:0] updateDirection[N];
@@ -28,7 +28,7 @@ module weightedVectorReduction #(
     genvar i;
 
     initial begin
-        if (MATRIX_RESULT_WIDTH<1 || REDUCTION_WEIGHT_WIDTH<1 || N<3 || N%2==0 || RESCALE_SHIFT<0)
+        if (ACTIVATION_WIDTH<1 || REDUCTION_WEIGHT_WIDTH<1 || N<3 || N%2==0 || RESCALE_SHIFT<0)
             $fatal(1, "Fountain requires positive reduction widths and odd N>=3");
     end
 
@@ -46,7 +46,7 @@ module weightedVectorReduction #(
 
     generate
     for (i=0; i<N; i++) begin : rows
-        weightStationaryProcessingElement #(.INPUT_WIDTH(MATRIX_RESULT_WIDTH),
+        weightStationaryProcessingElement #(.INPUT_WIDTH(ACTIVATION_WIDTH),
             .WIDTH(REDUCTION_WEIGHT_WIDTH), .RESULT_WIDTH(SUM_WIDTH)) pe (
             .clk, .rst_n, .advance, .backward(1'b0),
             .cfg_we, .cfg_data(cfg_data[i]), .cfg_transposed_we(1'b0), .cfg_transposed_data('0),

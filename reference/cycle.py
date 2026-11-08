@@ -89,7 +89,7 @@ class _Layer:
     def __init__(self, config, index, weights):
         self.config=config
         self.weights=weights
-        self.aw=config.sum_width
+        self.sum_width=config.sum_width
         n=config.n
         self.act=[[None]*n for _ in range(n)]
         self.sums=[[None]*n for _ in range(n)]
@@ -119,7 +119,7 @@ class _Layer:
                 next_act[i][j]=activation
                 if activation is not None:
                     value=activation.value*self.weights[i][j]+(partial.value if partial else 0)
-                    assert to_signed(value,self.aw)==value, 'MAC overflow'
+                    assert to_signed(value,self.sum_width)==value, 'MAC overflow'
                     next_sums[i][j]=Lane(value,activation.sample)
         self.act,self.sums=next_act,next_sums
 
@@ -127,8 +127,8 @@ class _Layer:
         # The RTL's PE registers still hold forward leftovers here. Poison stands
         # in for them, so stopping before everything settles fails the oracle.
         n=self.config.n
-        self.back_act=[[1<<self.aw]*n for _ in range(n)]
-        self.back_sums=[[1<<self.aw]*n for _ in range(n)]
+        self.back_act=[[1<<self.sum_width]*n for _ in range(n)]
+        self.back_sums=[[1<<self.sum_width]*n for _ in range(n)]
 
     def gradient_outputs(self):
         return [self.back_sums[0][j]+self.back_sums[-1][j] for j in range(self.config.n)]

@@ -3,18 +3,18 @@
 // scalar against an independent dense sum, plus timing, stalls, loads and updates.
 module weightedVectorReduction_testcase #(
     parameter int N = 5,
-    parameter int MATRIX_RESULT_WIDTH = 8,
+    parameter int ACTIVATION_WIDTH = 8,
     parameter int REDUCTION_WEIGHT_WIDTH = 8,
     parameter int RESCALE_SHIFT = REDUCTION_WEIGHT_WIDTH-1
 )(output logic done);
     localparam int H = (N-1)/2;
-    localparam int PREDICTION_WIDTH = MATRIX_RESULT_WIDTH+$clog2(N);
+    localparam int PREDICTION_WIDTH = ACTIVATION_WIDTH+$clog2(N);
     localparam int LIMIT = 512;
-    typedef logic signed [MATRIX_RESULT_WIDTH-1:0] data_t;
+    typedef logic signed [ACTIVATION_WIDTH-1:0] data_t;
     typedef logic signed [REDUCTION_WEIGHT_WIDTH-1:0] weight_t;
     typedef logic signed [PREDICTION_WIDTH-1:0] prediction_t;
-    localparam data_t DATA_MIN = {1'b1, {(MATRIX_RESULT_WIDTH-1){1'b0}}};
-    localparam data_t DATA_MAX = {1'b0, {(MATRIX_RESULT_WIDTH-1){1'b1}}};
+    localparam data_t DATA_MIN = {1'b1, {(ACTIVATION_WIDTH-1){1'b0}}};
+    localparam data_t DATA_MAX = {1'b0, {(ACTIVATION_WIDTH-1){1'b1}}};
     localparam weight_t WEIGHT_MIN = {1'b1, {(REDUCTION_WEIGHT_WIDTH-1){1'b0}}};
     localparam weight_t WEIGHT_MAX = {1'b0, {(REDUCTION_WEIGHT_WIDTH-1){1'b1}}};
 
@@ -22,7 +22,7 @@ module weightedVectorReduction_testcase #(
     data_t vectorData[N];
     weight_t cfg_data[N];
     logic signed [1:0] row_direction[N], column_direction;
-    wire signed [MATRIX_RESULT_WIDTH-1:0] laneData[N];
+    wire signed [ACTIVATION_WIDTH-1:0] laneData[N];
     wire laneValid[N];
     wire signed [PREDICTION_WIDTH-1:0] prediction;
     wire predictionValid;
@@ -34,12 +34,12 @@ module weightedVectorReduction_testcase #(
     always #5 clk=~clk;
 
     for (genvar i=0; i<N; i++) begin : source
-        weightStationaryLaneDelay #(.WIDTH(MATRIX_RESULT_WIDTH), .DEPTH((i<H)?H-i:i-H)) skew (
+        weightStationaryLaneDelay #(.WIDTH(ACTIVATION_WIDTH), .DEPTH((i<H)?H-i:i-H)) skew (
             .clk, .rst_n, .advance, .in_data(vectorData[i]), .in_valid(vectorValid),
             .out_data(laneData[i]), .out_valid(laneValid[i]), .busy()
         );
     end
-    weightedVectorReduction #(.MATRIX_RESULT_WIDTH(MATRIX_RESULT_WIDTH),
+    weightedVectorReduction #(.ACTIVATION_WIDTH(ACTIVATION_WIDTH),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH), .N(N), .RESCALE_SHIFT(RESCALE_SHIFT)) dut (
         .clk, .rst_n, .advance, .cfg_we, .cfg_data, .update_valid, .row_direction, .column_direction,
         .in_data(laneData), .in_valid(laneValid), .prediction, .predictionValid, .weights
@@ -172,10 +172,10 @@ module weightedVectorReduction_testcase #(
 
     initial begin
         done=0; rst_n=0; advance=1; cfg_we=0; update_valid=0; vectorValid=0; column_direction=0;
-        randomState=32'(N*131+MATRIX_RESULT_WIDTH*17+RESCALE_SHIFT);
+        randomState=32'(N*131+ACTIVATION_WIDTH*17+RESCALE_SHIFT);
         for (int i=0; i<N; i++) begin vectorData[i]=0; cfg_data[i]=0; row_direction[i]=0; end
         reset_dut();
-        if ($bits(dut.sumOut[0]) != MATRIX_RESULT_WIDTH+REDUCTION_WEIGHT_WIDTH+$clog2(N))
+        if ($bits(dut.sumOut[0]) != ACTIVATION_WIDTH+REDUCTION_WEIGHT_WIDTH+$clog2(N))
             $fatal(1, "Reduction accumulator width changed");
         load_weights(0); stream(60, 0); stream(40, 1); stream(40, 2);
         load_weights(1); stream(4, 3);   // Largest positive sum uses every accumulator bit.
@@ -191,7 +191,7 @@ module weightedVectorReduction_testcase #(
         #1;
         if (checkedCount!=0 || predictionValid!==0) $fatal(1, "Reduction sample survived reset");
         $display("PASS: Reduction column N=%0d WIDTH=%0d RWIDTH=%0d SHIFT=%0d arithmetic, lane timing, II=1, stalls, loads, updates, reset",
-            N, MATRIX_RESULT_WIDTH, REDUCTION_WEIGHT_WIDTH, RESCALE_SHIFT);
+            N, ACTIVATION_WIDTH, REDUCTION_WEIGHT_WIDTH, RESCALE_SHIFT);
         done=1;
     end
 endmodule
@@ -203,7 +203,7 @@ module weightedVectorReduction_tb;
     weightedVectorReduction_testcase #(.N(9)) c(done[2]);
     weightedVectorReduction_testcase #(.N(3), .RESCALE_SHIFT(9)) d(done[3]);
     // Quartus-profile widths: a 19-bit lane, 30-bit sum and 22-bit prediction.
-    weightedVectorReduction_testcase #(.N(5), .MATRIX_RESULT_WIDTH(19)) e(done[4]);
+    weightedVectorReduction_testcase #(.N(5), .ACTIVATION_WIDTH(19)) e(done[4]);
     initial begin wait(&done); $display("PASS: Reduction column regression"); $finish; end
     initial begin #1000000; $fatal(1, "Reduction column regression timeout"); end
 endmodule

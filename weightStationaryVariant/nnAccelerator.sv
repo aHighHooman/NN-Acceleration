@@ -1,4 +1,4 @@
-// Fountain replaces the former inward datapath in the existing hierarchy.
+// Fountain accelerator: matrix stages, a scalar readout and a result FIFO.
 // Inference is pipelined; training drains behind one accepted training sample,
 // runs the gradient vectors back through the arrays, and commits one-LSB updates
 // atomically.
@@ -31,7 +31,6 @@ module nnAccelerator #(
     // is (LAYERS-1)*((N-1)/2+1)+(N-1)/2, and one more edge captures the signs.
     localparam int BACKWARD_CYCLES=LAYERS*((N-1)/2+1);
     localparam int COUNT_WIDTH=$clog2(IN_FLIGHT_DEPTH+1);
-    localparam int COMPARE_WIDTH=(PREDICTION_WIDTH>TARGET_WIDTH)?PREDICTION_WIDTH:TARGET_WIDTH;
     typedef enum logic [1:0] {IDLE, BACKWARD, APPLY} training_state_t;
     training_state_t trainingState;
     wire signed [REDUCTION_WEIGHT_WIDTH-1:0] residentReductionWeight[N];
@@ -52,8 +51,7 @@ module nnAccelerator #(
     wire tapValid[LAYERS][N], tapGate[LAYERS][N];
     wire signed [1:0] tapSign[LAYERS][N], tapGradientSign[LAYERS][N];
     logic signed [1:0] gradientSign[LAYERS][N];
-    logic signed [1:0] learningDirection, rowDirection[LAYERS][N], columnDirection[LAYERS][N];
-    logic signed [COMPARE_WIDTH-1:0] compareTarget, comparePrediction;
+    logic signed [1:0] learningDirection, columnDirection[LAYERS][N];
     logic [$clog2(BACKWARD_CYCLES)-1:0] backwardCount;
 
     initial begin
@@ -74,11 +72,8 @@ module nnAccelerator #(
     assign resultFifoPop=resultValid && resultReady;
     assign resultFifoCanAccept=!resultFifoFull || resultFifoPop;
     assign matrixUpdateValid=trainingState==APPLY;
-    assign compareTarget=savedTarget;
-    assign comparePrediction=resultData;
     always_comb begin
         for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++) begin
-            rowDirection[l][j]=inputSigns[l][j];
             if (gradientSign[l][j]==0) columnDirection[l][j]=0;
             else columnDirection[l][j]=(gradientSign[l][j]<0)?-learningDirection:learningDirection;
         end
@@ -90,7 +85,7 @@ module nnAccelerator #(
         .clk, .rst_n, .backward(trainingState==BACKWARD), .weightData, .weightValid, .weightReady,
         .inputData, .inputValid(matrixInputValid), .inputReady(matrixInputReady),
         .passThrough(modePassThrough), .reductionWeight(residentReductionWeight), .activationGates,
-        .rowDirection, .columnDirection, .matrixUpdateValid,
+        .rowDirection(inputSigns), .columnDirection, .matrixUpdateValid,
         .resultData(activatedMatrixResultData), .resultValid(matrixResultValid),
         .outputBlocked(predictionValid && !resultFifoCanAccept), .weightsLoaded,
         .reloadWeights(reloadAccepted),
@@ -98,7 +93,7 @@ module nnAccelerator #(
         .tapValid, .tapGate, .tapSign, .tapGradientSign
     );
     // One scalar readout on the last stage's lanes; it advances with the array.
-    weightedVectorReduction #(.MATRIX_RESULT_WIDTH(ACTIVATION_WIDTH),
+    weightedVectorReduction #(.ACTIVATION_WIDTH(ACTIVATION_WIDTH),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH), .N(N),
         .RESCALE_SHIFT(REDUCTION_WEIGHT_WIDTH-1)) reductionColumn (
         .clk, .rst_n, .advance(arrayAdvance),
@@ -159,11 +154,11 @@ module nnAccelerator #(
                     end
             case (trainingState)
                 IDLE: if (resultFifoPop && trainingPending && outstanding==1) begin
-                    if (compareTarget>comparePrediction) learningDirection<=2'sd1;
-                    else if (compareTarget<comparePrediction) learningDirection<=-2'sd1;
+                    if (savedTarget>resultData) learningDirection<=2'sd1;
+                    else if (savedTarget<resultData) learningDirection<=-2'sd1;
                     else learningDirection<=0;
                     backwardCount<='0;
-                    if (LAYERS==1 || compareTarget==comparePrediction) trainingState<=APPLY;
+                    if (LAYERS==1 || savedTarget==resultData) trainingState<=APPLY;
                     else trainingState<=BACKWARD;
                 end
                 BACKWARD: if (arrayAdvance) begin

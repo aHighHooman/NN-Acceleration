@@ -1,9 +1,9 @@
 // Fountain source, dedicated layer chain and row loader. Every layer's lanes,
 // including the outputs, stay on the staggered center-first front and in one
-// ACTIVATION_WIDTH format with FRACTION_BITS fraction bits. While
-// backward is held, arrays LAYERS-1..1 switch to their transposed weights, each
-// takes its input from the next array's output, and the readout weights settle
-// into every layer's gradient vector.
+// ACTIVATION_WIDTH format with FRACTION_BITS fraction bits. While backward is
+// held, arrays LAYERS-1..1 use their transposed weights and take their input
+// from the next array's output, and the readout weights settle into every
+// layer's gradient vector.
 module weightStationaryMatrixMultiplier #(
     parameter int WIDTH=16, ACTIVATION_WIDTH=19, FRACTION_BITS=8,
     parameter int N=3, LAYERS=1, REDUCTION_WEIGHT_WIDTH=8
@@ -45,8 +45,8 @@ module weightStationaryMatrixMultiplier #(
     logic signed [WIDTH-1:0] cfgData[N];
     wire signed [ACTIVATION_WIDTH-1:0] chainData[LAYERS+1][N];
     wire chainValid[LAYERS+1][N];
-    // Array l's output during the backward pass, before layer l-1's zeroed lanes
-    // are applied. Index LAYERS holds the readout weights, which start the pass.
+    // Array l's requantized output during the backward pass, before layer l-1's
+    // zeroed lanes are applied. Index LAYERS holds the readout weights.
     wire signed [ACTIVATION_WIDTH-1:0] gradientChain[LAYERS+1][N];
     wire sourceBusy[N], arrayBusy[LAYERS], arrayLoaded[LAYERS];
     logic skewBusy, pipelineBusy, allLoaded;
@@ -63,6 +63,9 @@ module weightStationaryMatrixMultiplier #(
         if (shifted>MAX_ACTIVATION) return MAX_ACTIVATION;
         if (shifted<MIN_ACTIVATION) return MIN_ACTIVATION;
         return shifted[ACTIVATION_WIDTH-1:0];
+    endfunction
+    function automatic logic signed [1:0] sign_of(input logic signed [ACTIVATION_WIDTH-1:0] value);
+        return (value==0) ? 2'sd0 : ((value<0) ? -2'sd1 : 2'sd1);
     endfunction
     assign weightReady=rst_n && !weightsLoaded && !loadingWeights && !captureWeights;
     assign weightPush=weightValid && weightReady;
@@ -112,11 +115,11 @@ module weightStationaryMatrixMultiplier #(
             assign chainValid[l+1][j]=rawValid[j];
             assign tapValid[l][j]=rawValid[j];
             assign tapGate[l][j]=passThrough || raw[j]>0;
-            assign tapSign[l][j]=(chainData[l+1][j]==0)?2'sd0:(chainData[l+1][j][ACTIVATION_WIDTH-1]?-2'sd1:2'sd1);
+            assign tapSign[l][j]=sign_of(chainData[l+1][j]);
             // The gradient vector at this layer's output has 0 wherever ReLU zeroed the output.
             assign gradient=activationGates[l][j]?gradientChain[l+1][j]:0;
             assign gradientChain[l][j]=requantize(raw[j]);
-            assign tapGradientSign[l][j]=(gradient==0)?2'sd0:(gradient[ACTIVATION_WIDTH-1]?-2'sd1:2'sd1);
+            assign tapGradientSign[l][j]=sign_of(gradient);
         end
         weightStationarySystolicArray #(.N(N), .WIDTH(WIDTH), .INPUT_WIDTH(ACTIVATION_WIDTH),
             .RESULT_WIDTH(SUM_WIDTH)) systolicArray (
