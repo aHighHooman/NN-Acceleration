@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1195" width="1600" height="1195" role="img" aria-labelledby="title desc">
 <title id="title">Fountain backpropagation path — capture, arrays run backward, atomic sign update</title>
-<desc id="desc">A training sample runs through the normal forward pipeline while taps after each matrix stage record the ReLU gate and the sign of each activated output; the input signs are latched at admission. When the training result is popped from the result FIFO, the training engine compares the saved target with the prediction to form sign(e) and holds the gated readout coefficients on the last array. In the BACKWARD state each PE multiplies by its stored transposed weight and each array takes its input from the next array's output, so each computes W times the gradient vector on its own PEs, for LAYERS*(N+1)/2 cycles, and the sign of each gradient vector is captured. In the one-cycle APPLY state each layer receives N row-direction lanes equal to sign(a[l][i]) and N column-direction lanes equal to sign(e)*sign(grad[l][j]); each PE combines its row and column sign with a comparator and steps its weight by one saturating LSB. The readout coefficients update in the same cycle by sign(e)*sign(a[L][j]).</desc>
+<desc id="desc">A training sample runs through the normal forward pipeline while taps after each matrix stage record the ReLU gate and the sign of each activated output; the input signs are latched at admission. When the training result is popped from the result FIFO, the training engine compares the saved target with the prediction to form sign(e) and holds the gated readout coefficients on the last array. In the BACKWARD state each PE multiplies by its stored transposed weight and each array takes its input from the next array's output, so each computes W times the gradient vector on its own PEs, for LAYERS*(N+3)/2 cycles, and the sign of each gradient vector is captured. In the one-cycle APPLY state each layer receives N row-direction lanes equal to sign(a[l][i]) and N column-direction lanes equal to sign(e)*sign(grad[l][j]); each PE combines its row and column sign with a comparator and steps its weight by one saturating LSB. The readout coefficients update in the same cycle by sign(e)*sign(a[L][j]).</desc>
 <style>
 svg{--paper:#F3F5F3; --panel:#FFFFFF; --ink:#15191C; --ink-2:#48525A; --ink-3:#7A848B;
   --rule:#D5DBD8; --grid:#E5E9E6;
@@ -155,13 +155,13 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 <!-- the arrays, in reverse -->
 <rect x="460" y="420" width="200" height="72" rx="6" class="bxl"/>
 <text x="560" y="448" class="m mid">grad[2] = r</text>
-<text x="560" y="474" class="ms mid">| output2 &gt; 0</text>
+<text x="560" y="474" class="ms mid">| sum2 &gt; 0</text>
 <rect x="690" y="420" width="220" height="72" rx="6" class="bxd"/>
 <text x="800" y="448" class="m mid">grad[1] = W[2] × grad[2]</text>
-<text x="800" y="474" class="ms mid">array 2 · | output1 &gt; 0</text>
+<text x="800" y="474" class="ms mid">array 2 · | sum1 &gt; 0</text>
 <rect x="940" y="420" width="220" height="72" rx="6" class="bxd"/>
 <text x="1050" y="448" class="m mid">grad[0] = W[1] × grad[1]</text>
-<text x="1050" y="474" class="ms mid">array 1 · | output0 &gt; 0</text>
+<text x="1050" y="474" class="ms mid">array 1 · | sum0 &gt; 0</text>
 <path d="M660,456 H688" class="ll" marker-end="url(#l)"/>
 <path d="M910,456 H938" class="ll" marker-end="url(#l)"/>
 
@@ -210,7 +210,7 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 <path d="M1508,642 C1508,676 1252,676 1252,644" class="lk" marker-end="url(#k)"/>
 <text x="1206" y="700" class="ms">IDLE→BACKWARD: training result popped, e≠0</text>
 <text x="1206" y="720" class="ms">IDLE→APPLY directly if e=0 or L=1</text>
-<text x="1206" y="740" class="ms">BACKWARD: L·(N+1)/2 advancing cycles</text>
+<text x="1206" y="740" class="ms">BACKWARD: L·(N+3)/2 advancing cycles</text>
 <text x="1206" y="760" class="ms">APPLY: one cycle, clears trainingPending</text>
 
 <!-- ============ Band 3: atomic update ============ -->
@@ -283,7 +283,7 @@ text{font-family:var(--body);fill:var(--ink);font-size:15px}
 <text x="735" y="1160" class="ms mid">sgn e</text>
 <rect x="860" y="1118" width="380" height="52" rx="6" class="bxl"/>
 <text x="1050" y="1140" class="mid b">BACKWARD</text>
-<text x="1050" y="1160" class="ms mid">L·(N+1)/2 cycles — 9 at N=5, L=3</text>
+<text x="1050" y="1160" class="ms mid">L·(N+3)/2 cycles — 12 at N=5, L=3</text>
 <rect x="1250" y="1118" width="150" height="52" rx="6" class="bxl"/>
 <text x="1325" y="1140" class="mid b">APPLY</text>
 <text x="1325" y="1160" class="ms mid">1 cycle</text>

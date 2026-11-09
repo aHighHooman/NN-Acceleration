@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" class="f11" viewBox="0 0 840 590" width="840" height="590" role="img" aria-labelledby="f11-title f11-description">
 <title id="f11-title">Current Fountain verification workflow</title>
-<desc id="f11-description">run_modelsim.ps1 runs 30 Python tests, ten directed matrix profiles, PE and readout benches, invalid-parameter checks, and five integrated RTL/reference comparisons. Each integrated profile has 14 directed scenarios; all five total 3,824 checked edges. Comparisons cover public handshakes, raw lane fronts, resident weights, readout coefficients and the training barrier. No UVM suite or delayed update-wave bench is part of the current workflow.</desc>
+<desc id="f11-description">run_modelsim.ps1 runs 30 Python tests, ten directed matrix profiles, PE and readout benches, invalid-parameter checks, and five integrated RTL/reference comparisons. Each integrated profile has 14 directed scenarios; all five total 4,257 checked edges. Comparisons cover public handshakes, raw lane fronts, resident weights, readout coefficients and the training barrier. No UVM suite or delayed update-wave bench is part of the current workflow.</desc>
 <style>
 .f11{--panel:#FFFFFF;--ink:#15191C;--muted:#48525A;--rule:#D5DBD8;--data:#2350C8;--data-soft:#DDE5FB;--learn:#CF4F16;--learn-soft:#FCE4D7}
 @media(prefers-color-scheme:dark){.f11{--panel:#171B1E;--ink:#E6E9EB;--muted:#AEB7BD;--rule:#2C3337;--data:#86A6FF;--data-soft:#1B2847;--learn:#FF8F57;--learn-soft:#3A2116}}
@@ -58,8 +58,8 @@
 <text x="697.5" y="400" class="center small">column sum, shift, timing, updates</text>
 <text x="697.5" y="423" class="center small">reject unsupported N=1/2/4/8</text>
 <line x1="20" x2="820" y1="460" y2="460" class="line"/>
-<text x="20" y="486" class="head">5 integrated profiles · 3,824 checked edges</text>
-<text x="20" y="514" class="small">Integer: N=3, L=3 (753 edges); N=5, L=3 (952); N=3, L=4 (848).</text>
-<text x="20" y="540" class="small">Fixed point: N=3, L=3, F=2 (753); N=3, L=1, F=4 (518).</text>
+<text x="20" y="486" class="head">5 integrated profiles · 4,257 checked edges</text>
+<text x="20" y="514" class="small">Integer: N=3, L=3 (848 edges); N=5, L=3 (1,050); N=3, L=4 (971).</text>
+<text x="20" y="540" class="small">Fixed point: N=3, L=3, F=2 (848); N=3, L=1, F=4 (540).</text>
 <text x="20" y="570" class="small">Scenarios include loading gaps, bubbles, long stalls, reload, reset and all-layer learning.</text>
 </svg>

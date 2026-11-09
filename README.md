@@ -93,10 +93,11 @@ When a sample is submitted with `trainingEnable`, the accelerator:
 2. Runs the training sample forward and computes `e = target - prediction`.
 3. Computes each layer's gradient vector by running the readout weights back
    through the matrix stages, in `LAYERS*(h+2)` cycles. Each entry is 0 where the
-   condition fails:
+   condition fails, where `sum[l]` is layer l's output before ReLU and
+   requantization:
    ```text
-   grad[last] = r                              | output[last] > 0
-   grad[l]    = requantize(W[l+1] * grad[l+1]) | output[l] > 0
+   grad[last] = r                              | sum[last] > 0
+   grad[l]    = requantize(W[l+1] * grad[l+1]) | sum[l] > 0
    ```
 4. Updates every weight by one LSB in a single cycle, saturating at its range
    limit:
@@ -114,6 +115,11 @@ copy of `W[j][i]` and multiplies by it during the backward pass. The routes,
 seeds and column joins stay exactly as they are; each array only takes its input
 from the next array's output instead of the previous one's, so the same
 center-first timing carries one array's outputs straight into the previous array.
+
+Each PE registers the weight its multiplier uses, so the choice between the two
+copies stays out of the multiply's cycle. That register follows a switch of
+copy, a load or an update one edge late. The controller never computes on that
+edge, and simulation asserts that it doesn't.
 
 Loading row `r` writes the forward weights of row `r` and the copies in column
 `r`. Each copy takes the same one-LSB step as the weight it mirrors, so both
@@ -236,7 +242,7 @@ All tests pass in Questa:
   saturates often, and backward gradients against a dense calculation.
 - Readout-column testbenches covering N=3/5/9 and the 19-bit lanes of the Quartus
   build: results against a dense sum, lane timing, stalls, loads and updates.
-- 3,824 cycle-by-cycle RTL/reference comparisons across five configurations,
+- 4,257 cycle-by-cycle RTL/reference comparisons across five configurations,
   hitting both caps in the forward and gradient lanes.
   Each one checks handshakes, results, every weight, every lane of every stage,
   and the readout output.
@@ -245,20 +251,21 @@ All tests pass in Questa:
 
 | Metric | Value |
 | --- | --- |
-| Logic | 7,576 ALMs |
-| Registers | 7,436 |
+| Logic | 8,073 ALMs |
+| Registers | 7,707 |
 | DSP blocks | 80 / 87 |
 | Memory | 220 bits (1 RAM block) |
-| Fmax | 72.0 MHz (100 MHz target not met) |
+| Fmax | 123.0 MHz (100 MHz target met) |
 
 Every multiplier maps to one 18x19 DSP slot; 77 of the 80 pack two to a block,
 so about 42 blocks would suffice even though the fitter spreads them over 80.
-The critical path runs from a stage's boundary sums through the column join,
-ReLU and requantization into the next stage's or the readout column's multiplier
-and sum register, all in one cycle. Across seeds 1 to 3 Fmax is 72.0 to 77.6 MHz,
-averaging 75.7 MHz; placement alone moves it by several MHz.
-These numbers come from the default seed unless noted. I/O pins are virtual, so
-they describe the core and are not a board-level sign-off.
+The datapath no longer sets the clock. The join and requantization get a cycle
+before each stage's input register, and the multiply and sum add get the next
+one. The worst paths left are control fanout: the loader's registered row data
+into every PE's weight register, the training update's gating into the weight
+copies, and the result FIFO's backpressure into the PE enables.
+These numbers come from seed 2; placement alone moves Fmax by a few MHz. I/O
+pins are virtual, so they describe the core and are not a board-level sign-off.
 
 ## Repository layout
 
@@ -279,8 +286,9 @@ presentation/figures/                    Architecture diagrams
 
 ## Limitations and future work
 
-- The 100 MHz timing target is not met on Cyclone V; the latest fit reaches
-  72.0 MHz with the default seed and 75.7 MHz averaged over three seeds.
+- The clock is now limited by control fanout, not the datapath: the loader's
+  row data, the training update's gating and the result FIFO's backpressure into
+  the PE enables. Fixing those should reach about 130 MHz without adding cycles.
 - The output is one scalar, so multi-output networks are not supported.
 - Only square matrix stages with odd N are supported.
 - Training handles one sample at a time; only inference is fully pipelined.
