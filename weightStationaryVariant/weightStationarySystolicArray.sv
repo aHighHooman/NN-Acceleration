@@ -105,7 +105,7 @@ module weightStationarySystolicArray #(
         assign result[j] = sums[0][j] + sums[N-1][j];
         assign resultValid[j] = activation_valids[0][j];
         // The join and activation settle between boundary capture and the
-        // next layer's PE capture; there is no separate join register.
+        // next stage's input register; there is no separate join register.
         // synthesis translate_off
         always_ff @(posedge clk) begin
             if (rst_n && advance)

@@ -53,8 +53,9 @@ Inside a stage:
    outward, upward and downward.
 3. A combinational adder at the edge of each output column joins the upper and
    lower sums into a complete output, which is then activated and requantized.
-4. The output lanes keep the center-first timing and feed the next stage
-   directly.
+4. The output lanes keep the center-first timing. Each one passes through one
+   register on its way into the next stage or the readout, so the join and
+   requantization get a cycle to themselves.
 
 The readout works the same way, as an Nx1 column of PEs holding `r`. Each row
 takes one lane of the last stage as it arrives, and the two sum chains join into
@@ -62,23 +63,27 @@ the prediction, so no lane is ever realigned into a vector.
 
 ### Latency
 
-With `h = (N-1)/2`, each stage adds `D = h + 1` cycles. The column join has no
-register of its own: the upper and lower boundary PEs capture their sums, and
-the join, ReLU, requantization and the next stage's first multiply settle in the following
-cycle. For N=5, if a stage's first PE captures a product at edge 1, the
-boundary rows capture at edge 3 and the next stage's first PE captures at edge
-4. For K stages, assuming no stalls:
+With `h = (N-1)/2`, the first stage adds `D = h + 1` cycles and every later
+stage, and the readout, adds `D + 1`. The column join has no register of its
+own: the upper and lower boundary PEs capture their sums, and the join, ReLU,
+requantization and lane mux settle into the next stage's input register in the
+following cycle. That register then feeds the next stage's first multiply. The
+first stage needs no input register, because its lanes already come from the
+input register and the source skew. For N=5, if a stage's first PE captures a
+product at edge 1, the boundary rows capture at edge 3, the input register at
+edge 4 and the next stage's first PE at edge 5. For K stages, assuming no stalls:
 
 | Event | Cycles after input is accepted |
 | --- | --- |
-| Last-stage lane `j` ready | `K*D + abs(j-h)` |
-| Prediction ready | `(K+1)*D` |
-| Prediction in result FIFO | `(K+1)*D + 1` |
-| First result available | `(K+1)*D + 2` |
+| Last-stage lane `j` ready | `K*(D+1) - 1 + abs(j-h)` |
+| Prediction ready | `(K+1)*(D+1) - 1` |
+| Prediction in result FIFO | `(K+1)*(D+1)` |
+| First result available | `(K+1)*(D+1) + 1` |
 
 Example: N=5, three layers. The last stage's lanes are ready at cycles
-`[11,10,9,10,11]`, the prediction at cycle 12, and the first result comes out at
-cycle 14.
+`[13,12,11,12,13]`, the prediction at cycle 15, and the first result comes out at
+cycle 17. The registers add three cycles, but they also let the clock run faster,
+so the time per result goes down.
 
 ### Training
 
@@ -87,7 +92,7 @@ When a sample is submitted with `trainingEnable`, the accelerator:
 1. Lets earlier inference samples finish and stops admitting new ones.
 2. Runs the training sample forward and computes `e = target - prediction`.
 3. Computes each layer's gradient vector by running the readout weights back
-   through the matrix stages, in `LAYERS*(h+1)` cycles. Each entry is 0 where the
+   through the matrix stages, in `LAYERS*(h+2)` cycles. Each entry is 0 where the
    condition fails:
    ```text
    grad[last] = r                              | output[last] > 0
@@ -115,8 +120,10 @@ Loading row `r` writes the forward weights of row `r` and the copies in column
 always hold the same matrix, and simulation asserts that they do.
 
 The readout weights are held still, and the path from them to every lane is
-feed-forward. The controller only has to wait for the longest path,
-`(LAYERS-1)*(h+1) + h` cycles, and capture the signs on one more edge. The pass
+feed-forward. The arrays switch to their copies one edge after the pass starts,
+because each array registers its backward select. The controller then waits for
+the longest path, through `LAYERS-1` input registers and `(LAYERS-1)*(h+1) + h`
+PE registers, and captures the signs on one more edge. The pass
 needs no valid bits or lane skew, and stores only two sign bits per lane.
 
 Array 0 never runs backward, so synthesis removes its copies. Gradient vectors

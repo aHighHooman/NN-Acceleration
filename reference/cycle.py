@@ -34,7 +34,10 @@ class CycleConfig(ReferenceConfig):
 
     @property
     def backward_cycles(self):
-        return self.layers*self.center_latency
+        # One edge to switch the arrays to their transposed weights, then the
+        # longest path through LAYERS-1 lane registers and the PE registers, then
+        # one capture edge.
+        return self.layers*(self.center_latency+1)
 
 
 @dataclass(frozen=True)
@@ -223,6 +226,12 @@ class CycleReference:
         self.layers=[_Layer(cfg,l,self._W[l]) for l in range(k)]
         self.source=[_Delay(abs(i-n//2)) for i in range(n)]
         self.reduction=_Reduction(cfg)
+        # The register after each array's lane mux. Index 0 is unused: array 0
+        # reads the source directly. The readout has one too.
+        self.held=[[None]*n for _ in range(k)]
+        self.back_held=[[0]*n for _ in range(k)]
+        self.readout_input=[None]*n
+        self.array_backward=False
         self.weight_buffer=[[[0]*n for _ in range(n)] for _ in range(k)]
         self.weights_loaded=False
         self.host_layer=self.loaded_rows=self.load_layer=self.load_step=0
@@ -270,7 +279,8 @@ class CycleReference:
 
     @property
     def pipeline_busy(self):
-        return self.input_stage is not None or any(delay.busy for delay in self.source) or any(layer.busy for layer in self.layers) or self.reduction.busy
+        held=any(lane is not None for lanes in self.held+[self.readout_input] for lane in lanes)
+        return self.input_stage is not None or held or any(delay.busy for delay in self.source) or any(layer.busy for layer in self.layers) or self.reduction.busy
 
     def signals(self,inputs: CycleInputs | None=None):
         inputs=inputs or CycleInputs(pass_through=self.mode_pass)
@@ -332,11 +342,13 @@ class CycleReference:
                 for j,lane in enumerate(activated[-1]):
                     if lane is not None:
                         assert lane.value==self.expected[lane.sample].activated_result[j], 'clocked/functional mismatch'
-                self.reduction.tick(activated[-1],old_r)
+                self.reduction.tick(self.readout_input,old_r)
+                self.readout_input=activated[-1]
                 source_words=[None if old_input is None else Lane(old_input[0][i],old_input[1]) for i in range(cfg.n)]
-                layer_inputs=[[delay.read(word) for delay,word in zip(self.source,source_words)]]+activated[:-1]
+                layer_inputs=[[delay.read(word) for delay,word in zip(self.source,source_words)]]+self.held[1:]
                 for layer,lane_inputs in zip(self.layers,layer_inputs): layer.tick(lane_inputs)
                 for delay,word in zip(self.source,source_words): delay.tick(word)
+                self.held=[[None]*cfg.n]+activated[:-1]
             if retired:
                 self.fifo.pop(0)
                 self.timings[head.sample].retired_at=self.cycle
@@ -368,12 +380,18 @@ class CycleReference:
                 assert head.sample==self.training_sample, 'training sample did not retire last'
                 self.direction=ternary_sign(self.saved_target-head.prediction)
                 for layer in self.layers: layer.begin_backward()
+                self.back_held=[[1<<cfg.sum_width]*cfg.n for _ in range(cfg.layers)]
                 self.gradient=self.gradient_lanes(old_r)
                 self.back_count=0
                 self.training_state=2 if cfg.layers==1 or self.direction==0 else 1
             elif old_state==1 and sig['advance']:
                 self.gradient=self.gradient_lanes(old_r)
-                for l in range(1,cfg.layers): self.layers[l].tick_backward(self.gradient[l])
+                for l in range(1,cfg.layers):
+                    # Until the registered select switches, the arrays still run
+                    # forward on leftovers, which poison stands in for.
+                    if self.array_backward: self.layers[l].tick_backward(self.back_held[l])
+                    else: self.layers[l].begin_backward()
+                self.back_held=[lanes[:] if self.array_backward else [1<<cfg.sum_width]*cfg.n for lanes in self.gradient]
                 self.back_count+=1
                 if self.back_count==cfg.backward_cycles: self.training_state=2
             elif old_state==2 and sig['advance']:
@@ -414,6 +432,7 @@ class CycleReference:
             if sig['reload']:
                 self.weights_loaded=False
                 self.host_layer=self.loaded_rows=0
+            self.array_backward=old_state==1
         snapshot=CycleSnapshot(self.cycle,accepted,retired,self.state_vector(inputs))
         self.snapshots.append(snapshot)
         self.cycle+=1

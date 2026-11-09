@@ -27,9 +27,11 @@ module nnAccelerator #(
 );
     localparam int LG=$clog2(N);
     localparam int PREDICTION_WIDTH=ACTIVATION_WIDTH+LG;
-    // The longest register path from the held readout weights to the last lane
-    // is (LAYERS-1)*((N-1)/2+1)+(N-1)/2, and one more edge captures the signs.
-    localparam int BACKWARD_CYCLES=LAYERS*((N-1)/2+1);
+    // The arrays switch to their transposed weights one edge after backward
+    // rises. From the held readout weights to the last lane, the longest register
+    // path then crosses LAYERS-1 lane registers and (LAYERS-1)*((N-1)/2+1)+(N-1)/2
+    // PE registers, and one more edge captures the signs.
+    localparam int BACKWARD_CYCLES=LAYERS*((N-1)/2+2);
     localparam int COUNT_WIDTH=$clog2(IN_FLIGHT_DEPTH+1);
     typedef enum logic [1:0] {IDLE, BACKWARD, APPLY} training_state_t;
     training_state_t trainingState;
@@ -37,6 +39,9 @@ module nnAccelerator #(
     wire signed [WIDTH-1:0] residentWeights[LAYERS][N][N];
     wire signed [ACTIVATION_WIDTH-1:0] activatedMatrixResultData[N];
     wire matrixResultValid[N];
+    // The readout reads the last layer's lanes from a register, like arrays 1..LAYERS-1.
+    logic signed [ACTIVATION_WIDTH-1:0] readoutInput[N];
+    logic readoutValid[N];
     wire matrixInputReady, matrixReloadReady, arrayAdvance, predictionValid;
     logic matrixInputValid, matrixUpdateValid, samplePush;
     logic resultFifoPop, resultFifoCanAccept;
@@ -92,6 +97,13 @@ module nnAccelerator #(
         .reloadReady(matrixReloadReady), .arrayAdvance, .weights(residentWeights),
         .tapValid, .tapGate, .tapSign, .tapGradientSign
     );
+    always_ff @(posedge clk) begin
+        if (!rst_n) for (int j=0; j<N; j++) begin readoutInput[j]<='0; readoutValid[j]<=0; end
+        else if (arrayAdvance) for (int j=0; j<N; j++) begin
+            readoutInput[j]<=activatedMatrixResultData[j];
+            readoutValid[j]<=matrixResultValid[j];
+        end
+    end
     // One scalar readout on the last stage's lanes; it advances with the array.
     weightedVectorReduction #(.ACTIVATION_WIDTH(ACTIVATION_WIDTH),
         .REDUCTION_WEIGHT_WIDTH(REDUCTION_WEIGHT_WIDTH), .N(N),
@@ -99,7 +111,7 @@ module nnAccelerator #(
         .clk, .rst_n, .advance(arrayAdvance),
         .cfg_we(loadReductionWeights && quiescent), .cfg_data(reductionWeight),
         .update_valid(matrixUpdateValid), .row_direction(finalSigns), .column_direction(learningDirection),
-        .in_data(activatedMatrixResultData), .in_valid(matrixResultValid),
+        .in_data(readoutInput), .in_valid(readoutValid),
         .prediction, .predictionValid, .weights(residentReductionWeight)
     );
     signedFifo #(.WIDTH(PREDICTION_WIDTH), .DEPTH(OUTPUT_FIFO_DEPTH)) resultFifo (
@@ -175,7 +187,7 @@ module nnAccelerator #(
             if (resultFifoPop) assert (outstanding!=0) else $fatal(1, "Unsolicited result");
             if (trainingState!=IDLE) assert (outstanding==0 && resultFifoEmpty &&
                 !matrixEngine.inputVectorValid && !matrixEngine.skewBusy &&
-                !matrixEngine.pipelineBusy && reductionColumn.activationValid=='0)
+                !matrixEngine.pipelineBusy && !readoutValid.or() && reductionColumn.activationValid=='0)
                 else $fatal(1, "Learning barrier did not drain");
             // synthesis translate_on
         end

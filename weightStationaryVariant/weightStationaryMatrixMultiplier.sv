@@ -1,9 +1,10 @@
 // Fountain source, dedicated layer chain and row loader. Every layer's lanes,
 // including the outputs, stay on the staggered center-first front and in one
-// ACTIVATION_WIDTH format with FRACTION_BITS fraction bits. While backward is
-// held, arrays LAYERS-1..1 use their transposed weights and take their input
-// from the next array's output, and the readout weights settle into every
-// layer's gradient vector.
+// ACTIVATION_WIDTH format with FRACTION_BITS fraction bits. Arrays 1..LAYERS-1
+// read their lanes from a register after the lane mux, which adds one step per
+// array to the front. While backward is held, those arrays use their transposed
+// weights and take their input from the next array's output, and the readout
+// weights settle into every layer's gradient vector.
 module weightStationaryMatrixMultiplier #(
     parameter int WIDTH=16, ACTIVATION_WIDTH=19, FRACTION_BITS=8,
     parameter int N=3, LAYERS=1, REDUCTION_WEIGHT_WIDTH=8
@@ -48,6 +49,13 @@ module weightStationaryMatrixMultiplier #(
     // Array l's requantized output during the backward pass, before layer l-1's
     // zeroed lanes are applied. Index LAYERS holds the readout weights.
     wire signed [ACTIVATION_WIDTH-1:0] gradientChain[LAYERS+1][N];
+    // The gradient vector at each layer's output, with 0 wherever ReLU zeroed it.
+    wire signed [ACTIVATION_WIDTH-1:0] laneGradient[LAYERS][N];
+    // Array l's lanes for l>0, held after the lane mux. The backward select is
+    // registered per array so it doesn't fan out from the controller in the
+    // multiply's cycle. Index 0 is unused: array 0 reads the source directly.
+    logic signed [ACTIVATION_WIDTH-1:0] heldLanes[LAYERS][N];
+    logic heldValid[LAYERS][N], arrayBackward[LAYERS];
     wire sourceBusy[N], arrayBusy[LAYERS], arrayLoaded[LAYERS];
     logic skewBusy, pipelineBusy, allLoaded;
     initial begin
@@ -85,6 +93,8 @@ module weightStationaryMatrixMultiplier #(
             allLoaded &= arrayLoaded[l];
             cfgWe[l]=loadingWeights && loadLayer==l;
         end
+        for (int l=1; l<LAYERS; l++)
+            for (int j=0; j<N; j++) pipelineBusy |= heldValid[l][j];
         for (int j=0; j<N; j++) begin
             skewBusy |= sourceBusy[j];
             cfgData[j]=weightBuffer[loadLayer][loadStep][j];
@@ -105,34 +115,49 @@ module weightStationaryMatrixMultiplier #(
     end
     for (l=0; l<LAYERS; l++) begin : layers
         wire signed [ACTIVATION_WIDTH-1:0] laneInput[N];
+        wire laneValid[N];
         wire signed [SUM_WIDTH-1:0] raw[N];
         wire rawValid[N];
-        wire arrayBackward=l>0 && backward;
         for (j=0; j<N; j++) begin : lanes
-            wire signed [ACTIVATION_WIDTH-1:0] gradient;
-            assign laneInput[j]=arrayBackward?gradient:chainData[l][j];
+            assign laneInput[j]=(l==0)?chainData[0][j]:heldLanes[l][j];
+            assign laneValid[j]=(l==0)?chainValid[0][j]:heldValid[l][j];
             assign chainData[l+1][j]=requantize((passThrough || !raw[j][SUM_WIDTH-1])?raw[j]:0);
             assign chainValid[l+1][j]=rawValid[j];
             assign tapValid[l][j]=rawValid[j];
             assign tapGate[l][j]=passThrough || raw[j]>0;
             assign tapSign[l][j]=sign_of(chainData[l+1][j]);
-            // The gradient vector at this layer's output has 0 wherever ReLU zeroed the output.
-            assign gradient=activationGates[l][j]?gradientChain[l+1][j]:0;
+            assign laneGradient[l][j]=activationGates[l][j]?gradientChain[l+1][j]:0;
             assign gradientChain[l][j]=requantize(raw[j]);
-            assign tapGradientSign[l][j]=sign_of(gradient);
+            assign tapGradientSign[l][j]=sign_of(laneGradient[l][j]);
         end
         weightStationarySystolicArray #(.N(N), .WIDTH(WIDTH), .INPUT_WIDTH(ACTIVATION_WIDTH),
             .RESULT_WIDTH(SUM_WIDTH)) systolicArray (
-            .clk, .rst_n, .advance(arrayAdvance), .backward(arrayBackward), .cfg_we(cfgWe[l]),
+            .clk, .rst_n, .advance(arrayAdvance), .backward(arrayBackward[l]), .cfg_we(cfgWe[l]),
             .cfg_row(INDEX_WIDTH'(loadStep)), .cfg_data(cfgData),
             .update_valid(matrixUpdateValid), .row_direction(rowDirection[l]),
             .column_direction(columnDirection[l]),
-            .in_data(laneInput), .in_valid(chainValid[l]),
+            .in_data(laneInput), .in_valid(laneValid),
             .result(raw), .resultValid(rawValid),
             .weights(weights[l]), .loaded(arrayLoaded[l]), .busy(arrayBusy[l])
         );
     end
     endgenerate
+    // The lane mux picks the previous layer's output, or during backward this
+    // layer's gradient vector.
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            for (int l=0; l<LAYERS; l++) begin
+                arrayBackward[l]<=0;
+                for (int j=0; j<N; j++) begin heldLanes[l][j]<='0; heldValid[l][j]<=0; end
+            end
+        end else for (int l=1; l<LAYERS; l++) begin
+            arrayBackward[l]<=backward;
+            if (arrayAdvance) for (int j=0; j<N; j++) begin
+                heldLanes[l][j]<=arrayBackward[l]?laneGradient[l][j]:chainData[l][j];
+                heldValid[l][j]<=chainValid[l][j];
+            end
+        end
+    end
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             inputVectorValid<=0;

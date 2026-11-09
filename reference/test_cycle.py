@@ -27,15 +27,18 @@ class CycleTests(unittest.TestCase):
                 model=CycleReference(cfg,[identity(n)]*layers,[64]*n)
                 model.step(CycleInputs(input_valid=True,input_data=tuple(range(1,n+1))))
                 seen={}
-                for _ in range(layers*cfg.center_latency+n+5):
+                # Array 0 takes the center latency and every later array one more
+                # step, for the register after its lane mux.
+                center_age=layers*(cfg.center_latency+1)-1
+                for _ in range(center_age+n+5):
                     model.step()
                     for index,lane in enumerate(model.lane_outputs()[-1]):
                         if lane is not None: seen.setdefault(index,model.cycle-1)
                 self.assertEqual([seen[i] for i in range(n)],
-                    [layers*cfg.center_latency+abs(i-n//2) for i in range(n)])
-                # The readout column is one more stage on the same lane front.
-                self.assertEqual(model.timings[0].enqueued_at,(layers+1)*cfg.center_latency+1)
-                self.assertEqual(model.timings[0].retired_at,(layers+1)*cfg.center_latency+2)
+                    [center_age+abs(i-n//2) for i in range(n)])
+                # The readout column is one more registered stage on the same lane front.
+                self.assertEqual(model.timings[0].enqueued_at,center_age+cfg.center_latency+2)
+                self.assertEqual(model.timings[0].retired_at,center_age+cfg.center_latency+3)
 
     def test_streaming_random_signed_vectors_and_bubbles(self):
         rng=random.Random(124)
@@ -90,7 +93,7 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(model.outstanding,0)
         self.assertEqual(model.host_layer,0)
 
-    def test_backward_pass_settles_on_the_oracle_in_layers_times_center_latency(self):
+    def test_backward_pass_settles_on_the_oracle_in_layers_times_center_latency_plus_one(self):
         rng=random.Random(77)
         for n in (3,5,9):
             for layers in (2,3,4,6):
@@ -110,7 +113,7 @@ class CycleTests(unittest.TestCase):
                     while model.training_state==1:
                         model.step(CycleInputs(pass_through=False))
                         backward+=1
-                    self.assertEqual(backward,layers*cfg.center_latency)
+                    self.assertEqual(backward,layers*(cfg.center_latency+1))
                     self.assertEqual(model.gradient,[list(row) for row in expected.gradients])
                     model.step(CycleInputs(pass_through=False))
                     self.assertEqual(model.W,oracle.W)

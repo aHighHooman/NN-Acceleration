@@ -6,6 +6,8 @@ module weightStationaryMatrixMultiplier_testcase #(
     parameter int N=5, WIDTH=8, LAYERS=3, ACTIVATION_WIDTH=19, FRACTION_BITS=0
 )(output logic done);
     localparam int D=N/2+1;
+    // Array 0 takes D steps and every later array D+1, one for its lane register.
+    localparam int CENTER_AGE=LAYERS*(D+1)-1;
     localparam int LIMIT=512;
     localparam int REDUCTION_WEIGHT_WIDTH=8;
     typedef logic signed [WIDTH-1:0] data_t;
@@ -42,7 +44,7 @@ module weightStationaryMatrixMultiplier_testcase #(
         .weights, .tapValid, .tapGate, .tapSign, .tapGradientSign
     );
     for (genvar l=0; l<LAYERS; l++) for (genvar j=0; j<N; j++)
-        assign laneGradient[l][j]=dut.layers[l].lanes[j].gradient;
+        assign laneGradient[l][j]=dut.laneGradient[l][j];
     // An independent statement of the format rule: shift out the extra fraction
     // bits, then cap at the activation limits.
     function automatic activation_t requantize(input wide_t value);
@@ -101,9 +103,9 @@ module weightStationaryMatrixMultiplier_testcase #(
                     int sample, q;
                     sample=laneArrivals[j]++;
                     q=(j<N/2)?N/2-j:j-N/2;
-                    if (sample>=acceptedCount || enabledStep-acceptedStep[sample]!=LAYERS*D+q)
+                    if (sample>=acceptedCount || enabledStep-acceptedStep[sample]!=CENTER_AGE+q)
                         $fatal(1,"Fountain lane timing N=%0d L=%0d lane=%0d sample=%0d age=%0d expected=%0d",
-                            N,LAYERS,j,sample,enabledStep-acceptedStep[sample],LAYERS*D+q);
+                            N,LAYERS,j,sample,enabledStep-acceptedStep[sample],CENTER_AGE+q);
                     if (resultData[j]!==expected[sample][j])
                         $fatal(1,"Fountain result N=%0d L=%0d sample=%0d lane=%0d got=%0d expected=%0d",
                             N,LAYERS,sample,j,resultData[j],expected[sample][j]);
@@ -177,7 +179,7 @@ module weightStationaryMatrixMultiplier_testcase #(
         backward=1;
         for (int j=0; j<N; j++) reductionWeight[j]=REDUCTION_WEIGHT_WIDTH'(random_word());
         for (int l=0; l<LAYERS; l++) for (int j=0; j<N; j++) activationGates[l][j]=random_word()%4!=0;
-        repeat(LAYERS*D-1) @(posedge clk);
+        repeat(LAYERS*(D+1)-1) @(posedge clk);
         #1;
         for (int j=0; j<N; j++) gradient[j]=activationGates[LAYERS-1][j]?reductionWeight[j]:0;
         for (int l=LAYERS-1; l>=0; l--) begin
