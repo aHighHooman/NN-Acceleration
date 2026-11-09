@@ -236,6 +236,8 @@ class CycleReference:
         self.weights_loaded=False
         self.host_layer=self.loaded_rows=self.load_layer=self.load_step=0
         self.loading=self.capture=False
+        # The row the loader picked last edge; its write lands one edge later.
+        self.pending_row=None
         self.input_stage=None
         self.next_sample=0
         self.outstanding=0
@@ -406,12 +408,15 @@ class CycleReference:
                 self.training_pending=False
                 self.training_state=0
             # Loader writes after all pre-edge PE reads, exactly like a clocked bank.
+            if self.pending_row is not None:
+                layer,step=self.pending_row
+                self._W[layer][step][:]=self.weight_buffer[layer][step]
+            self.pending_row=(self.load_layer,self.load_step) if self.loading else None
             if self.capture:
                 self.capture=False
                 self.weights_loaded=True
                 self.host_layer=0
             elif self.loading:
-                self._W[self.load_layer][self.load_step][:]=self.weight_buffer[self.load_layer][self.load_step]
                 if self.load_step==cfg.n-1:
                     self.load_step=0
                     if self.load_layer==cfg.layers-1:

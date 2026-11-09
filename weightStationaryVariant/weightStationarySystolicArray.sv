@@ -23,7 +23,6 @@ module weightStationarySystolicArray #(
     localparam int C = (N-1)/2;
     localparam int INDEX_WIDTH = (N>1)?$clog2(N):1;
     logic [N-1:0] loaded_rows;
-    logic accepted_cfg;
     logic signed [INPUT_WIDTH-1:0] activations[N][N], activation_in[N][N];
     logic activation_valids[N][N], activation_valid_in[N][N];
     logic signed [RESULT_WIDTH-1:0] sums[N][N], sum_in[N][N];
@@ -37,10 +36,10 @@ module weightStationarySystolicArray #(
         return (row==column) ? 2'sd1 : -2'sd1;
     endfunction
     assign loaded = &loaded_rows;
-    assign accepted_cfg = cfg_we && !busy && cfg_row<N;
     always_ff @(posedge clk) begin
         if (!rst_n) loaded_rows <= '0;
-        else if (accepted_cfg) begin
+        // The loader writes only drained arrays and valid rows, as asserted below.
+        else if (cfg_we) begin
             if (loaded) loaded_rows <= '0;
             loaded_rows[cfg_row] <= 1;
         end
@@ -75,8 +74,8 @@ module weightStationarySystolicArray #(
             weightStationaryProcessingElement #(.INPUT_WIDTH(INPUT_WIDTH), .WIDTH(WIDTH),
                           .RESULT_WIDTH(RESULT_WIDTH)) pe (
                 .clk, .rst_n, .advance, .backward,
-                .cfg_we(accepted_cfg && cfg_row==INDEX_WIDTH'(i)), .cfg_data(cfg_data[j]),
-                .cfg_transposed_we(accepted_cfg && cfg_row==INDEX_WIDTH'(j)), .cfg_transposed_data(cfg_data[i]),
+                .cfg_we(cfg_we && cfg_row==INDEX_WIDTH'(i)), .cfg_data(cfg_data[j]),
+                .cfg_transposed_we(cfg_we && cfg_row==INDEX_WIDTH'(j)), .cfg_transposed_data(cfg_data[i]),
                 .update_valid(update_valid && !busy && loaded),
                 .update_direction(combined(row_direction[i], column_direction[j])),
                 .transposed_update_direction(combined(row_direction[j], column_direction[i])),

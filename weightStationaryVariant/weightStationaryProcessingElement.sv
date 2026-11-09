@@ -22,16 +22,20 @@ module weightStationaryProcessingElement #(
     localparam logic signed [WIDTH-1:0] MIN_WEIGHT = {1'b1, {(WIDTH-1){1'b0}}};
     localparam logic signed [WIDTH-1:0] MAX_WEIGHT = {1'b0, {(WIDTH-1){1'b1}}};
     logic signed [WIDTH-1:0] transposed_weight;
-    // Kept so Quartus can't push the mux past the multiply and build two of them.
-    (* keep *) logic signed [WIDTH-1:0] selected_weight;
+    // The multiplier's weight. It follows backward and the weights one edge
+    // late; the controller never computes on the edge after either changes.
+    logic signed [WIDTH-1:0] selected_weight;
     logic signed [PW-1:0] product;
     initial begin
         if (INPUT_WIDTH<1 || WIDTH<1 || RESULT_WIDTH<PW)
             $fatal(1, "Invalid Fountain PE widths");
     end
-    // The select is static during a pass, so the weight mux stays off the
-    // activation path.
-    assign selected_weight = backward ? transposed_weight : weight;
+    // Registering the select keeps the weight mux and its fanout out of the
+    // multiply's cycle.
+    always_ff @(posedge clk) begin
+        if (!rst_n) selected_weight <= '0;
+        else selected_weight <= backward ? transposed_weight : weight;
+    end
     assign product = activation_in * selected_weight;
 
     // A saturating one-LSB step. A weight already at the limit it is moving
@@ -67,4 +71,11 @@ module weightStationaryProcessingElement #(
             sum_out <= sum_in + product;
         end
     end
+    // synthesis translate_off
+    always_ff @(posedge clk) begin
+        if (rst_n && advance && activation_valid)
+            assert (selected_weight == (backward ? transposed_weight : weight))
+                else $fatal(1, "PE computed on a stale weight");
+    end
+    // synthesis translate_on
 endmodule

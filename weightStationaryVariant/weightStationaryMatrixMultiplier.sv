@@ -33,16 +33,21 @@ module weightStationaryMatrixMultiplier #(
 );
     localparam int H=(N-1)/2;
     localparam int INDEX_WIDTH=(N>1)?$clog2(N):1;
+    localparam int LAYER_INDEX_WIDTH=(LAYERS>1)?$clog2(LAYERS):1;
     localparam int SUM_WIDTH=ACTIVATION_WIDTH+WIDTH+$clog2(N);
     localparam logic signed [ACTIVATION_WIDTH-1:0] MAX_ACTIVATION={1'b0,{(ACTIVATION_WIDTH-1){1'b1}}};
     localparam logic signed [ACTIVATION_WIDTH-1:0] MIN_ACTIVATION={1'b1,{(ACTIVATION_WIDTH-1){1'b0}}};
     logic signed [WIDTH-1:0] weightBuffer[LAYERS][N][N];
-    integer hostLayer, loadedWeightRows, loadLayer, loadStep;
+    logic [LAYER_INDEX_WIDTH-1:0] hostLayer, loadLayer;
+    logic [INDEX_WIDTH-1:0] loadedWeightRows, loadStep;
     logic loadingWeights, captureWeights, weightPush;
     logic signed [ACTIVATION_WIDTH-1:0] inputVectorData[N];
     logic inputVectorValid;
     logic inputPush, inputPop;
+    // The row write, registered one edge after the loader picks it so its
+    // decode doesn't share a cycle with the PE weight registers.
     logic cfgWe[LAYERS];
+    logic [INDEX_WIDTH-1:0] cfgRow;
     logic signed [WIDTH-1:0] cfgData[N];
     wire signed [ACTIVATION_WIDTH-1:0] chainData[LAYERS+1][N];
     wire chainValid[LAYERS+1][N];
@@ -51,9 +56,9 @@ module weightStationaryMatrixMultiplier #(
     wire signed [ACTIVATION_WIDTH-1:0] gradientChain[LAYERS+1][N];
     // The gradient vector at each layer's output, with 0 wherever ReLU zeroed it.
     wire signed [ACTIVATION_WIDTH-1:0] laneGradient[LAYERS][N];
-    // Array l's lanes for l>0, held after the lane mux. The backward select is
-    // registered per array so it doesn't fan out from the controller in the
-    // multiply's cycle. Index 0 is unused: array 0 reads the source directly.
+    // Array l's lanes for l>0, held after the lane mux, and the lane mux's
+    // registered backward select. Index 0 is unused: array 0 reads the source
+    // directly.
     logic signed [ACTIVATION_WIDTH-1:0] heldLanes[LAYERS][N];
     logic heldValid[LAYERS][N], arrayBackward[LAYERS];
     wire sourceBusy[N], arrayBusy[LAYERS], arrayLoaded[LAYERS];
@@ -91,13 +96,11 @@ module weightStationaryMatrixMultiplier #(
         for (int l=0; l<LAYERS; l++) begin
             pipelineBusy |= arrayBusy[l];
             allLoaded &= arrayLoaded[l];
-            cfgWe[l]=loadingWeights && loadLayer==l;
         end
         for (int l=1; l<LAYERS; l++)
             for (int j=0; j<N; j++) pipelineBusy |= heldValid[l][j];
         for (int j=0; j<N; j++) begin
             skewBusy |= sourceBusy[j];
-            cfgData[j]=weightBuffer[loadLayer][loadStep][j];
             resultData[j]=chainData[LAYERS][j];
             resultValid[j]=chainValid[LAYERS][j];
         end
@@ -132,8 +135,8 @@ module weightStationaryMatrixMultiplier #(
         end
         weightStationarySystolicArray #(.N(N), .WIDTH(WIDTH), .INPUT_WIDTH(ACTIVATION_WIDTH),
             .RESULT_WIDTH(SUM_WIDTH)) systolicArray (
-            .clk, .rst_n, .advance(arrayAdvance), .backward(arrayBackward[l]), .cfg_we(cfgWe[l]),
-            .cfg_row(INDEX_WIDTH'(loadStep)), .cfg_data(cfgData),
+            .clk, .rst_n, .advance(arrayAdvance), .backward(l>0 && backward), .cfg_we(cfgWe[l]),
+            .cfg_row(cfgRow), .cfg_data(cfgData),
             .update_valid(matrixUpdateValid), .row_direction(rowDirection[l]),
             .column_direction(columnDirection[l]),
             .in_data(laneInput), .in_valid(laneValid),
@@ -168,6 +171,11 @@ module weightStationaryMatrixMultiplier #(
                 for (int i=0; i<N; i++) inputVectorData[i]<=inputData[i];
             end else if (inputPop) inputVectorValid<=0;
         end
+    end
+    always_ff @(posedge clk) begin
+        cfgRow<=loadStep;
+        for (int j=0; j<N; j++) cfgData[j]<=weightBuffer[loadLayer][loadStep][j];
+        for (int l=0; l<LAYERS; l++) cfgWe[l]<=rst_n && loadingWeights && loadLayer==l;
     end
     always_ff @(posedge clk) begin
         if (!rst_n) begin
@@ -211,7 +219,7 @@ module weightStationaryMatrixMultiplier #(
                 loadedWeightRows<=0;
             end
             // synthesis translate_off
-            if (captureWeights) assert (allLoaded)
+            if (weightsLoaded) assert (allLoaded)
                 else $fatal(1, "Fountain loader committed incomplete weights");
             // synthesis translate_on
         end
